@@ -1,0 +1,92 @@
+{
+  "name": "xpdf-editor",
+  "version": "1.0.0",
+  "description": "XPDF - Profesyonel Windows PDF Düzenleyici & Yöneticisi",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && node -e \"require('fs').copyFileSync('manifest.json', 'dist/manifest.json')\"",
+    "preview": "vite preview",
+    "start": "electron .",
+    "build:exe": "npm run build && electron-builder --win nsis portable --x64",
+    "build:dir": "npm run build && electron-builder --win dir --x64"
+  },
+  "build": {
+    "appId": "com.xpdf.editor",
+    "productName": "XPDF Editor",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/**/*",
+      "tools/thumbnail-provider/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "fileAssociations": [
+        {
+          "ext": "pdf",
+          "name": "PDF Document",
+          "description": "PDF Dökümanı",
+          "role": "Editor",
+          "icon": "build/icon.ico"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "XPDF Editor"
+    }
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.13.2",
+    "clsx": "^2.1.1",
+    "idb": "^8.0.2",
+    "immer": "^10.1.1",
+    "lucide-react": "^0.475.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^3.0.2",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.4.4",
+    "@types/chrome": "^0.0.307",
+    "@types/node": "^22.13.4",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.5.2",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
+  }
+}
