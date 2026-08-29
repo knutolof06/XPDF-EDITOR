@@ -1,6 +1,7 @@
 import packager from '@electron/packager';
 import path from 'path';
 import fs from 'fs';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -98,7 +99,32 @@ pause
   console.log(`Created 1-click installer batch file in ${appDir}`);
 }
 
-bundle().catch((err) => {
+bundle().then(() => {
+  pushToGitHub();
+}).catch((err) => {
   console.error('Packaging failed:', err);
   process.exit(1);
 });
+
+function pushToGitHub() {
+  const GIT = 'C:\\Program Files\\Git\\bin\\git.exe';
+  if (!fs.existsSync(GIT)) {
+    console.log('⚠️  Git bulunamadı, GitHub güncellemesi atlandı.');
+    return;
+  }
+
+  try {
+    console.log('\n📤 GitHub\'a yükleniyor...');
+    const now = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+    execSync(`"${GIT}" add -A`, { cwd: rootDir, stdio: 'inherit' });
+    execSync(`"${GIT}" diff --cached --quiet || "${GIT}" commit -m "Otomatik güncelleme: ${now}"`, {
+      cwd: rootDir,
+      stdio: 'inherit',
+      shell: true,
+    });
+    execSync(`"${GIT}" push origin main`, { cwd: rootDir, stdio: 'inherit' });
+    console.log('✅ GitHub başarıyla güncellendi!');
+  } catch (err) {
+    console.warn('⚠️  GitHub push sırasında hata (yerel build etkilenmez):', err.message);
+  }
+}
