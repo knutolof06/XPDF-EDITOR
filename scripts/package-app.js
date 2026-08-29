@@ -107,6 +107,12 @@ bundle().then(() => {
 });
 
 function pushToGitHub() {
+  // Skip in CI environment
+  if (process.env.SKIP_GIT_PUSH === 'true' || process.env.CI === 'true') {
+    console.log('ℹ️  CI ortamı algılandı, GitHub push atlandı.');
+    return;
+  }
+
   const GIT = 'C:\\Program Files\\Git\\bin\\git.exe';
   if (!fs.existsSync(GIT)) {
     console.log('⚠️  Git bulunamadı, GitHub güncellemesi atlandı.');
