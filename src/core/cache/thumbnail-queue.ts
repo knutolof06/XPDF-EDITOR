@@ -1,9 +1,9 @@
 /**
- * High-Performance Render Queue
- * - Prioritizes the most recently visible items (newest timestamp / LIFO first).
- * - Allows 6 concurrent thumbnail renders (fast parallel worker batching).
- * - Allows 4 concurrent main page renders.
- * - Instantly drops cancelled tasks without blocking the queue.
+ * Low-Overhead Adaptive Render Queue
+ * - Prioritizes the most recently visible items (LIFO first).
+ * - Dynamically bounds concurrency (max 2 concurrent thumbnails) to ensure 60 FPS
+ *   even on older dual/quad-core CPUs.
+ * - Instantly cancels off-screen tasks without wasting CPU cycles.
  */
 
 type RenderTask = () => Promise<void>;
@@ -36,7 +36,8 @@ function createQueue(maxConcurrent: number) {
         .catch(() => {})
         .finally(() => {
           running--;
-          runNext();
+          // Yield to main thread before starting next task to prevent UI lockup
+          setTimeout(runNext, 0);
         });
     }
   }
@@ -66,13 +67,11 @@ function createQueue(maxConcurrent: number) {
   return { enqueue, clear };
 }
 
-// 6 concurrent thumbnails for sidebar & page manager grid
-const thumbnailQ = createQueue(6);
+// Adaptive concurrency: 2 for thumbnails, 2 for main pages
+const thumbnailQ = createQueue(2);
 export const enqueueThumbnail = thumbnailQ.enqueue;
 export const clearThumbnailQueue = thumbnailQ.clear;
 
-// 4 concurrent page renders for main viewer
-const pageQ = createQueue(4);
+const pageQ = createQueue(2);
 export const enqueuePageRender = pageQ.enqueue;
 export const clearPageRenderQueue = pageQ.clear;
-

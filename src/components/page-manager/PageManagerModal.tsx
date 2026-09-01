@@ -41,7 +41,6 @@ export const PageManagerModal: React.FC = () => {
   const startPosRef = useRef({ x: 0, y: 0 });
   const cachedBoundsRef = useRef<CachedPageBound[]>([]);
   const currentSelectedSetRef = useRef<Set<string>>(new Set());
-  const rAFRef = useRef<number | null>(null);
 
   const {
     currentDocument,
@@ -262,29 +261,43 @@ export const PageManagerModal: React.FC = () => {
       }
     }
 
-    if (rAFRef.current) cancelAnimationFrame(rAFRef.current);
-    rAFRef.current = requestAnimationFrame(() => {
-      if (intersectingIds.length > 0) {
-        if (isMultiSelectModeRef.current) {
-          const combined = new Set(currentSelectedSetRef.current);
-          intersectingIds.forEach((id) => combined.add(id));
-          selectPages(Array.from(combined), false);
-        } else {
-          selectPages(intersectingIds, false);
-        }
+    // Direct DOM visual feedback without expensive React re-renders
+    const allThumbEls = gridContainerRef.current.querySelectorAll('[data-page-id]');
+    allThumbEls.forEach((el) => {
+      const id = el.getAttribute('data-page-id');
+      if (id && intersectingIds.includes(id)) {
+        el.classList.add('opacity-80', 'scale-[0.98]');
+      } else {
+        el.classList.remove('opacity-80', 'scale-[0.98]');
       }
     });
+
+    currentSelectedSetRef.current = new Set(
+      isMultiSelectModeRef.current
+        ? [...currentDocument.selectedPageIds, ...intersectingIds]
+        : intersectingIds
+    );
   };
 
   const handleMouseUp = () => {
+    if (isSelectingRef.current && gridContainerRef.current) {
+      // Clean up direct DOM classes
+      const allThumbEls = gridContainerRef.current.querySelectorAll('[data-page-id]');
+      allThumbEls.forEach((el) => {
+        el.classList.remove('opacity-80', 'scale-[0.98]');
+      });
+
+      // Commit selection state ONCE on mouse up
+      const finalSelected = Array.from(currentSelectedSetRef.current);
+      if (finalSelected.length > 0) {
+        selectPages(finalSelected, false);
+      }
+    }
+
     isSelectingRef.current = false;
     isMultiSelectModeRef.current = false;
     if (selectionBoxRef.current) {
       selectionBoxRef.current.style.display = 'none';
-    }
-    if (rAFRef.current) {
-      cancelAnimationFrame(rAFRef.current);
-      rAFRef.current = null;
     }
   };
 
