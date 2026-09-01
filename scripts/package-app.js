@@ -122,15 +122,16 @@ function pushToGitHub() {
   try {
     console.log('\n📤 GitHub\'a yükleniyor...');
     const now = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
-    execSync(`"${GIT}" add -A`, { cwd: rootDir, stdio: 'inherit' });
+    execSync(`"${GIT}" add -A`, { cwd: rootDir, stdio: 'inherit', timeout: 10000 });
     execSync(`"${GIT}" diff --cached --quiet || "${GIT}" commit -m "Otomatik güncelleme: ${now}"`, {
       cwd: rootDir,
       stdio: 'inherit',
       shell: true,
+      timeout: 10000,
     });
-    execSync(`"${GIT}" push origin main`, { cwd: rootDir, stdio: 'inherit' });
+    execSync(`"${GIT}" push origin main`, { cwd: rootDir, stdio: 'inherit', timeout: 20000 });
     console.log('✅ GitHub başarıyla güncellendi!');
   } catch (err) {
-    console.warn('⚠️  GitHub push sırasında hata (yerel build etkilenmez):', err.message);
+    console.warn('⚠️  GitHub push sırasında hata veya zaman aşımı (yerel build başarıyla tamamlandı):', err.message);
   }
 }
