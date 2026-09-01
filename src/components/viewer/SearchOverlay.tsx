@@ -147,7 +147,10 @@ export const SearchOverlay: React.FC = () => {
           <ChevronDown className="w-4 h-4" />
         </button>
         <button
-          onClick={closeSearch}
+          onClick={() => {
+            window.getSelection()?.removeAllRanges();
+            closeSearch();
+          }}
           className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors ml-1"
           title="Kapat (Esc)"
         >

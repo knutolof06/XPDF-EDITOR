@@ -204,63 +204,65 @@ export const PageView: React.FC<PageViewProps> = ({
     };
   }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale]);
 
-  // Search Highlighting: pure class-based, NEVER mutate span content
+  // Native Text Selection on Search: select the exact text without any custom overlays/boxes
   useEffect(() => {
     if (!isRendered || !textLayerRef.current) return;
     const container = textLayerRef.current;
-
-    // 1. Remove all existing highlight classes (no DOM structure changes)
-    container.querySelectorAll('.search-highlight, .search-highlight-active').forEach((el) => {
-      el.classList.remove('search-highlight', 'search-highlight-active');
-    });
 
     if (!searchState.isOpen || !searchState.query || searchState.query.trim().length === 0) {
       return;
     }
 
-    const query = searchState.matchCase ? searchState.query : searchState.query.toLowerCase();
     const currentGlobalMatch = searchState.results[searchState.currentIndex];
     const isCurrentPage = currentGlobalMatch && currentGlobalMatch.pageIndex === index;
-    const activeMatchIndexOnPage = isCurrentPage ? currentGlobalMatch.matchIndex : -1;
+    if (!isCurrentPage) return;
 
-    // 2. Use DIRECT child spans only — PDF.js creates exactly one span per text item.
-    //    Nested spans (if any) would double-count matches and break indexing.
+    const query = searchState.matchCase ? searchState.query : searchState.query.toLowerCase();
+    const activeMatchIndexOnPage = currentGlobalMatch.matchIndex;
+
     const allSpans = Array.from(container.children).filter(
       (el): el is HTMLElement => el.tagName === 'SPAN'
     );
 
     let matchCounter = 0;
-    let activeSpan: HTMLElement | null = null;
 
     for (const span of allSpans) {
       const raw = span.textContent || '';
       const compText = searchState.matchCase ? raw : raw.toLowerCase();
       if (!compText.includes(query)) continue;
 
-      // Count how many occurrences of query are in this span
       let pos = 0;
-      let spanHasActive = false;
-
       while ((pos = compText.indexOf(query, pos)) !== -1) {
         if (matchCounter === activeMatchIndexOnPage) {
-          spanHasActive = true;
-          activeSpan = span as HTMLElement;
+          // Select this exact matching word using native browser selection
+          try {
+            const selection = window.getSelection();
+            if (selection) {
+              selection.removeAllRanges();
+              const range = document.createRange();
+              const textNode = span.firstChild || span;
+              if (textNode.nodeType === Node.TEXT_NODE) {
+                const textLen = (textNode.textContent || '').length;
+                range.setStart(textNode, Math.min(pos, textLen));
+                range.setEnd(textNode, Math.min(pos + query.length, textLen));
+              } else {
+                range.selectNodeContents(span);
+              }
+              selection.addRange(range);
+            }
+          } catch (e) {
+            console.warn('Selection error:', e);
+          }
+
+          // Smooth scroll into view
+          requestAnimationFrame(() => {
+            span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          });
+          return;
         }
         matchCounter++;
         pos += query.length;
       }
-
-      span.classList.add('search-highlight');
-      if (spanHasActive) {
-        span.classList.add('search-highlight-active');
-      }
-    }
-
-    // 3. Scroll the active span into view
-    if (activeSpan) {
-      requestAnimationFrame(() => {
-        activeSpan?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      });
     }
   }, [
     isRendered,
