@@ -63,12 +63,13 @@ export const SearchOverlay: React.FC = () => {
     };
   }, [pdfDocProxy, searchState.query, searchState.matchCase]);
 
-  // Jump to page on next / prev result
+  // Jump to page on next / prev result — always read fresh state AFTER the mutation
   const handleNext = () => {
     if (searchState.results.length === 0) return;
-    const nextIdx = (searchState.currentIndex + 1) % searchState.results.length;
     nextSearchResult();
-    const target = searchState.results[nextIdx];
+    // Read the store's new currentIndex AFTER mutation (not from the closed-over snapshot)
+    const { searchState: fresh } = useViewerStore.getState();
+    const target = fresh.results[fresh.currentIndex];
     if (target) {
       setActivePageIndex(target.pageIndex);
     }
@@ -76,11 +77,9 @@ export const SearchOverlay: React.FC = () => {
 
   const handlePrev = () => {
     if (searchState.results.length === 0) return;
-    const prevIdx =
-      (searchState.currentIndex - 1 + searchState.results.length) %
-      searchState.results.length;
     prevSearchResult();
-    const target = searchState.results[prevIdx];
+    const { searchState: fresh } = useViewerStore.getState();
+    const target = fresh.results[fresh.currentIndex];
     if (target) {
       setActivePageIndex(target.pageIndex);
     }

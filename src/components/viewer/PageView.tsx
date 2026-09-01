@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { TextLayer } from 'pdfjs-dist';
 import { PdfPageModel } from '@/types/document';
@@ -204,19 +204,14 @@ export const PageView: React.FC<PageViewProps> = ({
     };
   }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale]);
 
-  // Robust Search Highlighting Effect (Highlights exact words and glows active match on every step)
+  // Search Highlighting: pure class-based, NEVER mutate span content
   useEffect(() => {
     if (!isRendered || !textLayerRef.current) return;
     const container = textLayerRef.current;
 
-    // 1. Clean up any existing mark highlights and restore raw text content
-    const existingMarks = container.querySelectorAll('mark.search-highlight');
-    existingMarks.forEach((mark) => {
-      const parent = mark.parentNode;
-      if (parent) {
-        parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
-        parent.normalize();
-      }
+    // 1. Remove all existing highlight classes (no DOM structure changes)
+    container.querySelectorAll('.search-highlight, .search-highlight-active').forEach((el) => {
+      el.classList.remove('search-highlight', 'search-highlight-active');
     });
 
     if (!searchState.isOpen || !searchState.query || searchState.query.trim().length === 0) {
@@ -228,60 +223,44 @@ export const PageView: React.FC<PageViewProps> = ({
     const isCurrentPage = currentGlobalMatch && currentGlobalMatch.pageIndex === index;
     const activeMatchIndexOnPage = isCurrentPage ? currentGlobalMatch.matchIndex : -1;
 
-    // Get only direct top-level spans to prevent duplicate matches in nested children
+    // 2. Only look at top-level spans (PDF.js textLayer structure)
+    //    Each span = one PDF text item, matching what pdf-search.ts counted
     const allSpans = Array.from(container.querySelectorAll('span')).filter(
-      (span) => !span.parentElement || span.parentElement.tagName !== 'SPAN'
+      (span) => span.parentElement?.classList.contains('textLayer') ||
+                span.closest('.textLayer') === container
     );
 
     let matchCounter = 0;
-    let activeMarkEl: HTMLElement | null = null;
+    let activeSpan: HTMLElement | null = null;
 
     for (const span of allSpans) {
-      const text = span.textContent || '';
-      const compText = searchState.matchCase ? text : text.toLowerCase();
+      const raw = span.textContent || '';
+      const compText = searchState.matchCase ? raw : raw.toLowerCase();
       if (!compText.includes(query)) continue;
 
-      const frag = document.createDocumentFragment();
-      let lastIdx = 0;
+      // Count how many occurrences of query are in this span
       let pos = 0;
+      let spanHasActive = false;
 
-      while ((pos = compText.indexOf(query, lastIdx)) !== -1) {
-        // Preceding text
-        if (pos > lastIdx) {
-          frag.appendChild(document.createTextNode(text.substring(lastIdx, pos)));
+      while ((pos = compText.indexOf(query, pos)) !== -1) {
+        if (matchCounter === activeMatchIndexOnPage) {
+          spanHasActive = true;
+          activeSpan = span as HTMLElement;
         }
-
-        // Matched keyword
-        const matchText = text.substring(pos, pos + query.length);
-        const mark = document.createElement('mark');
-        mark.textContent = matchText;
-        const isActive = matchCounter === activeMatchIndexOnPage;
-
-        mark.className = isActive
-          ? 'search-highlight search-highlight-active'
-          : 'search-highlight';
-
-        if (isActive) {
-          activeMarkEl = mark;
-        }
-
-        frag.appendChild(mark);
         matchCounter++;
-        lastIdx = pos + query.length;
+        pos += query.length;
       }
 
-      // Trailing text
-      if (lastIdx < text.length) {
-        frag.appendChild(document.createTextNode(text.substring(lastIdx)));
+      span.classList.add('search-highlight');
+      if (spanHasActive) {
+        span.classList.add('search-highlight-active');
       }
-
-      span.innerHTML = '';
-      span.appendChild(frag);
     }
 
-    if (activeMarkEl) {
+    // 3. Scroll the active span into view
+    if (activeSpan) {
       requestAnimationFrame(() => {
-        activeMarkEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        activeSpan?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
     }
   }, [
@@ -293,6 +272,7 @@ export const PageView: React.FC<PageViewProps> = ({
     searchState.results,
     index,
   ]);
+
 
   const transitionClass = {
     classic: 'page-transition-classic',
