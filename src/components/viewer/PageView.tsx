@@ -10,9 +10,15 @@ interface PageViewProps {
   page: PdfPageModel;
   index: number;
   scale: number;
+  customPdfDocProxy?: pdfjsLib.PDFDocumentProxy;
 }
 
-export const PageView: React.FC<PageViewProps> = ({ page, index, scale }) => {
+export const PageView: React.FC<PageViewProps> = ({
+  page,
+  index,
+  scale,
+  customPdfDocProxy,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -20,7 +26,8 @@ export const PageView: React.FC<PageViewProps> = ({ page, index, scale }) => {
 
   const [isVisible, setIsVisible] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
-  const { pdfDocProxy } = useDocumentStore();
+  const { pdfDocProxy: globalPdfDocProxy } = useDocumentStore();
+  const pdfDocProxy = customPdfDocProxy || globalPdfDocProxy;
   const { pageTransition } = useViewerStore();
 
   // IntersectionObserver: Only render pages that are near/inside viewport (Rule 2)
