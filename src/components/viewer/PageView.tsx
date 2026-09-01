@@ -118,27 +118,41 @@ export const PageView: React.FC<PageViewProps> = ({
           const textContent = await pdfPage.getTextContent();
           if (isCancelled || !textLayerRef.current) return;
 
-          const fragment = document.createDocumentFragment();
-          textContent.items.forEach((item: any) => {
-            if (!item.str) return;
-            const span = document.createElement('span');
-            span.textContent = item.str;
+          try {
+            // @ts-ignore
+            if (typeof pdfjsLib.TextLayer === 'function') {
+              // @ts-ignore
+              const textLayer = new pdfjsLib.TextLayer({
+                textContentSource: textContent,
+                container: textLayerRef.current,
+                viewport: cssViewport,
+              });
+              await textLayer.render();
+            } else {
+              const fragment = document.createDocumentFragment();
+              textContent.items.forEach((item: any) => {
+                if (!item.str) return;
+                const span = document.createElement('span');
+                span.textContent = item.str;
 
-            const tx = pdfjsLib.Util.transform(
-              cssViewport.transform,
-              item.transform
-            );
+                const tx = pdfjsLib.Util.transform(
+                  cssViewport.transform,
+                  item.transform
+                );
 
-            const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-            span.style.fontSize = `${fontHeight}px`;
-            span.style.fontFamily = item.fontName || 'sans-serif';
-            span.style.left = `${tx[4]}px`;
-            span.style.top = `${tx[5] - fontHeight}px`;
+                const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+                span.style.fontSize = `${fontHeight}px`;
+                span.style.fontFamily = item.fontName || 'sans-serif';
+                span.style.left = `${tx[4]}px`;
+                span.style.top = `${tx[5] - fontHeight}px`;
 
-            fragment.appendChild(span);
-          });
-
-          textLayerRef.current.appendChild(fragment);
+                fragment.appendChild(span);
+              });
+              textLayerRef.current.appendChild(fragment);
+            }
+          } catch (tErr) {
+            console.warn('TextLayer render error:', tErr);
+          }
         }
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') {
@@ -187,7 +201,7 @@ export const PageView: React.FC<PageViewProps> = ({
         height: `${Math.floor(baseHeight)}px`,
       }}
       className={cn(
-        'relative bg-white shadow-2xl rounded-sm overflow-hidden flex items-center justify-center my-4 transition-transform duration-200 select-none contain-paint',
+        'relative bg-white shadow-2xl rounded-sm overflow-hidden flex items-center justify-center my-4 transition-transform duration-200 contain-paint',
         transitionClass
       )}
     >
@@ -204,7 +218,7 @@ export const PageView: React.FC<PageViewProps> = ({
           {/* PDF.js Text Layer */}
           <div
             ref={textLayerRef}
-            className="textLayer absolute inset-0 select-text cursor-text z-0"
+            className="textLayer absolute inset-0 select-text cursor-text z-[2]"
           />
 
           {/* V3 Interactive Annotation Layer */}
