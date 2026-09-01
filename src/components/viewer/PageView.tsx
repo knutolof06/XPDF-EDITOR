@@ -118,6 +118,7 @@ export const PageView: React.FC<PageViewProps> = ({
           const textContent = await pdfPage.getTextContent();
           if (isCancelled || !textLayerRef.current) return;
 
+          let renderedWithOfficial = false;
           try {
             // @ts-ignore
             if (typeof pdfjsLib.TextLayer === 'function') {
@@ -128,30 +129,50 @@ export const PageView: React.FC<PageViewProps> = ({
                 viewport: cssViewport,
               });
               await textLayer.render();
-            } else {
-              const fragment = document.createDocumentFragment();
-              textContent.items.forEach((item: any) => {
-                if (!item.str) return;
-                const span = document.createElement('span');
-                span.textContent = item.str;
-
-                const tx = pdfjsLib.Util.transform(
-                  cssViewport.transform,
-                  item.transform
-                );
-
-                const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-                span.style.fontSize = `${fontHeight}px`;
-                span.style.fontFamily = item.fontName || 'sans-serif';
-                span.style.left = `${tx[4]}px`;
-                span.style.top = `${tx[5] - fontHeight}px`;
-
-                fragment.appendChild(span);
-              });
-              textLayerRef.current.appendChild(fragment);
+              renderedWithOfficial = true;
             }
           } catch (tErr) {
             console.warn('TextLayer render error:', tErr);
+          }
+
+          if (!renderedWithOfficial && textLayerRef.current) {
+            textLayerRef.current.innerHTML = '';
+            const fragment = document.createDocumentFragment();
+            textContent.items.forEach((item: any) => {
+              if (!item.str) return;
+              const span = document.createElement('span');
+              span.textContent = item.str;
+
+              const tx = pdfjsLib.Util.transform(
+                cssViewport.transform,
+                item.transform
+              );
+
+              const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+              const itemWidth = (item.width || 0) * scale;
+              span.style.fontSize = `${fontHeight}px`;
+              span.style.fontFamily = item.fontName || 'sans-serif';
+              span.style.left = `${tx[4]}px`;
+              span.style.top = `${tx[5] - fontHeight}px`;
+              if (itemWidth > 0) {
+                span.style.width = `${itemWidth}px`;
+              }
+              span.style.height = `${fontHeight}px`;
+              span.style.lineHeight = `${fontHeight}px`;
+
+              fragment.appendChild(span);
+
+              if (item.hasEOL) {
+                const br = document.createElement('br');
+                fragment.appendChild(br);
+              }
+            });
+
+            const endOfContent = document.createElement('div');
+            endOfContent.className = 'endOfContent';
+            fragment.appendChild(endOfContent);
+
+            textLayerRef.current.appendChild(fragment);
           }
         }
       } catch (err: any) {

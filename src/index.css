@@ -59,18 +59,16 @@
   text-size-adjust: none;
   forced-color-adjust: none;
   transform-origin: 0 0;
+  caret-color: transparent;
   pointer-events: auto;
   user-select: text;
   -webkit-user-select: text;
   z-index: 2;
 }
 
-.textLayer ::selection {
-  background: rgba(2, 132, 199, 0.35);
-}
-
 .textLayer span,
-.textLayer span::selection {
+.textLayer span > span,
+.textLayer br {
   color: transparent;
   position: absolute;
   white-space: pre;
@@ -78,6 +76,27 @@
   transform-origin: 0% 0%;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.textLayer ::selection {
+  background: rgba(2, 132, 199, 0.35);
+  color: transparent;
+}
+
+.textLayer br::selection {
+  background: transparent;
+}
+
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  left: 0;
+  top: 100%;
+  right: 0;
+  bottom: 0;
+  z-index: -1;
+  cursor: default;
+  user-select: none;
 }
 
 .textLayer .highlight {
