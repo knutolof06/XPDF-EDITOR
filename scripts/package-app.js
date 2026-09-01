@@ -61,6 +61,19 @@ async function bundle() {
     console.log(`Copied thumbnail provider to ${targetToolsDir}`);
   }
 
+  // Patch XPDF Editor.exe PE icon with rcedit
+  const rceditExe = path.join(rootDir, 'node_modules', 'rcedit', 'bin', 'rcedit-x64.exe');
+  const targetExe = path.join(appDir, 'XPDF Editor.exe');
+  const icoFile = path.join(rootDir, 'build', 'icon.ico');
+  if (fs.existsSync(rceditExe) && fs.existsSync(targetExe) && fs.existsSync(icoFile)) {
+    try {
+      execSync(`"${rceditExe}" "${targetExe}" --set-icon "${icoFile}"`, { stdio: 'ignore' });
+      console.log('Successfully embedded custom multi-res icon into XPDF Editor.exe');
+    } catch (e) {
+      console.warn('rcedit warning:', e.message);
+    }
+  }
+
   // Create a 1-click Windows registry setup script in the output folder
   const setupBat = `@echo off
 cd /d "%~dp0"
