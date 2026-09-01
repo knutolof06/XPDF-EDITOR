@@ -8,33 +8,44 @@ import { cn } from '@/utils/cn';
 
 const PT_TO_MM = 25.4 / 72;
 
-const STANDARD_SIZES = [
-  { label: 'A3', w: 841.89, h: 1190.55 },
-  { label: 'A4', w: 595.28, h: 841.89 },
-  { label: 'A5', w: 419.53, h: 595.28 },
-  { label: 'Letter', w: 612, h: 792 },
-  { label: 'Legal', w: 612, h: 1008 },
+interface SizeGroup {
+  key: string;
+  w: number;
+  h: number;
+  pages: number[];
+  label: string;
+}
+
+type Step = 'range' | 'scan-result' | 'processing' | 'done';
+
+function roundPt(v: number): number { return Math.round(v); }
+function ptToMm(v: number): string { return (v * PT_TO_MM).toFixed(1); }
+function sizeKey(w: number, h: number): string { return `${roundPt(w)}x${roundPt(h)}`; }
+
+const KNOWN: { name: string; w: number; h: number }[] = [
+  { name: 'A3', w: 841.89, h: 1190.55 },
+  { name: 'A4', w: 595.28, h: 841.89 },
+  { name: 'A5', w: 419.53, h: 595.28 },
+  { name: 'Letter', w: 612, h: 792 },
+  { name: 'Legal', w: 612, h: 1008 },
 ];
 
-function roundPt(v) { return Math.round(v); }
-function ptToMm(v) { return (v * PT_TO_MM).toFixed(1); }
-function sizeKey(w, h) { return `${roundPt(w)}x${roundPt(h)}`; }
-function matchStandard(w, h) {
-  for (const s of STANDARD_SIZES) {
-    if (Math.abs(s.w - w) < 2 && Math.abs(s.h - h) < 2) return s.label;
+function matchKnown(w: number, h: number): string | null {
+  for (const s of KNOWN) {
+    if (Math.abs(s.w - w) < 2 && Math.abs(s.h - h) < 2) return s.name;
   }
   return null;
 }
 
-export const EqualizePagesModal = () => {
+export const EqualizePagesModal: React.FC = () => {
   const { currentDocument } = useDocumentStore();
   const { isPageEqualizeModalOpen, setPageEqualizeModalOpen, addToast } = useUIStore();
 
-  const [step, setStep] = useState('range');
+  const [step, setStep] = useState<Step>('range');
   const [fromPage, setFromPage] = useState(1);
   const [toPage, setToPage] = useState(1);
   const [isScanning, setIsScanning] = useState(false);
-  const [sizeGroups, setSizeGroups] = useState([]);
+  const [sizeGroups, setSizeGroups] = useState<SizeGroup[]>([]);
   const [selectedKey, setSelectedKey] = useState('');
   const [customW, setCustomW] = useState('');
   const [customH, setCustomH] = useState('');
@@ -48,7 +59,10 @@ export const EqualizePagesModal = () => {
 
   const handleClose = () => {
     setPageEqualizeModalOpen(false);
-    setTimeout(() => { setStep('range'); setSizeGroups([]); setSelectedKey(''); setUseCustom(false); setProgress(0); }, 200);
+    setTimeout(() => {
+      setStep('range'); setSizeGroups([]); setSelectedKey('');
+      setUseCustom(false); setProgress(0);
+    }, 200);
   };
 
   const handleScan = async () => {
@@ -60,33 +74,41 @@ export const EqualizePagesModal = () => {
     setIsScanning(true);
     try {
       const pdfDoc = await PDFDocument.load(rawBuffer);
-      const groups = {};
+      const groups: Record<string, SizeGroup> = {};
       for (let i = from - 1; i <= to - 1; i++) {
         const page = pdfDoc.getPage(i);
         const { width, height } = page.getSize();
         const key = sizeKey(width, height);
         if (!groups[key]) {
-          const std = matchStandard(width, height);
-          groups[key] = { key, w: width, h: height, pages: [], label: std ? `${std} (${ptToMm(width)} x ${ptToMm(height)} mm)` : `Ozel (${ptToMm(width)} x ${ptToMm(height)} mm)` };
+          const std = matchKnown(width, height);
+          groups[key] = {
+            key, w: width, h: height, pages: [],
+            label: std
+              ? `${std} (${ptToMm(width)} x ${ptToMm(height)} mm)`
+              : `Ozel (${ptToMm(width)} x ${ptToMm(height)} mm)`,
+          };
         }
         groups[key].pages.push(i + 1);
       }
-      const sorted = Object.values(groups).sort((a, b) => b.pages.length - a.pages.length);
+      const sorted: SizeGroup[] = Object.values(groups).sort((a, b) => b.pages.length - a.pages.length);
       setSizeGroups(sorted);
       const maxGroup = sorted.reduce((best, g) => g.w * g.h > best.w * best.h ? g : best, sorted[0]);
       setSelectedKey(maxGroup.key);
       setStep('scan-result');
-    } catch (e) { addToast('Tarama hatasi: ' + e.message, 'error'); }
-    finally { setIsScanning(false); }
+    } catch (err: unknown) {
+      addToast('Tarama hatasi: ' + (err instanceof Error ? err.message : String(err)), 'error');
+    } finally { setIsScanning(false); }
   };
 
   const handleApply = async () => {
     const rawBuffer = binaryStore.get(currentDocument.id);
     if (!rawBuffer) { addToast('Dokuman verisi bulunamadi.', 'error'); return; }
-    let targetW, targetH;
+    let targetW: number, targetH: number;
     if (useCustom) {
       const wMm = parseFloat(customW), hMm = parseFloat(customH);
-      if (isNaN(wMm) || isNaN(hMm) || wMm <= 0 || hMm <= 0) { addToast('Gecerli boyut girin (mm).', 'error'); return; }
+      if (isNaN(wMm) || isNaN(hMm) || wMm <= 0 || hMm <= 0) {
+        addToast('Gecerli boyut girin (mm).', 'error'); return;
+      }
       targetW = wMm / PT_TO_MM; targetH = hMm / PT_TO_MM;
     } else {
       const chosen = sizeGroups.find(g => g.key === selectedKey);
@@ -114,28 +136,34 @@ export const EqualizePagesModal = () => {
         setProgress(Math.round(((i + 1) / pageCount) * 100));
       }
       const outBytes = await outDoc.save();
-      const blob = new Blob([outBytes], { type: 'application/pdf' });
+      const blob = new Blob([outBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const baseName = currentDocument.name.replace(/\.pdf$/i, '');
       const filename = `${baseName}_esitlendi.pdf`;
       setResultFilename(filename);
-      const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
       setStep('done');
       addToast('Sayfalar basariyla esitlendi!', 'success');
-    } catch (e) { addToast('Esitleme hatasi: ' + e.message, 'error'); setStep('scan-result'); }
+    } catch (err: unknown) {
+      addToast('Esitleme hatasi: ' + (err instanceof Error ? err.message : String(err)), 'error');
+      setStep('scan-result');
+    }
   };
 
-  const formatPageList = (pages) => {
+  const formatPageList = (pages: number[]) => {
     if (pages.length <= 5) return pages.join(', ');
     return `${pages.slice(0, 4).join(', ')} ... (${pages.length - 4} daha)`;
   };
 
   const getTargetLabel = () => {
     if (useCustom) return `Ozel (${customW} x ${customH} mm)`;
-    return sizeGroups.find(g => g.key === selectedKey)?.label || 'secilmedi';
+    return sizeGroups.find(g => g.key === selectedKey)?.label ?? 'secilmedi';
   };
 
-  const maxAreaGroup = sizeGroups.length > 0 ? sizeGroups.reduce((best, g) => g.w * g.h > best.w * best.h ? g : best, sizeGroups[0]) : null;
+  const maxAreaGroup: SizeGroup | null = sizeGroups.length > 0
+    ? sizeGroups.reduce((best, g) => g.w * g.h > best.w * best.h ? g : best, sizeGroups[0])
+    : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -161,17 +189,20 @@ export const EqualizePagesModal = () => {
                 <div className="flex items-center gap-3">
                   <div className="flex flex-col gap-1">
                     <span className="text-[10px] text-slate-400">Baslangic</span>
-                    <input type="number" min={1} max={totalPages} value={fromPage} onChange={e => setFromPage(parseInt(e.target.value) || 1)}
+                    <input type="number" min={1} max={totalPages} value={fromPage}
+                      onChange={e => setFromPage(parseInt(e.target.value) || 1)}
                       className="w-24 h-9 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg text-center text-sm font-bold focus:outline-none focus:border-orange-500" />
                   </div>
                   <ChevronRight className="w-4 h-4 text-slate-400 mt-4" />
                   <div className="flex flex-col gap-1">
                     <span className="text-[10px] text-slate-400">Bitis</span>
-                    <input type="number" min={1} max={totalPages} value={toPage} onChange={e => setToPage(parseInt(e.target.value) || 1)}
+                    <input type="number" min={1} max={totalPages} value={toPage}
+                      onChange={e => setToPage(parseInt(e.target.value) || 1)}
                       className="w-24 h-9 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg text-center text-sm font-bold focus:outline-none focus:border-orange-500" />
                   </div>
                   <div className="mt-4">
-                    <button onClick={() => { setFromPage(1); setToPage(totalPages); }} className="text-xs text-orange-500 hover:text-orange-600 font-medium underline">
+                    <button onClick={() => { setFromPage(1); setToPage(totalPages); }}
+                      className="text-xs text-orange-500 hover:text-orange-600 font-medium underline">
                       Tum sayfalar
                     </button>
                   </div>
@@ -180,7 +211,9 @@ export const EqualizePagesModal = () => {
               </div>
               <button onClick={handleScan} disabled={isScanning}
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white font-semibold text-sm transition-colors">
-                {isScanning ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Taraniyor...</>) : (<><ScanLine className="w-4 h-4" />Sayfa Boyutlarini Tara</>)}
+                {isScanning
+                  ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Taraniyor...</>
+                  : <><ScanLine className="w-4 h-4" />Sayfa Boyutlarini Tara</>}
               </button>
             </>
           )}
@@ -189,31 +222,45 @@ export const EqualizePagesModal = () => {
             <>
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-400">Bulunan Boyutlar ({fromPage}-{toPage}. sayfalar)</label>
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-400">
+                    Bulunan Boyutlar ({fromPage}-{toPage}. sayfalar)
+                  </label>
                   <button onClick={() => setStep('range')} className="text-xs text-slate-400 hover:text-slate-600 underline">Degistir</button>
                 </div>
                 <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
                   {sizeGroups.map(g => (
-                    <label key={g.key} className={cn('flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors', !useCustom && selectedKey === g.key ? 'border-orange-400 bg-orange-50 dark:bg-orange-950/30' : 'border-slate-200 dark:border-slate-700 hover:border-orange-300')}>
-                      <input type="radio" name="sizeTarget" checked={!useCustom && selectedKey === g.key} onChange={() => { setSelectedKey(g.key); setUseCustom(false); }} className="accent-orange-500" />
+                    <label key={g.key} className={cn(
+                      'flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors',
+                      !useCustom && selectedKey === g.key
+                        ? 'border-orange-400 bg-orange-50 dark:bg-orange-950/30'
+                        : 'border-slate-200 dark:border-slate-700 hover:border-orange-300')}>
+                      <input type="radio" name="sizeTarget" checked={!useCustom && selectedKey === g.key}
+                        onChange={() => { setSelectedKey(g.key); setUseCustom(false); }} className="accent-orange-500" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">{g.label}</span>
-                          {maxAreaGroup && g.key === maxAreaGroup.key && (<span className="text-[10px] bg-orange-100 dark:bg-orange-900/40 text-orange-600 dark:text-orange-400 px-1.5 py-0.5 rounded-full font-medium">En Buyuk</span>)}
+                          {maxAreaGroup && g.key === maxAreaGroup.key && (
+                            <span className="text-[10px] bg-orange-100 dark:bg-orange-900/40 text-orange-600 dark:text-orange-400 px-1.5 py-0.5 rounded-full font-medium">En Buyuk</span>
+                          )}
                         </div>
                         <p className="text-[11px] text-slate-400 mt-0.5">{g.pages.length} sayfa — {formatPageList(g.pages)}</p>
                       </div>
                     </label>
                   ))}
-                  <label className={cn('flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors', useCustom ? 'border-orange-400 bg-orange-50 dark:bg-orange-950/30' : 'border-slate-200 dark:border-slate-700 hover:border-orange-300')}>
-                    <input type="radio" name="sizeTarget" checked={useCustom} onChange={() => setUseCustom(true)} className="accent-orange-500 mt-0.5" />
+                  <label className={cn(
+                    'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors',
+                    useCustom ? 'border-orange-400 bg-orange-50 dark:bg-orange-950/30' : 'border-slate-200 dark:border-slate-700 hover:border-orange-300')}>
+                    <input type="radio" name="sizeTarget" checked={useCustom}
+                      onChange={() => setUseCustom(true)} className="accent-orange-500 mt-0.5" />
                     <div className="flex-1">
                       <span className="text-sm font-semibold text-slate-900 dark:text-white">Ozel Boyut</span>
                       {useCustom && (
                         <div className="flex items-center gap-2 mt-2">
-                          <input type="number" placeholder="Genislik" value={customW} onChange={e => setCustomW(e.target.value)} className="w-24 h-8 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg px-2 text-sm focus:outline-none focus:border-orange-500" />
+                          <input type="number" placeholder="Genislik" value={customW} onChange={e => setCustomW(e.target.value)}
+                            className="w-24 h-8 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg px-2 text-sm focus:outline-none focus:border-orange-500" />
                           <span className="text-slate-400">x</span>
-                          <input type="number" placeholder="Yukseklik" value={customH} onChange={e => setCustomH(e.target.value)} className="w-24 h-8 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg px-2 text-sm focus:outline-none focus:border-orange-500" />
+                          <input type="number" placeholder="Yukseklik" value={customH} onChange={e => setCustomH(e.target.value)}
+                            className="w-24 h-8 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg px-2 text-sm focus:outline-none focus:border-orange-500" />
                           <span className="text-[11px] text-slate-400">mm</span>
                         </div>
                       )}
@@ -224,7 +271,8 @@ export const EqualizePagesModal = () => {
               <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-300">
                 Kucuk sayfalar beyaz boslukla tamamlanip <strong>ortalanir</strong>. Icerik kesilmez.
               </div>
-              <button onClick={handleApply} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-semibold text-sm transition-colors">
+              <button onClick={handleApply}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-semibold text-sm transition-colors">
                 <Download className="w-4 h-4" />Esitle ve Indir
               </button>
             </>
@@ -249,7 +297,10 @@ export const EqualizePagesModal = () => {
                 <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Hedef: <strong>{getTargetLabel()}</strong></p>
                 <p className="text-xs text-slate-400 mt-1">{resultFilename} indirildi</p>
               </div>
-              <button onClick={handleClose} className="px-6 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm font-medium transition-colors">Kapat</button>
+              <button onClick={handleClose}
+                className="px-6 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm font-medium transition-colors">
+                Kapat
+              </button>
             </div>
           )}
         </div>
