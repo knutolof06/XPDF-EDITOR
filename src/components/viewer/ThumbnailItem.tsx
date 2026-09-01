@@ -3,6 +3,7 @@ import { PdfPageModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
 import { thumbnailCache } from '@/core/cache/render-cache';
+import { enqueueThumbnail } from '@/core/cache/thumbnail-queue';
 import { historyManager, MoveMultiplePagesCommand, RotatePageCommand, DeletePageCommand } from '@/core/history/command-manager';
 import { binaryStore } from '@/core/storage/binary-store';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
@@ -47,7 +48,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         }
       },
       {
-        rootMargin: '300px 0px 300px 0px',
+        rootMargin: '100px 0px 100px 0px', // was 300px — reduced to avoid mass-loading
         threshold: 0.01,
       }
     );
@@ -57,10 +58,12 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   }, []);
 
   useEffect(() => {
+    if (!isVisible || isRendered) return;
+
     let isCancelled = false;
 
     async function renderThumbnail() {
-      if (!isVisible || !pdfDocProxy || !canvasRef.current) return;
+      if (!pdfDocProxy || !canvasRef.current) return;
 
       const cacheKey = `thumb_${page.id}_rot${page.rotation}`;
       const cachedData = thumbnailCache.get(cacheKey);
@@ -84,46 +87,42 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
         if (isCancelled) return;
 
-        const targetWidth = 140;
+        const targetWidth = 130; // slightly smaller = faster
         const unscaledViewport = pdfPage.getViewport({ scale: 1.0, rotation: page.rotation });
         const scale = targetWidth / unscaledViewport.width;
         const viewport = pdfPage.getViewport({ scale, rotation: page.rotation });
 
+        if (isCancelled || !canvasRef.current) return;
         const canvas = canvasRef.current;
-        if (!canvas) return;
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
 
-        const renderTask = pdfPage.render({
-          canvasContext: ctx,
-          viewport,
-        });
-
+        const renderTask = pdfPage.render({ canvasContext: ctx, viewport });
         await renderTask.promise;
         if (isCancelled) return;
 
         setIsRendered(true);
 
         try {
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.55);
           thumbnailCache.set(cacheKey, dataUrl);
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
       } catch (err) {
-        console.error('Thumbnail render error:', err);
+        if (!isCancelled) console.error('Thumbnail render error:', err);
       }
     }
 
-    renderThumbnail();
+    // Enqueue with priority = page index so visible pages render first
+    const cancelQueue = enqueueThumbnail(renderThumbnail, index);
 
     return () => {
       isCancelled = true;
+      cancelQueue();
     };
-  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, page.id]);
+  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, page.id, index, isRendered]);
 
   // Instant Drag Start — Enables zero-latency drag mode + Native Drag-to-Desktop
   const handleDragStart = useCallback(async (e: React.DragEvent) => {

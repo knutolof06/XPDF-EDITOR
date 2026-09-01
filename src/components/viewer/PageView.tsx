@@ -4,6 +4,7 @@ import { PdfPageModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore } from '@/store/viewer-store';
 import { AnnotationLayer } from './AnnotationLayer';
+import { enqueuePageRender } from '@/core/cache/thumbnail-queue';
 import { cn } from '@/utils/cn';
 
 interface PageViewProps {
@@ -59,7 +60,7 @@ export const PageView: React.FC<PageViewProps> = ({
         }
       },
       {
-        rootMargin: '300px 0px 300px 0px', // Preload ~1 page before appearing
+        rootMargin: '200px 0px 200px 0px', // was 300px
         threshold: 0.01,
       }
     );
@@ -73,23 +74,22 @@ export const PageView: React.FC<PageViewProps> = ({
 
   useEffect(() => {
     let isCancelled = false;
+    let cancelQueue: (() => void) | null = null;
+
+    if (!isVisible) return;
 
     async function renderPage() {
-      if (!isVisible || !pdfDocProxy || !canvasRef.current) return;
+      if (!pdfDocProxy || !canvasRef.current) return;
 
       if (renderTaskRef.current) {
-        try {
-          renderTaskRef.current.cancel();
-        } catch {
-          // ignore
-        }
+        try { renderTaskRef.current.cancel(); } catch { /* ignore */ }
       }
 
       try {
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
         if (isCancelled) return;
 
-        const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap at 2x for high performance
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5); // Cap at 1.5x (was 2x) — faster
         const viewport = pdfPage.getViewport({
           scale: renderScale * dpr,
           rotation: page.rotation,
@@ -110,12 +110,7 @@ export const PageView: React.FC<PageViewProps> = ({
         canvas.style.width = `${Math.floor(cssViewport.width)}px`;
         canvas.style.height = `${Math.floor(cssViewport.height)}px`;
 
-        const renderContext = {
-          canvasContext: ctx,
-          viewport,
-        };
-
-        const task = pdfPage.render(renderContext);
+        const task = pdfPage.render({ canvasContext: ctx, viewport });
         renderTaskRef.current = task;
 
         await task.promise;
@@ -195,18 +190,14 @@ export const PageView: React.FC<PageViewProps> = ({
       }
     }
 
-    if (isVisible) {
-      renderPage();
-    }
+    // Use priority = index so lower pages render first when many are visible
+    cancelQueue = enqueuePageRender(renderPage, index);
 
     return () => {
       isCancelled = true;
+      cancelQueue?.();
       if (renderTaskRef.current) {
-        try {
-          renderTaskRef.current.cancel();
-        } catch {
-          // ignore
-        }
+        try { renderTaskRef.current.cancel(); } catch { /* ignore */ }
       }
     };
   }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale, index]);
