@@ -47,6 +47,7 @@ export interface PdfMetadata {
 export interface PdfDocumentModel {
   id: string;
   name: string;
+  filePath?: string;   // Disk path when opened from filesystem (Electron). Undefined for browser-opened files.
   fileSize: number;
   totalPages: number;
   pages: PdfPageModel[];

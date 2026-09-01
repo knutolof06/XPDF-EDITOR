@@ -78,7 +78,11 @@ export const App: React.FC = () => {
         if (fileData && fileData.buffer) {
           try {
             addToast(`"${fileData.name}" açılıyor...`, 'info');
-            const { model, pdfDoc } = await PdfLoader.loadDocument(fileData.name, fileData.buffer);
+            const { model, pdfDoc } = await PdfLoader.loadDocument(
+              fileData.name,
+              fileData.buffer,
+              fileData.path || undefined   // store disk path for Kaydet (overwrite)
+            );
             setDocument(model, pdfDoc);
             addTab(model, pdfDoc);
             addRecentDocument({

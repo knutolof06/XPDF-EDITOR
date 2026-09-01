@@ -45,7 +45,8 @@ export class PdfLoader {
    */
   public static async loadDocument(
     name: string,
-    data: any
+    data: any,
+    filePath?: string
   ): Promise<LoadedPdfResult> {
     const rawBuffer = toArrayBuffer(data);
     const id = crypto.randomUUID ? crypto.randomUUID() : 'doc_' + Date.now();
@@ -108,6 +109,7 @@ export class PdfLoader {
     const model: PdfDocumentModel = {
       id,
       name,
+      filePath,
       totalPages,
       pages,
       activePageIndex: 0,

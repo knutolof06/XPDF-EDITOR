@@ -104,24 +104,72 @@ export const TopToolbar: React.FC = () => {
     }
   };
 
-  const handleExportPdf = async () => {
+  // Kaydet: Orijinal dosyanın üzerine yaz (filePath varsa), yoksa Farklı Kaydet'e düşer
+  const handleSave = async () => {
     if (!currentDocument) return;
+    const electron = (window as any).electronAPI;
     try {
-      addToast('PDF ve tüm düzenlemeler dışa aktarılıyor...', 'info');
+      addToast('Kaydediliyor...', 'info');
       const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
-      const blob = new Blob([rawOut], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
 
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = currentDocument.name.replace(/\.pdf$/i, '') + '_edited.pdf';
-      a.click();
-      URL.revokeObjectURL(url);
-
-      addToast('PDF başarıyla kaydedildi!', 'success');
+      if (electron?.saveFile && currentDocument.filePath) {
+        // Electron: Doğrudan orijinal dosyanın üzerine yaz
+        const result = await electron.saveFile(currentDocument.filePath, rawOut);
+        if (result?.success) {
+          addToast(`"${currentDocument.name}" kaydedildi!`, 'success');
+        } else {
+          addToast('Kaydetme hatası: ' + (result?.error || 'bilinmeyen hata'), 'error');
+        }
+      } else {
+        // Tarayıcı / dosya yolu yok → indirme olarak kaydet (aynı isim)
+        const blob = new Blob([rawOut], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = currentDocument.name;
+        a.click();
+        URL.revokeObjectURL(url);
+        addToast(`"${currentDocument.name}" kaydedildi!`, 'success');
+      }
     } catch (err: any) {
-      console.error('Export error:', err);
-      addToast('PDF kaydedilirken hata oluştu.', 'error');
+      console.error('Save error:', err);
+      addToast('Kaydetme hatası oluştu.', 'error');
+    }
+  };
+
+  // Farklı Kaydet: Her zaman kayıt konumu sor
+  const handleSaveAs = async () => {
+    if (!currentDocument) return;
+    const electron = (window as any).electronAPI;
+    try {
+      addToast('Dışa aktarılıyor...', 'info');
+      const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
+
+      if (electron?.showSaveDialog) {
+        // Electron: Yerel Windows kayıt diyaloğu
+        const defaultName = currentDocument.name.replace(/\.pdf$/i, '') + '_edited.pdf';
+        const savePath = await electron.showSaveDialog({ defaultPath: defaultName });
+        if (!savePath) return; // İptal edildi
+        const result = await electron.saveFile(savePath, rawOut);
+        if (result?.success) {
+          addToast(`"${savePath.split('\\').pop()}" kaydedildi!`, 'success');
+        } else {
+          addToast('Kaydetme hatası: ' + (result?.error || ''), 'error');
+        }
+      } else {
+        // Tarayıcı fallback: indir
+        const blob = new Blob([rawOut], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = currentDocument.name.replace(/\.pdf$/i, '') + '_edited.pdf';
+        a.click();
+        URL.revokeObjectURL(url);
+        addToast('PDF başarıyla dışa aktarıldı!', 'success');
+      }
+    } catch (err: any) {
+      console.error('SaveAs error:', err);
+      addToast('Dışa aktarma hatası oluştu.', 'error');
     }
   };
 
@@ -158,15 +206,26 @@ export const TopToolbar: React.FC = () => {
           <span className="hidden md:inline">Aç</span>
         </button>
 
-        {/* Save / Export */}
+        {/* Save / Save As */}
         {currentDocument && (
-          <button
-            onClick={handleExportPdf}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white transition-colors shadow-sm shadow-sky-600/30"
-            title="Değişiklikleri Kaydet / Dışa Aktar (Ctrl + S)"
-          >
-            Kaydet
-          </button>
+          <div className="flex items-center rounded-lg overflow-hidden border border-sky-600/60 shadow-sm shadow-sky-600/20">
+            <button
+              onClick={handleSave}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white transition-colors"
+              title={currentDocument.filePath ? `Kaydet — ${currentDocument.filePath} (Ctrl+S)` : 'Kaydet (Ctrl+S)'}
+            >
+              Kaydet
+            </button>
+            <div className="w-px h-full bg-sky-500/40" />
+            <button
+              onClick={handleSaveAs}
+              className="flex items-center gap-1 px-2 py-1.5 bg-sky-700 hover:bg-sky-600 text-xs font-semibold text-white transition-colors"
+              title="Farklı Kaydet — yeni konuma kaydet (Ctrl+Shift+S)"
+            >
+              <span className="hidden sm:inline text-sky-200">Farklı</span>
+              <span className="text-sky-100">↓</span>
+            </button>
+          </div>
         )}
 
         {/* Undo / Redo */}
