@@ -190,8 +190,8 @@ export const PageView: React.FC<PageViewProps> = ({
       }
     }
 
-    // Use priority = index so lower pages render first when many are visible
-    cancelQueue = enqueuePageRender(renderPage, index);
+    // Auto-prioritized: currently visible page gets highest priority immediately (LIFO)
+    cancelQueue = enqueuePageRender(renderPage);
 
     return () => {
       isCancelled = true;
@@ -200,7 +200,7 @@ export const PageView: React.FC<PageViewProps> = ({
         try { renderTaskRef.current.cancel(); } catch { /* ignore */ }
       }
     };
-  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale, index]);
+  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale]);
 
   const transitionClass = {
     classic: 'page-transition-classic',

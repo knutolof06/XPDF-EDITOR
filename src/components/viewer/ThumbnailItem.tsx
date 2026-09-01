@@ -43,12 +43,16 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) {
+        const entry = entries[0];
+        if (entry.isIntersecting) {
           setIsVisible(true);
+        } else {
+          // Scrolled away before rendering: cancel
+          setIsVisible(false);
         }
       },
       {
-        rootMargin: '100px 0px 100px 0px', // was 300px — reduced to avoid mass-loading
+        rootMargin: '150px 0px 150px 0px',
         threshold: 0.01,
       }
     );
@@ -66,35 +70,33 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       if (!pdfDocProxy || !canvasRef.current) return;
 
       const cacheKey = `thumb_${page.id}_rot${page.rotation}`;
-      const cachedData = thumbnailCache.get(cacheKey);
+      const cachedBitmap = thumbnailCache.get(cacheKey);
 
-      if (cachedData) {
-        const img = new Image();
-        img.onload = () => {
-          if (isCancelled || !canvasRef.current) return;
-          const ctx = canvasRef.current.getContext('2d');
-          if (!ctx) return;
-          canvasRef.current.width = img.width;
-          canvasRef.current.height = img.height;
-          ctx.drawImage(img, 0, 0);
+      // Instant hardware-accelerated GPU draw from ImageBitmap cache
+      if (cachedBitmap && canvasRef.current) {
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          canvas.width = cachedBitmap.width;
+          canvas.height = cachedBitmap.height;
+          ctx.drawImage(cachedBitmap, 0, 0);
           setIsRendered(true);
-        };
-        img.src = cachedData;
-        return;
+          return;
+        }
       }
 
       try {
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
-        if (isCancelled) return;
+        if (isCancelled || !canvasRef.current) return;
 
-        const targetWidth = 130; // slightly smaller = faster
+        const targetWidth = 140;
         const unscaledViewport = pdfPage.getViewport({ scale: 1.0, rotation: page.rotation });
         const scale = targetWidth / unscaledViewport.width;
         const viewport = pdfPage.getViewport({ scale, rotation: page.rotation });
 
         if (isCancelled || !canvasRef.current) return;
         const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { alpha: false });
         if (!ctx) return;
 
         canvas.width = Math.floor(viewport.width);
@@ -107,22 +109,25 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         setIsRendered(true);
 
         try {
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.55);
-          thumbnailCache.set(cacheKey, dataUrl);
+          if (typeof createImageBitmap === 'function') {
+            createImageBitmap(canvas).then((bmp) => {
+              thumbnailCache.set(cacheKey, bmp);
+            });
+          }
         } catch { /* ignore */ }
       } catch (err) {
         if (!isCancelled) console.error('Thumbnail render error:', err);
       }
     }
 
-    // Enqueue with priority = page index so visible pages render first
-    const cancelQueue = enqueueThumbnail(renderThumbnail, index);
+    // Auto-prioritized: currently visible items get top priority (LIFO)
+    const cancelQueue = enqueueThumbnail(renderThumbnail);
 
     return () => {
       isCancelled = true;
       cancelQueue();
     };
-  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, page.id, index, isRendered]);
+  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, page.id, isRendered]);
 
   // Instant Drag Start — Enables zero-latency drag mode + Native Drag-to-Desktop
   const handleDragStart = useCallback(async (e: React.DragEvent) => {

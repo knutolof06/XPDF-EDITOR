@@ -1,6 +1,9 @@
-﻿/**
- * Generic Render Queue
- * Limits concurrent PDF.js renders to avoid overwhelming the worker.
+/**
+ * High-Performance Render Queue
+ * - Prioritizes the most recently visible items (newest timestamp / LIFO first).
+ * - Allows 6 concurrent thumbnail renders (fast parallel worker batching).
+ * - Allows 4 concurrent main page renders.
+ * - Instantly drops cancelled tasks without blocking the queue.
  */
 
 type RenderTask = () => Promise<void>;
@@ -12,25 +15,41 @@ interface QueueEntry {
   priority: number;
 }
 
+let globalSeq = 0;
+
 function createQueue(maxConcurrent: number) {
   let running = 0;
   const queue: QueueEntry[] = [];
 
   function runNext() {
     while (running < maxConcurrent && queue.length > 0) {
-      queue.sort((a, b) => a.priority - b.priority);
+      // Sort descending: highest priority (most recently visible item) runs first!
+      queue.sort((a, b) => b.priority - a.priority);
       const entry = queue.shift();
       if (!entry) break;
-      if (entry.cancelled) { runNext(); return; }
+      if (entry.cancelled) {
+        continue;
+      }
       running++;
-      entry.task().finally(() => { running--; runNext(); });
+      entry
+        .task()
+        .catch(() => {})
+        .finally(() => {
+          running--;
+          runNext();
+        });
     }
   }
 
-  function enqueue(task: RenderTask, priority = 9999): () => void {
+  function enqueue(task: RenderTask, priority?: number): () => void {
+    const p = priority !== undefined ? priority : ++globalSeq;
     const entry: QueueEntry = {
-      task, cancelled: false, priority,
-      cancel: () => { entry.cancelled = true; },
+      task,
+      cancelled: false,
+      priority: p,
+      cancel: () => {
+        entry.cancelled = true;
+      },
     };
     queue.push(entry);
     runNext();
@@ -38,19 +57,22 @@ function createQueue(maxConcurrent: number) {
   }
 
   function clear() {
-    queue.forEach(e => (e.cancelled = true));
+    for (const e of queue) {
+      e.cancelled = true;
+    }
     queue.length = 0;
   }
 
   return { enqueue, clear };
 }
 
-// Thumbnail queue: max 2 concurrent (sidebar + page manager)
-const thumbnailQ = createQueue(2);
+// 6 concurrent thumbnails for sidebar & page manager grid
+const thumbnailQ = createQueue(6);
 export const enqueueThumbnail = thumbnailQ.enqueue;
 export const clearThumbnailQueue = thumbnailQ.clear;
 
-// Main page render queue: max 3 concurrent (viewer scroll)
-const pageQ = createQueue(3);
+// 4 concurrent page renders for main viewer
+const pageQ = createQueue(4);
 export const enqueuePageRender = pageQ.enqueue;
 export const clearPageRenderQueue = pageQ.clear;
+

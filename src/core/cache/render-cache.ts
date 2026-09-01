@@ -6,9 +6,11 @@ interface CacheEntry<T> {
 export class LRUCache<T> {
   private cache: Map<string, CacheEntry<T>> = new Map();
   private maxItems: number;
+  private onEvict?: (value: T) => void;
 
-  constructor(maxItems: number = 30) {
+  constructor(maxItems: number = 30, onEvict?: (value: T) => void) {
     this.maxItems = maxItems;
+    this.onEvict = onEvict;
   }
 
   public get(key: string): T | undefined {
@@ -33,6 +35,14 @@ export class LRUCache<T> {
       }
 
       if (oldestKey) {
+        const item = this.cache.get(oldestKey);
+        if (item && this.onEvict) {
+          try {
+            this.onEvict(item.value);
+          } catch {
+            // ignore
+          }
+        }
         this.cache.delete(oldestKey);
       }
     }
@@ -45,6 +55,15 @@ export class LRUCache<T> {
   }
 
   public clear(): void {
+    if (this.onEvict) {
+      for (const entry of this.cache.values()) {
+        try {
+          this.onEvict(entry.value);
+        } catch {
+          // ignore
+        }
+      }
+    }
     this.cache.clear();
   }
 
@@ -55,5 +74,12 @@ export class LRUCache<T> {
 
 // Global caches
 export const pageRenderCache = new LRUCache<HTMLCanvasElement>(15);
-export const thumbnailCache = new LRUCache<string>(100);
+export const thumbnailCache = new LRUCache<ImageBitmap>(300, (bmp) => {
+  try {
+    bmp.close?.();
+  } catch {
+    // ignore
+  }
+});
 export const pageBlobCache = new Map<string, string>();
+
