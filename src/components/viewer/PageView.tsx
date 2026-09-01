@@ -28,11 +28,10 @@ export const PageView: React.FC<PageViewProps> = ({
 
   const [isVisible, setIsVisible] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
-  // renderScale is debounced: layout uses immediate `scale`, canvas renders after zoom settles
   const [renderScale, setRenderScale] = useState(scale);
   const { pdfDocProxy: globalPdfDocProxy } = useDocumentStore();
   const pdfDocProxy = customPdfDocProxy || globalPdfDocProxy;
-  const { pageTransition } = useViewerStore();
+  const { pageTransition, searchState } = useViewerStore();
 
   // Debounce renderScale: update 200ms after scale stops changing
   useEffect(() => {
@@ -45,7 +44,7 @@ export const PageView: React.FC<PageViewProps> = ({
     };
   }, [scale]);
 
-  // IntersectionObserver: Only render pages that are near/inside viewport (Rule 2)
+  // IntersectionObserver: Only render pages that are near/inside viewport
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -60,18 +59,16 @@ export const PageView: React.FC<PageViewProps> = ({
         }
       },
       {
-        rootMargin: '200px 0px 200px 0px', // was 300px
+        rootMargin: '200px 0px 200px 0px',
         threshold: 0.01,
       }
     );
 
     observer.observe(el);
-
-    return () => {
-      observer.disconnect();
-    };
+    return () => observer.disconnect();
   }, []);
 
+  // Main Page Render Effect
   useEffect(() => {
     let isCancelled = false;
     let cancelQueue: (() => void) | null = null;
@@ -89,7 +86,7 @@ export const PageView: React.FC<PageViewProps> = ({
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
         if (isCancelled) return;
 
-        const dpr = Math.min(window.devicePixelRatio || 1, 1.5); // Cap at 1.5x (was 2x) — faster
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
         const viewport = pdfPage.getViewport({
           scale: renderScale * dpr,
           rotation: page.rotation,
@@ -118,10 +115,14 @@ export const PageView: React.FC<PageViewProps> = ({
 
         setIsRendered(true);
 
+        // Precise Text Layer Rendering (100% pixel matching with PDF canvas)
         if (textLayerRef.current) {
-          textLayerRef.current.innerHTML = '';
-          textLayerRef.current.style.width = `${Math.floor(cssViewport.width)}px`;
-          textLayerRef.current.style.height = `${Math.floor(cssViewport.height)}px`;
+          const container = textLayerRef.current;
+          container.innerHTML = '';
+          container.style.width = `${Math.floor(cssViewport.width)}px`;
+          container.style.height = `${Math.floor(cssViewport.height)}px`;
+          container.style.setProperty('--scale-factor', `${renderScale}`);
+          container.style.setProperty('--main-color', 'transparent');
 
           const textContent = await pdfPage.getTextContent();
           if (isCancelled || !textLayerRef.current) return;
@@ -133,7 +134,7 @@ export const PageView: React.FC<PageViewProps> = ({
               // @ts-ignore
               const textLayer = new pdfjsLib.TextLayer({
                 textContentSource: textContent,
-                container: textLayerRef.current,
+                container,
                 viewport: cssViewport,
               });
               await textLayer.render();
@@ -143,8 +144,9 @@ export const PageView: React.FC<PageViewProps> = ({
             console.warn('TextLayer render error:', tErr);
           }
 
+          // Fallback if official TextLayer unavailable: precise manual glyph positioning
           if (!renderedWithOfficial && textLayerRef.current) {
-            textLayerRef.current.innerHTML = '';
+            container.innerHTML = '';
             const fragment = document.createDocumentFragment();
             textContent.items.forEach((item: any) => {
               if (!item.str) return;
@@ -180,7 +182,7 @@ export const PageView: React.FC<PageViewProps> = ({
             endOfContent.className = 'endOfContent';
             fragment.appendChild(endOfContent);
 
-            textLayerRef.current.appendChild(fragment);
+            container.appendChild(fragment);
           }
         }
       } catch (err: any) {
@@ -202,6 +204,47 @@ export const PageView: React.FC<PageViewProps> = ({
     };
   }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale]);
 
+  // Search Highlighting Effect: Highlight matching keywords visibly on the page!
+  useEffect(() => {
+    if (!isRendered || !textLayerRef.current) return;
+    const container = textLayerRef.current;
+
+    // Clear existing highlights
+    const existingHighlights = container.querySelectorAll('.search-highlight');
+    existingHighlights.forEach((el) => {
+      el.classList.remove('search-highlight', 'search-highlight-active');
+    });
+
+    if (!searchState.isOpen || !searchState.query || searchState.query.trim().length === 0) {
+      return;
+    }
+
+    const query = searchState.matchCase ? searchState.query : searchState.query.toLowerCase();
+    const currentGlobalMatch = searchState.results[searchState.currentIndex];
+    const isCurrentPage = currentGlobalMatch && currentGlobalMatch.pageIndex === index;
+    const activeMatchIndexOnPage = isCurrentPage ? currentGlobalMatch.matchIndex : -1;
+
+    const spans = Array.from(container.querySelectorAll('span'));
+    let pageMatchCounter = 0;
+
+    for (const span of spans) {
+      const rawText = span.textContent || '';
+      const text = searchState.matchCase ? rawText : rawText.toLowerCase();
+
+      if (text.includes(query)) {
+        const isActive = pageMatchCounter === activeMatchIndexOnPage;
+        span.classList.add('search-highlight');
+
+        if (isActive) {
+          span.classList.add('search-highlight-active');
+          // Smooth scroll to highlight if active
+          span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        pageMatchCounter++;
+      }
+    }
+  }, [isRendered, searchState.isOpen, searchState.query, searchState.matchCase, searchState.currentIndex, searchState.results, index]);
+
   const transitionClass = {
     classic: 'page-transition-classic',
     slide: 'page-transition-slide',
@@ -210,7 +253,7 @@ export const PageView: React.FC<PageViewProps> = ({
     book: 'page-transition-stack',
     zoom: 'page-transition-zoom',
     instant: '',
-  }[pageTransition] || 'page-transition-smooth';
+  }[pageTransition] || '';
 
   const baseWidth = (page.width || 595.28) * scale;
   const baseHeight = (page.height || 841.89) * scale;
@@ -226,7 +269,7 @@ export const PageView: React.FC<PageViewProps> = ({
         height: `${Math.floor(baseHeight)}px`,
       }}
       className={cn(
-        'relative bg-white shadow-2xl rounded-sm overflow-hidden flex items-center justify-center my-4 transition-transform duration-200 contain-paint',
+        'relative bg-white shadow-2xl rounded-sm overflow-hidden my-4 transition-transform duration-200 contain-paint',
         transitionClass
       )}
     >
@@ -235,15 +278,15 @@ export const PageView: React.FC<PageViewProps> = ({
           <canvas
             ref={canvasRef}
             className={cn(
-              'block select-none pointer-events-none transition-opacity duration-150',
+              'absolute left-0 top-0 block select-none pointer-events-none transition-opacity duration-150',
               isRendered ? 'opacity-100' : 'opacity-0'
             )}
           />
 
-          {/* PDF.js Text Layer */}
+          {/* PDF.js Text Layer with Exact Pixel Alignment */}
           <div
             ref={textLayerRef}
-            className="textLayer absolute inset-0 select-text cursor-text z-[2]"
+            className="textLayer absolute left-0 top-0 select-text cursor-text z-[2]"
           />
 
           {/* V3 Interactive Annotation Layer */}
@@ -258,7 +301,7 @@ export const PageView: React.FC<PageViewProps> = ({
           )}
         </>
       ) : (
-        /* Offscreen Placeholder (Zero CPU cost, maintains exact scroll layout) */
+        /* Offscreen Placeholder */
         <div className="absolute inset-0 flex items-center justify-center bg-slate-50 text-slate-300">
           <span className="text-xs font-bold text-slate-400">Sayfa {index + 1}</span>
         </div>
