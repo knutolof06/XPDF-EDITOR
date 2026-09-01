@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { TextLayer } from 'pdfjs-dist';
 import { PdfPageModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore } from '@/store/viewer-store';
@@ -31,7 +32,8 @@ export const PageView: React.FC<PageViewProps> = ({
   const [renderScale, setRenderScale] = useState(scale);
   const { pdfDocProxy: globalPdfDocProxy } = useDocumentStore();
   const pdfDocProxy = customPdfDocProxy || globalPdfDocProxy;
-  const { pageTransition, searchState } = useViewerStore();
+  const pageTransition = useViewerStore((s) => s.pageTransition);
+  const searchState = useViewerStore((s) => s.searchState);
 
   // Debounce renderScale: update 200ms after scale stops changing
   useEffect(() => {
@@ -115,7 +117,7 @@ export const PageView: React.FC<PageViewProps> = ({
 
         setIsRendered(true);
 
-        // Precise Text Layer Rendering (100% pixel matching with PDF canvas)
+        // Precise Text Layer Rendering (Exact glyph mapping & font scaling)
         if (textLayerRef.current) {
           const container = textLayerRef.current;
           container.innerHTML = '';
@@ -129,10 +131,8 @@ export const PageView: React.FC<PageViewProps> = ({
 
           let renderedWithOfficial = false;
           try {
-            // @ts-ignore
-            if (typeof pdfjsLib.TextLayer === 'function') {
-              // @ts-ignore
-              const textLayer = new pdfjsLib.TextLayer({
+            if (typeof TextLayer === 'function') {
+              const textLayer = new TextLayer({
                 textContentSource: textContent,
                 container,
                 viewport: cssViewport,
@@ -144,7 +144,7 @@ export const PageView: React.FC<PageViewProps> = ({
             console.warn('TextLayer render error:', tErr);
           }
 
-          // Fallback if official TextLayer unavailable: precise manual glyph positioning
+          // Fallback if official TextLayer is unavailable: precise manual glyph transforms
           if (!renderedWithOfficial && textLayerRef.current) {
             container.innerHTML = '';
             const fragment = document.createDocumentFragment();
@@ -204,15 +204,19 @@ export const PageView: React.FC<PageViewProps> = ({
     };
   }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale]);
 
-  // Search Highlighting Effect: Highlight matching keywords visibly on the page!
+  // Robust Search Highlighting Effect (Highlights exact words and glows active match on every step)
   useEffect(() => {
     if (!isRendered || !textLayerRef.current) return;
     const container = textLayerRef.current;
 
-    // Clear existing highlights
-    const existingHighlights = container.querySelectorAll('.search-highlight');
-    existingHighlights.forEach((el) => {
-      el.classList.remove('search-highlight', 'search-highlight-active');
+    // 1. Clean up any existing mark highlights and restore raw text content
+    const existingMarks = container.querySelectorAll('mark.search-highlight');
+    existingMarks.forEach((mark) => {
+      const parent = mark.parentNode;
+      if (parent) {
+        parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
+        parent.normalize();
+      }
     });
 
     if (!searchState.isOpen || !searchState.query || searchState.query.trim().length === 0) {
@@ -224,26 +228,71 @@ export const PageView: React.FC<PageViewProps> = ({
     const isCurrentPage = currentGlobalMatch && currentGlobalMatch.pageIndex === index;
     const activeMatchIndexOnPage = isCurrentPage ? currentGlobalMatch.matchIndex : -1;
 
-    const spans = Array.from(container.querySelectorAll('span'));
-    let pageMatchCounter = 0;
+    // Get only direct top-level spans to prevent duplicate matches in nested children
+    const allSpans = Array.from(container.querySelectorAll('span')).filter(
+      (span) => !span.parentElement || span.parentElement.tagName !== 'SPAN'
+    );
 
-    for (const span of spans) {
-      const rawText = span.textContent || '';
-      const text = searchState.matchCase ? rawText : rawText.toLowerCase();
+    let matchCounter = 0;
+    let activeMarkEl: HTMLElement | null = null;
 
-      if (text.includes(query)) {
-        const isActive = pageMatchCounter === activeMatchIndexOnPage;
-        span.classList.add('search-highlight');
+    for (const span of allSpans) {
+      const text = span.textContent || '';
+      const compText = searchState.matchCase ? text : text.toLowerCase();
+      if (!compText.includes(query)) continue;
+
+      const frag = document.createDocumentFragment();
+      let lastIdx = 0;
+      let pos = 0;
+
+      while ((pos = compText.indexOf(query, lastIdx)) !== -1) {
+        // Preceding text
+        if (pos > lastIdx) {
+          frag.appendChild(document.createTextNode(text.substring(lastIdx, pos)));
+        }
+
+        // Matched keyword
+        const matchText = text.substring(pos, pos + query.length);
+        const mark = document.createElement('mark');
+        mark.textContent = matchText;
+        const isActive = matchCounter === activeMatchIndexOnPage;
+
+        mark.className = isActive
+          ? 'search-highlight search-highlight-active'
+          : 'search-highlight';
 
         if (isActive) {
-          span.classList.add('search-highlight-active');
-          // Smooth scroll to highlight if active
-          span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          activeMarkEl = mark;
         }
-        pageMatchCounter++;
+
+        frag.appendChild(mark);
+        matchCounter++;
+        lastIdx = pos + query.length;
       }
+
+      // Trailing text
+      if (lastIdx < text.length) {
+        frag.appendChild(document.createTextNode(text.substring(lastIdx)));
+      }
+
+      span.innerHTML = '';
+      span.appendChild(frag);
     }
-  }, [isRendered, searchState.isOpen, searchState.query, searchState.matchCase, searchState.currentIndex, searchState.results, index]);
+
+    if (activeMarkEl) {
+      requestAnimationFrame(() => {
+        activeMarkEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    }
+  }, [
+    isRendered,
+    searchState.isOpen,
+    searchState.query,
+    searchState.matchCase,
+    searchState.currentIndex,
+    searchState.results,
+    index,
+  ]);
 
   const transitionClass = {
     classic: 'page-transition-classic',

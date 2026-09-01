@@ -65,18 +65,24 @@ export const SearchOverlay: React.FC = () => {
 
   // Jump to page on next / prev result
   const handleNext = () => {
+    if (searchState.results.length === 0) return;
+    const nextIdx = (searchState.currentIndex + 1) % searchState.results.length;
     nextSearchResult();
-    const curr = searchState.results[searchState.currentIndex + 1] || searchState.results[0];
-    if (curr) {
-      setActivePageIndex(curr.pageIndex);
+    const target = searchState.results[nextIdx];
+    if (target) {
+      setActivePageIndex(target.pageIndex);
     }
   };
 
   const handlePrev = () => {
+    if (searchState.results.length === 0) return;
+    const prevIdx =
+      (searchState.currentIndex - 1 + searchState.results.length) %
+      searchState.results.length;
     prevSearchResult();
-    const curr = searchState.results[searchState.currentIndex - 1] || searchState.results[searchState.results.length - 1];
-    if (curr) {
-      setActivePageIndex(curr.pageIndex);
+    const target = searchState.results[prevIdx];
+    if (target) {
+      setActivePageIndex(target.pageIndex);
     }
   };
 
