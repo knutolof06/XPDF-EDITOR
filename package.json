@@ -47,6 +47,15 @@
         }
       ]
     },
+    "extraResources": [
+      {
+        "from": "tools/thumbnail-provider",
+        "to": "tools/thumbnail-provider",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "perMachine": false,
@@ -54,7 +63,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "XPDF Editor",
-      "artifactName": "XPDF-Editor-Kurulum-Setup.exe"
+      "artifactName": "XPDF-Editor-Kurulum-Setup.exe",
+      "include": "build/installer.nsh"
     }
   },
   "dependencies": {

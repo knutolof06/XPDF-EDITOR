@@ -123,8 +123,34 @@ function createWindow() {
   });
 }
 
+function ensureThumbnailProviderRegistered() {
+  if (process.platform !== 'win32') return;
+  try {
+    const isPackaged = app.isPackaged;
+    const candidates = [
+      path.join(process.resourcesPath, 'tools', 'thumbnail-provider', 'PdfThumbHandler.dll'),
+      path.join(process.resourcesPath, 'app', 'tools', 'thumbnail-provider', 'PdfThumbHandler.dll'),
+      path.join(path.dirname(app.getPath('exe')), 'tools', 'thumbnail-provider', 'PdfThumbHandler.dll'),
+      path.join(__dirname, '..', 'tools', 'thumbnail-provider', 'PdfThumbHandler.dll'),
+      'C:\\Program Files\\PDF24\\PdfThumbHandler.dll'
+    ];
+
+    const dllPath = candidates.find((p) => fs.existsSync(p));
+    if (dllPath) {
+      exec(`regsvr32.exe /s "${dllPath}"`, () => {
+        const thumbClsid = '{3AF5A38C-78A5-4CE1-BCE5-6421BF94DCAD}';
+        const psCmd = `Set-ItemProperty -Path "HKCU:\\Software\\Classes\\.pdf\\ShellEx\\{e357fccd-a995-4576-b01f-234630154e96}" -Name "(default)" -Value "${thumbClsid}" -Force -ErrorAction SilentlyContinue; Set-ItemProperty -Path "HKCU:\\Software\\Classes\\SystemFileAssociations\\.pdf\\ShellEx\\{e357fccd-a995-4576-b01f-234630154e96}" -Name "(default)" -Value "${thumbClsid}" -Force -ErrorAction SilentlyContinue; Set-ItemProperty -Path "HKCU:\\Software\\Classes\\PDF Document\\ShellEx\\{e357fccd-a995-4576-b01f-234630154e96}" -Name "(default)" -Value "${thumbClsid}" -Force -ErrorAction SilentlyContinue;`;
+        exec(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${psCmd}"`, () => {});
+      });
+    }
+  } catch (err) {
+    // ignore
+  }
+}
+
 app.whenReady().then(() => {
   createWindow();
+  ensureThumbnailProviderRegistered();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
