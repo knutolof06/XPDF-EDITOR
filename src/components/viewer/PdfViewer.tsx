@@ -35,7 +35,7 @@ export const PdfViewer: React.FC = () => {
         if (pageElement) {
           pageElement.scrollIntoView({
             behavior: 'auto',
-            block: 'center',
+            block: 'start',
             inline: 'center',
           });
         } else {
@@ -59,7 +59,7 @@ export const PdfViewer: React.FC = () => {
     if (pageElement) {
       pageElement.scrollIntoView({
         behavior: 'smooth',
-        block: 'center',
+        block: 'start',
         inline: 'center',
       });
     }
