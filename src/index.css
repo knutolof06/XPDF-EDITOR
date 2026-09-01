@@ -22,6 +22,16 @@
     --muted-foreground: 148 163 184;
     --border: 51 65 85;
   }
+
+  html, body, #root {
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+  }
 }
 
 /* Custom modern scrollbars */

@@ -33,10 +33,9 @@ export const PdfViewer: React.FC = () => {
         if (!containerRef.current) return;
         const pageElement = document.getElementById(`page-container-${targetPage}`);
         if (pageElement) {
-          pageElement.scrollIntoView({
+          containerRef.current.scrollTo({
+            top: Math.max(0, pageElement.offsetTop - 16),
             behavior: 'auto',
-            block: 'start',
-            inline: 'center',
           });
         } else {
           containerRef.current.scrollTop = currentTab?.scrollTop || 0;
@@ -56,12 +55,14 @@ export const PdfViewer: React.FC = () => {
     const pageElement = document.getElementById(
       `page-container-${currentDocument.activePageIndex}`
     );
-    if (pageElement) {
-      pageElement.scrollIntoView({
-        behavior: 'smooth',
-        block: 'start',
-        inline: 'center',
-      });
+    if (pageElement && containerRef.current) {
+      const targetTop = Math.max(0, pageElement.offsetTop - 16);
+      if (Math.abs(containerRef.current.scrollTop - targetTop) > 30) {
+        containerRef.current.scrollTo({
+          top: targetTop,
+          behavior: 'smooth',
+        });
+      }
     }
   }, [currentDocument?.activePageIndex]);
 
