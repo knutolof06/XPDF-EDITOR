@@ -129,8 +129,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     };
   }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, page.id, isRendered]);
 
-  // Instant Drag Start — Enables zero-latency drag mode + Native Drag-to-Desktop
-  const handleDragStart = useCallback(async (e: React.DragEvent) => {
+  // Instant Drag Start — 0ms Latency
+  const handleDragStart = useCallback((e: React.DragEvent) => {
     document.body.classList.add('is-dragging-page');
 
     const doc = useDocumentStore.getState().currentDocument;
@@ -146,43 +146,45 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     e.dataTransfer.setData('text/plain', movingPageIds.join(','));
     e.dataTransfer.effectAllowed = 'copyMove';
 
-    // Native Drag-Out to Desktop / File Explorer
+    // Asynchronous Drag-Out to Desktop (never blocks mouse dragging)
     if (typeof window !== 'undefined' && (window as any).electronAPI?.startDragPage) {
-      try {
-        const raw = binaryStore.get(doc.id);
-        if (raw) {
-          const srcDoc = await PDFDocument.load(raw.slice(0));
-          const outDoc = await PDFDocument.create();
-          const selectedPages = doc.pages.filter((p) => movingPageIds.includes(p.id));
-          const indices = selectedPages.map((p) => p.sourcePageIndex);
-          const copiedPages = await outDoc.copyPages(srcDoc, indices);
-          copiedPages.forEach((cp, i) => {
-            const orig = selectedPages[i];
-            if (orig && orig.rotation !== 0) {
-              try {
-                // @ts-ignore
-                cp.setRotation({ type: 'degrees', angle: orig.rotation });
-              } catch {
-                // fallback
+      setTimeout(async () => {
+        try {
+          const raw = binaryStore.get(doc.id);
+          if (raw) {
+            const srcDoc = await PDFDocument.load(raw.slice(0));
+            const outDoc = await PDFDocument.create();
+            const selectedPages = doc.pages.filter((p) => movingPageIds.includes(p.id));
+            const indices = selectedPages.map((p) => p.sourcePageIndex);
+            const copiedPages = await outDoc.copyPages(srcDoc, indices);
+            copiedPages.forEach((cp, i) => {
+              const orig = selectedPages[i];
+              if (orig && orig.rotation !== 0) {
+                try {
+                  // @ts-ignore
+                  cp.setRotation({ type: 'degrees', angle: orig.rotation });
+                } catch {
+                  // fallback
+                }
               }
-            }
-            outDoc.addPage(cp);
-          });
-          const bytes = await outDoc.save();
-          const baseName = doc.name.replace(/\.pdf$/i, '');
-          const fileName =
-            movingPageIds.length === 1
-              ? `${baseName}_sayfa_${page.displayPageNumber}.pdf`
-              : `${baseName}_${movingPageIds.length}_sayfa.pdf`;
+              outDoc.addPage(cp);
+            });
+            const bytes = await outDoc.save();
+            const baseName = doc.name.replace(/\.pdf$/i, '');
+            const fileName =
+              movingPageIds.length === 1
+                ? `${baseName}_sayfa_${page.displayPageNumber}.pdf`
+                : `${baseName}_${movingPageIds.length}_sayfa.pdf`;
 
-          (window as any).electronAPI.startDragPage({
-            fileName,
-            buffer: bytes,
-          });
+            (window as any).electronAPI.startDragPage({
+              fileName,
+              buffer: bytes,
+            });
+          }
+        } catch (err) {
+          console.error('Drag-to-desktop generation error:', err);
         }
-      } catch (err) {
-        console.error('Drag-to-desktop generation error:', err);
-      }
+      }, 50);
     }
   }, [page.id, page.displayPageNumber]);
 
@@ -353,8 +355,12 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={handleClick}
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: '140px 200px',
+      }}
       className={cn(
-        'group relative flex flex-col items-center p-2 rounded-xl cursor-grab active:cursor-grabbing border-2 select-none min-h-[120px]',
+        'group relative flex flex-col items-center p-2 rounded-xl cursor-grab active:cursor-grabbing border-2 select-none min-h-[120px] transition-transform duration-100 will-change-transform',
         isActive
           ? 'bg-sky-500/10 border-sky-500 shadow-md shadow-sky-500/10'
           : isSelected
@@ -396,7 +402,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         )}
 
         {/* Hover Quick Actions */}
-        <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 flex items-center gap-1 bg-white/95 dark:bg-slate-900/90 backdrop-blur-sm p-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-opacity z-20 shadow-sm">
+        <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-opacity z-20 shadow-sm">
           <button
             onClick={handleQuickDownload}
             className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-emerald-500 dark:hover:text-emerald-400 rounded transition-colors"

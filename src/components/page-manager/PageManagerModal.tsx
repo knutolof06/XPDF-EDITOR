@@ -25,6 +25,7 @@ import {
 
 interface CachedPageBound {
   id: string;
+  el: HTMLElement;
   left: number;
   top: number;
   right: number;
@@ -147,7 +148,7 @@ export const PageManagerModal: React.FC = () => {
     }
 
     try {
-      addToast('Seçili sayfalar yeni sekmede açılıyor...', 'info');
+      addToast('Seçili sayfalar yeni PDF olarak açılıyor...', 'info');
       const srcDoc = await PDFDocument.load(rawBuffer.slice(0));
       const outDoc = await PDFDocument.create();
 
@@ -165,22 +166,26 @@ export const PageManagerModal: React.FC = () => {
         pdfBytes.byteOffset + pdfBytes.byteLength
       ) as ArrayBuffer;
 
-      const newDocName = `${currentDocument.name.replace(/\.pdf$/i, '')}_yeni_${selectedCount}_sayfa.pdf`;
-      const loaded = await PdfLoader.loadDocument(newDocName, rawOut);
+      const baseName = currentDocument.name.replace(/\.pdf$/i, '');
+      const newFileName = `${baseName}_ayiklanan_${selectedCount}_sayfa.pdf`;
+
+      const loaded = await PdfLoader.loadDocument(newFileName, rawOut);
 
       setDocument(loaded.model, loaded.pdfDoc);
       addTab(loaded.model, loaded.pdfDoc);
       setPageManagerOpen(false);
-      addToast(`${selectedCount} sayfa yeni bir PDF sekmesi olarak açıldı!`, 'success');
+
+      addToast(`${selectedCount} sayfa yeni sekmede açıldı!`, 'success');
     } catch (err: any) {
       console.error(err);
       addToast('Yeni PDF açılırken hata oluştu.', 'error');
     }
   };
 
-  // Ultra-Fast 120 FPS Marquee Selection Handlers
+  // Ultra-Fast Zero-Allocation Marquee Selection Handlers
   const handleMouseDown = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('[draggable="true"]')) return;
+    // If clicking quick buttons or drag handles, don't start box selection
+    if ((e.target as HTMLElement).closest('button, [draggable="true"]')) return;
     if (e.button !== 0 || !gridContainerRef.current) return;
 
     const rect = gridContainerRef.current.getBoundingClientRect();
@@ -192,12 +197,13 @@ export const PageManagerModal: React.FC = () => {
     isMultiSelectModeRef.current = isMulti;
     startPosRef.current = { x: startX, y: startY };
 
-    // Pre-calculate positions of all thumbnails once on mouse down
+    // Pre-cache DOM elements and their coordinates ONCE on mouse down
     const elements = gridContainerRef.current.querySelectorAll('[data-page-id]');
     cachedBoundsRef.current = Array.from(elements).map((el) => {
       const htmlEl = el as HTMLElement;
       return {
         id: el.getAttribute('data-page-id')!,
+        el: htmlEl,
         left: htmlEl.offsetLeft,
         top: htmlEl.offsetTop,
         right: htmlEl.offsetLeft + htmlEl.offsetWidth,
@@ -237,7 +243,6 @@ export const PageManagerModal: React.FC = () => {
     const boxTop = Math.min(startY, currentY);
     const boxBottom = Math.max(startY, currentY);
 
-    // Direct DOM style update
     if (selectionBoxRef.current) {
       selectionBoxRef.current.style.left = `${boxLeft}px`;
       selectionBoxRef.current.style.top = `${boxTop}px`;
@@ -245,32 +250,25 @@ export const PageManagerModal: React.FC = () => {
       selectionBoxRef.current.style.height = `${boxBottom - boxTop}px`;
     }
 
-    // Pure-math collision check in memory
-    const intersectingIds: string[] = [];
+    // Pure math hit-testing over cached bounds (0 DOM queries)
     const bounds = cachedBoundsRef.current;
+    const intersectingIds: string[] = [];
 
     for (let i = 0; i < bounds.length; i++) {
       const b = bounds[i];
-      if (
+      const isInside =
         boxLeft < b.right &&
         boxRight > b.left &&
         boxTop < b.bottom &&
-        boxBottom > b.top
-      ) {
+        boxBottom > b.top;
+
+      if (isInside) {
         intersectingIds.push(b.id);
+        b.el.classList.add('ring-2', 'ring-sky-500', 'scale-[0.98]');
+      } else {
+        b.el.classList.remove('ring-2', 'ring-sky-500', 'scale-[0.98]');
       }
     }
-
-    // Direct DOM visual feedback without expensive React re-renders
-    const allThumbEls = gridContainerRef.current.querySelectorAll('[data-page-id]');
-    allThumbEls.forEach((el) => {
-      const id = el.getAttribute('data-page-id');
-      if (id && intersectingIds.includes(id)) {
-        el.classList.add('opacity-80', 'scale-[0.98]');
-      } else {
-        el.classList.remove('opacity-80', 'scale-[0.98]');
-      }
-    });
 
     currentSelectedSetRef.current = new Set(
       isMultiSelectModeRef.current
@@ -280,14 +278,13 @@ export const PageManagerModal: React.FC = () => {
   };
 
   const handleMouseUp = () => {
-    if (isSelectingRef.current && gridContainerRef.current) {
-      // Clean up direct DOM classes
-      const allThumbEls = gridContainerRef.current.querySelectorAll('[data-page-id]');
-      allThumbEls.forEach((el) => {
-        el.classList.remove('opacity-80', 'scale-[0.98]');
+    if (isSelectingRef.current) {
+      // Clear direct DOM highlights
+      cachedBoundsRef.current.forEach((b) => {
+        b.el.classList.remove('ring-2', 'ring-sky-500', 'scale-[0.98]');
       });
 
-      // Commit selection state ONCE on mouse up
+      // Commit final selection once
       const finalSelected = Array.from(currentSelectedSetRef.current);
       if (finalSelected.length > 0) {
         selectPages(finalSelected, false);
@@ -325,7 +322,7 @@ export const PageManagerModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/70 dark:bg-slate-950/90 backdrop-blur-md flex flex-col animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 bg-slate-950/85 flex flex-col animate-in fade-in duration-150">
       {/* Top Header */}
       <div className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 flex items-center justify-between text-slate-800 dark:text-slate-100 select-none shadow-sm">
         <div className="flex items-center gap-3">
