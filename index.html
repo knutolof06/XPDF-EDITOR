@@ -5,8 +5,24 @@
     <link rel="icon" type="image/svg+xml" href="/icons/icon48.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>XPDF - Gelişmiş PDF Editör & Görüntüleyici</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem('xpdf_theme') || 'dark';
+          if (
+            theme === 'dark' ||
+            (theme === 'system' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          ) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body class="bg-[#0f172a] text-slate-100 antialiased overflow-hidden select-none">
+  <body class="bg-slate-100 dark:bg-[#0f172a] text-slate-900 dark:text-slate-100 antialiased overflow-hidden select-none">
     <div id="root" class="w-screen h-screen flex flex-col"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

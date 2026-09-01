@@ -15,7 +15,7 @@ interface ThumbnailItemProps {
   index?: number;
   isActive: boolean;
   isSelected: boolean;
-  onPageClick: (pageId: string, index: number, isMulti: boolean) => void;
+  onPageClick: (pageId: string, index: number, isMulti: boolean, isShift: boolean) => void;
 }
 
 export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
@@ -125,8 +125,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     };
   }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, page.id]);
 
-  // Instant Drag Start — Enables zero-latency drag mode
-  const handleDragStart = useCallback((e: React.DragEvent) => {
+  // Instant Drag Start — Enables zero-latency drag mode + Native Drag-to-Desktop
+  const handleDragStart = useCallback(async (e: React.DragEvent) => {
     document.body.classList.add('is-dragging-page');
 
     const doc = useDocumentStore.getState().currentDocument;
@@ -141,7 +141,46 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     e.dataTransfer.setData('application/json', JSON.stringify({ pageIds: movingPageIds }));
     e.dataTransfer.setData('text/plain', movingPageIds.join(','));
     e.dataTransfer.effectAllowed = 'copyMove';
-  }, [page.id]);
+
+    // Native Drag-Out to Desktop / File Explorer
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.startDragPage) {
+      try {
+        const raw = binaryStore.get(doc.id);
+        if (raw) {
+          const srcDoc = await PDFDocument.load(raw.slice(0));
+          const outDoc = await PDFDocument.create();
+          const selectedPages = doc.pages.filter((p) => movingPageIds.includes(p.id));
+          const indices = selectedPages.map((p) => p.sourcePageIndex);
+          const copiedPages = await outDoc.copyPages(srcDoc, indices);
+          copiedPages.forEach((cp, i) => {
+            const orig = selectedPages[i];
+            if (orig && orig.rotation !== 0) {
+              try {
+                // @ts-ignore
+                cp.setRotation({ type: 'degrees', angle: orig.rotation });
+              } catch {
+                // fallback
+              }
+            }
+            outDoc.addPage(cp);
+          });
+          const bytes = await outDoc.save();
+          const baseName = doc.name.replace(/\.pdf$/i, '');
+          const fileName =
+            movingPageIds.length === 1
+              ? `${baseName}_sayfa_${page.displayPageNumber}.pdf`
+              : `${baseName}_${movingPageIds.length}_sayfa.pdf`;
+
+          (window as any).electronAPI.startDragPage({
+            fileName,
+            buffer: bytes,
+          });
+        }
+      } catch (err) {
+        console.error('Drag-to-desktop generation error:', err);
+      }
+    }
+  }, [page.id, page.displayPageNumber]);
 
   const handleDragEnd = useCallback(() => {
     document.body.classList.remove('is-dragging-page');
@@ -293,8 +332,9 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
-      const isMulti = e.ctrlKey || e.metaKey || e.shiftKey;
-      onPageClick(page.id, index, isMulti);
+      const isMulti = e.ctrlKey || e.metaKey;
+      const isShift = e.shiftKey;
+      onPageClick(page.id, index, isMulti, isShift);
     },
     [onPageClick, page.id, index]
   );

@@ -35,8 +35,9 @@ export const PageManagerModal: React.FC = () => {
   const gridContainerRef = useRef<HTMLDivElement>(null);
   const selectionBoxRef = useRef<HTMLDivElement>(null);
 
-  // Fast direct refs for 120 FPS smooth marquee selection
   const isSelectingRef = useRef(false);
+  const isMultiSelectModeRef = useRef(false);
+  const lastClickedIndexRef = useRef<number | null>(null);
   const startPosRef = useRef({ x: 0, y: 0 });
   const cachedBoundsRef = useRef<CachedPageBound[]>([]);
   const currentSelectedSetRef = useRef<Set<string>>(new Set());
@@ -188,6 +189,8 @@ export const PageManagerModal: React.FC = () => {
     const startY = e.clientY - rect.top + gridContainerRef.current.scrollTop;
 
     isSelectingRef.current = true;
+    const isMulti = e.ctrlKey || e.metaKey || e.shiftKey;
+    isMultiSelectModeRef.current = isMulti;
     startPosRef.current = { x: startX, y: startY };
 
     // Pre-calculate positions of all thumbnails once on mouse down
@@ -204,10 +207,10 @@ export const PageManagerModal: React.FC = () => {
     });
 
     currentSelectedSetRef.current = new Set(
-      e.ctrlKey || e.metaKey || e.shiftKey ? currentDocument.selectedPageIds : []
+      isMulti ? currentDocument.selectedPageIds : []
     );
 
-    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+    if (!isMulti) {
       clearPageSelection();
     }
 
@@ -262,13 +265,20 @@ export const PageManagerModal: React.FC = () => {
     if (rAFRef.current) cancelAnimationFrame(rAFRef.current);
     rAFRef.current = requestAnimationFrame(() => {
       if (intersectingIds.length > 0) {
-        selectPages(intersectingIds, false);
+        if (isMultiSelectModeRef.current) {
+          const combined = new Set(currentSelectedSetRef.current);
+          intersectingIds.forEach((id) => combined.add(id));
+          selectPages(Array.from(combined), false);
+        } else {
+          selectPages(intersectingIds, false);
+        }
       }
     });
   };
 
   const handleMouseUp = () => {
     isSelectingRef.current = false;
+    isMultiSelectModeRef.current = false;
     if (selectionBoxRef.current) {
       selectionBoxRef.current.style.display = 'none';
     }
@@ -277,6 +287,26 @@ export const PageManagerModal: React.FC = () => {
       rAFRef.current = null;
     }
   };
+
+  const handlePageClick = useCallback(
+    (pageId: string, idx: number, isMulti: boolean, isShift: boolean) => {
+      if (isShift && lastClickedIndexRef.current !== null) {
+        const start = Math.min(lastClickedIndexRef.current, idx);
+        const end = Math.max(lastClickedIndexRef.current, idx);
+        const rangeIds = currentDocument.pages.slice(start, end + 1).map((p) => p.id);
+        const combined = new Set(currentDocument.selectedPageIds);
+        rangeIds.forEach((id) => combined.add(id));
+        selectPages(Array.from(combined), false);
+      } else if (isMulti) {
+        selectPages([pageId], true);
+        lastClickedIndexRef.current = idx;
+      } else {
+        setActivePageIndex(idx);
+        lastClickedIndexRef.current = idx;
+      }
+    },
+    [currentDocument.pages, currentDocument.selectedPageIds, selectPages, setActivePageIndex]
+  );
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/70 dark:bg-slate-950/90 backdrop-blur-md flex flex-col animate-in fade-in duration-200">
@@ -460,13 +490,7 @@ export const PageManagerModal: React.FC = () => {
                 index={index}
                 isActive={currentDocument.activePageIndex === index}
                 isSelected={currentDocument.selectedPageIds.includes(page.id)}
-                onPageClick={(pageId, idx, isMulti) => {
-                  if (isMulti) {
-                    selectPages([pageId], true);
-                  } else {
-                    setActivePageIndex(idx);
-                  }
-                }}
+                onPageClick={handlePageClick}
               />
             </div>
           ))}

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore } from '@/store/viewer-store';
+import { useTabStore } from '@/store/tab-store';
 import { PageView } from './PageView';
 import { SearchOverlay } from './SearchOverlay';
 import { cn } from '@/utils/cn';
@@ -8,12 +9,49 @@ import { cn } from '@/utils/cn';
 export const PdfViewer: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const lastWheelTimeRef = useRef<number>(0);
+  const lastDocIdRef = useRef<string | null>(null);
+  const isTabSwitchingRef = useRef<boolean>(false);
+
   const { currentDocument, setActivePageIndex } = useDocumentStore();
   const { zoom, setZoom, viewMode } = useViewerStore();
+  const { updateActiveTabState, tabs, activeTabId } = useTabStore();
 
-  // Scroll to active page when changed from sidebar / bottom bar
+  // On Tab switch / document change: scroll container to this tab's own active page/scroll position
   useEffect(() => {
     if (!currentDocument || !containerRef.current) return;
+
+    if (lastDocIdRef.current !== currentDocument.id) {
+      lastDocIdRef.current = currentDocument.id;
+      isTabSwitchingRef.current = true;
+
+      // Find saved state of active tab
+      const currentTab = tabs.find((t) => t.id === currentDocument.id);
+      const targetPage = currentTab?.activePageIndex ?? currentDocument.activePageIndex ?? 0;
+
+      // Quick scroll reset then focus on active page
+      requestAnimationFrame(() => {
+        if (!containerRef.current) return;
+        const pageElement = document.getElementById(`page-container-${targetPage}`);
+        if (pageElement) {
+          pageElement.scrollIntoView({
+            behavior: 'auto',
+            block: 'center',
+            inline: 'center',
+          });
+        } else {
+          containerRef.current.scrollTop = currentTab?.scrollTop || 0;
+        }
+
+        setTimeout(() => {
+          isTabSwitchingRef.current = false;
+        }, 150);
+      });
+    }
+  }, [currentDocument?.id, tabs]);
+
+  // Scroll to active page when programmatically changed within same document (BottomBar, Bookmarks, Search)
+  useEffect(() => {
+    if (!currentDocument || !containerRef.current || isTabSwitchingRef.current) return;
 
     const pageElement = document.getElementById(
       `page-container-${currentDocument.activePageIndex}`
@@ -27,7 +65,14 @@ export const PdfViewer: React.FC = () => {
     }
   }, [currentDocument?.activePageIndex]);
 
-  // Handle Ctrl + Wheel for zoom & Normal Wheel in Single-Page view for page switching (Rule 7)
+  // Track scroll position to update tab state
+  const handleScroll = useCallback(() => {
+    if (isTabSwitchingRef.current || !containerRef.current || !currentDocument) return;
+    const scrollTop = containerRef.current.scrollTop;
+    updateActiveTabState(currentDocument.activePageIndex, scrollTop, zoom);
+  }, [currentDocument, zoom, updateActiveTabState]);
+
+  // Handle Ctrl + Wheel for zoom & Normal Wheel in Single-Page view for page switching
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
@@ -91,6 +136,7 @@ export const PdfViewer: React.FC = () => {
     <div
       ref={containerRef}
       onWheel={handleWheel}
+      onScroll={handleScroll}
       className="relative flex-1 overflow-auto bg-slate-900/50 dark:bg-slate-950/70 p-4 transition-colors flex justify-center"
       tabIndex={0}
     >

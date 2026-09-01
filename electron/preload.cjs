@@ -18,9 +18,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showOpenDialog: (options) => ipcRenderer.invoke('show-open-dialog', options),
   saveFile: (filePath, buffer) => ipcRenderer.invoke('save-file', { filePath, buffer }),
 
-  // Windows Integration
+  // Windows Integration & Native Drag
   registerPdfAssociation: () => ipcRenderer.invoke('register-pdf-association'),
   enableThumbnailHandler: () => ipcRenderer.invoke('enable-thumbnail-handler'),
   disableThumbnailHandler: () => ipcRenderer.invoke('disable-thumbnail-handler'),
   getThumbnailHandlerStatus: () => ipcRenderer.invoke('get-thumbnail-handler-status'),
+  startDragPage: (data) => ipcRenderer.send('start-drag-page', data),
 });

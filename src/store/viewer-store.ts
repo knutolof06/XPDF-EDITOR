@@ -43,14 +43,22 @@ interface ViewerState {
   setSearching: (searching: boolean) => void;
 }
 
-const ZOOM_STEPS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
+const getInitialTheme = (): 'dark' | 'light' | 'system' => {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const saved = localStorage.getItem('xpdf_theme') as 'dark' | 'light' | 'system';
+    if (saved && (saved === 'dark' || saved === 'light' || saved === 'system')) {
+      return saved;
+    }
+  }
+  return 'dark';
+};
 
 export const useViewerStore = create<ViewerState>()(
   immer((set) => ({
     zoom: 1.0,
     viewMode: 'continuous',
     pageTransition: 'smooth',
-    theme: 'dark',
+    theme: getInitialTheme(),
     activeTool: 'select',
     isPageManagerOpen: false,
     sidebarOpen: true,
@@ -103,6 +111,9 @@ export const useViewerStore = create<ViewerState>()(
     setTheme: (theme) =>
       set((state) => {
         state.theme = theme;
+        if (typeof window !== 'undefined' && window.localStorage) {
+          localStorage.setItem('xpdf_theme', theme);
+        }
         if (typeof document !== 'undefined') {
           const root = document.documentElement;
           if (

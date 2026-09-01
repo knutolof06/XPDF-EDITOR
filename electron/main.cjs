@@ -242,3 +242,26 @@ ipcMain.handle('register-pdf-association', async () => {
     });
   });
 });
+
+// Drag-to-Desktop / Windows Explorer Native File Drag Handler
+ipcMain.on('start-drag-page', (event, { fileName, buffer }) => {
+  try {
+    const tempDir = app.getPath('temp');
+    const safeFileName = (fileName || 'sayfa.pdf').replace(/[/\\?%*:|"<>]/g, '_');
+    const tempFilePath = path.join(tempDir, safeFileName);
+    fs.writeFileSync(tempFilePath, Buffer.from(buffer));
+
+    let iconPath = path.join(__dirname, '../build/icon.ico');
+    if (!fs.existsSync(iconPath)) {
+      iconPath = path.join(app.getAppPath(), 'build/icon.ico');
+    }
+
+    event.sender.startDrag({
+      file: tempFilePath,
+      icon: iconPath,
+    });
+  } catch (err) {
+    console.error('startDrag error:', err);
+  }
+});
+

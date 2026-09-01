@@ -7,18 +7,30 @@ import { FileText, X, Plus } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
 export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, addTab } = useTabStore();
-  const { setDocument } = useDocumentStore();
+  const { tabs, activeTabId, setActiveTab, closeTab, addTab, updateActiveTabState } = useTabStore();
+  const { currentDocument, setDocument } = useDocumentStore();
   const { addToast } = useUIStore();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   if (tabs.length === 0) return null;
 
   const handleTabClick = (tabId: string) => {
+    if (tabId === activeTabId) return;
+
+    // Save current active tab state before switching
+    if (currentDocument) {
+      updateActiveTabState(currentDocument.activePageIndex);
+    }
+
     const targetTab = tabs.find((t) => t.id === tabId);
     if (targetTab) {
       setActiveTab(tabId);
-      setDocument(targetTab.model, targetTab.pdfDocProxy);
+      // Restore target tab's active page in its model
+      const modelToSet = {
+        ...targetTab.model,
+        activePageIndex: targetTab.activePageIndex ?? 0,
+      };
+      setDocument(modelToSet, targetTab.pdfDocProxy);
     }
   };
 
@@ -28,7 +40,13 @@ export const TabBar: React.FC = () => {
     const remaining = tabs.filter((t) => t.id !== tabId);
     if (remaining.length > 0) {
       const nextActive = remaining[0];
-      setDocument(nextActive.model, nextActive.pdfDocProxy);
+      const modelToSet = {
+        ...nextActive.model,
+        activePageIndex: nextActive.activePageIndex ?? 0,
+      };
+      setDocument(modelToSet, nextActive.pdfDocProxy);
+    } else {
+      useDocumentStore.getState().closeDocument();
     }
   };
 
@@ -52,7 +70,7 @@ export const TabBar: React.FC = () => {
   };
 
   return (
-    <div className="h-9 bg-slate-200 dark:bg-slate-950 border-b border-slate-300 dark:border-slate-800/80 px-2 flex items-center gap-1 select-none overflow-x-auto z-25 shrink-0 transition-colors">
+    <div className="h-10 bg-slate-200 dark:bg-slate-950 border-b border-slate-300 dark:border-slate-800/80 px-2 flex items-center gap-1.5 select-none overflow-x-auto z-25 shrink-0 transition-colors">
       <input
         type="file"
         ref={fileInputRef}
@@ -68,23 +86,26 @@ export const TabBar: React.FC = () => {
           <div
             key={tab.id}
             onClick={() => handleTabClick(tab.id)}
+            title={tab.name}
             className={cn(
-              'group h-8 px-3 rounded-t-lg flex items-center gap-2 text-xs font-medium cursor-pointer transition-all border-t border-x shrink-0 max-w-[200px]',
+              'group h-8.5 px-3.5 rounded-t-lg flex items-center gap-2 text-xs font-medium cursor-pointer transition-all border-t border-x shrink-0 min-w-[160px] max-w-[420px]',
               isActive
                 ? 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-800 text-sky-600 dark:text-sky-400 shadow-sm font-semibold'
                 : 'bg-slate-300/60 dark:bg-slate-900/40 border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-200'
             )}
           >
-            <FileText className="w-3.5 h-3.5 shrink-0 text-sky-500 dark:text-sky-400" />
-            <span className="truncate flex-1">{tab.name}</span>
+            <FileText className="w-4 h-4 shrink-0 text-sky-500 dark:text-sky-400" />
+            <span className="truncate flex-1 font-medium select-none" title={tab.name}>
+              {tab.name}
+            </span>
 
             {/* Close Tab Button */}
             <button
               onClick={(e) => handleCloseTab(e, tab.id)}
-              className="opacity-60 hover:opacity-100 p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              className="opacity-60 hover:opacity-100 p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-opacity ml-1"
               title="Sekmeyi Kapat"
             >
-              <X className="w-3 h-3" />
+              <X className="w-3.5 h-3.5" />
             </button>
           </div>
         );
@@ -93,7 +114,7 @@ export const TabBar: React.FC = () => {
       {/* Add New Tab Button */}
       <button
         onClick={() => fileInputRef.current?.click()}
-        className="p-1 rounded-md text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-300/80 dark:hover:bg-slate-800 transition-colors ml-1"
+        className="p-1.5 rounded-md text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-300/80 dark:hover:bg-slate-800 transition-colors ml-1"
         title="Yeni PDF Sekmesi Aç"
       >
         <Plus className="w-4 h-4" />
