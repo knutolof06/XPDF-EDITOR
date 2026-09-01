@@ -120,20 +120,17 @@
 
 /* Vibrant Search Highlights that clearly stand out */
 .textLayer span.search-highlight {
-  background-color: rgba(254, 240, 138, 0.9) !important;
-  color: #0f172a !important;
+  background-color: rgba(254, 240, 138, 0.85) !important;
   border-radius: 2px;
-  box-shadow: 0 0 0 1.5px rgba(234, 179, 8, 0.95), 0 0 8px rgba(250, 204, 21, 0.7);
+  box-shadow: 0 0 0 1px rgba(234, 179, 8, 0.9);
   z-index: 10 !important;
 }
 
 .textLayer span.search-highlight-active {
-  background-color: rgba(249, 115, 22, 1) !important;
-  color: #ffffff !important;
-  font-weight: 700 !important;
+  background-color: rgba(249, 115, 22, 0.92) !important;
   border-radius: 2px;
-  outline: 2.5px solid #ea580c !important;
-  box-shadow: 0 0 0 2px #fff, 0 0 18px rgba(249, 115, 22, 1) !important;
+  outline: 2px solid #ea580c !important;
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.4), 0 0 16px rgba(249, 115, 22, 0.8) !important;
   z-index: 30 !important;
   animation: pulseSearchHighlight 1.2s infinite ease-in-out;
 }

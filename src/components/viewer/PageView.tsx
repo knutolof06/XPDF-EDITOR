@@ -223,11 +223,10 @@ export const PageView: React.FC<PageViewProps> = ({
     const isCurrentPage = currentGlobalMatch && currentGlobalMatch.pageIndex === index;
     const activeMatchIndexOnPage = isCurrentPage ? currentGlobalMatch.matchIndex : -1;
 
-    // 2. Only look at top-level spans (PDF.js textLayer structure)
-    //    Each span = one PDF text item, matching what pdf-search.ts counted
-    const allSpans = Array.from(container.querySelectorAll('span')).filter(
-      (span) => span.parentElement?.classList.contains('textLayer') ||
-                span.closest('.textLayer') === container
+    // 2. Use DIRECT child spans only — PDF.js creates exactly one span per text item.
+    //    Nested spans (if any) would double-count matches and break indexing.
+    const allSpans = Array.from(container.children).filter(
+      (el): el is HTMLElement => el.tagName === 'SPAN'
     );
 
     let matchCounter = 0;
