@@ -132,6 +132,7 @@ export const SearchOverlay: React.FC = () => {
       <div className="flex items-center gap-1">
         <button
           onClick={handlePrev}
+          onMouseDown={(e) => e.preventDefault()}
           disabled={totalResults === 0}
           className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 transition-colors"
           title="Önceki Sonuç"
@@ -140,6 +141,7 @@ export const SearchOverlay: React.FC = () => {
         </button>
         <button
           onClick={handleNext}
+          onMouseDown={(e) => e.preventDefault()}
           disabled={totalResults === 0}
           className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 transition-colors"
           title="Sonraki Sonuç"
