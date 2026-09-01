@@ -16,6 +16,7 @@
   "build": {
     "appId": "com.xpdf.editor",
     "productName": "XPDF Editor",
+    "afterPack": "scripts/afterPack.cjs",
     "directories": {
       "output": "release"
     },

@@ -23,12 +23,26 @@ export const PageView: React.FC<PageViewProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [isVisible, setIsVisible] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
+  // renderScale is debounced: layout uses immediate `scale`, canvas renders after zoom settles
+  const [renderScale, setRenderScale] = useState(scale);
   const { pdfDocProxy: globalPdfDocProxy } = useDocumentStore();
   const pdfDocProxy = customPdfDocProxy || globalPdfDocProxy;
   const { pageTransition } = useViewerStore();
+
+  // Debounce renderScale: update 200ms after scale stops changing
+  useEffect(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      setRenderScale(scale);
+    }, 200);
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [scale]);
 
   // IntersectionObserver: Only render pages that are near/inside viewport (Rule 2)
   useEffect(() => {
@@ -78,12 +92,12 @@ export const PageView: React.FC<PageViewProps> = ({
 
         const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap at 2x for high performance
         const viewport = pdfPage.getViewport({
-          scale: scale * dpr,
+          scale: renderScale * dpr,
           rotation: page.rotation,
         });
 
         const cssViewport = pdfPage.getViewport({
-          scale,
+          scale: renderScale,
           rotation: page.rotation,
         });
 
@@ -149,7 +163,7 @@ export const PageView: React.FC<PageViewProps> = ({
               );
 
               const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-              const itemWidth = (item.width || 0) * scale;
+              const itemWidth = (item.width || 0) * renderScale;
               span.style.fontSize = `${fontHeight}px`;
               span.style.fontFamily = item.fontName || 'sans-serif';
               span.style.left = `${tx[4]}px`;
@@ -196,7 +210,7 @@ export const PageView: React.FC<PageViewProps> = ({
         }
       }
     };
-  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, scale, index]);
+  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale, index]);
 
   const transitionClass = {
     classic: 'page-transition-classic',

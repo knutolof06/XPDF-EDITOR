@@ -11,6 +11,8 @@ export const PdfViewer: React.FC = () => {
   const lastWheelTimeRef = useRef<number>(0);
   const lastDocIdRef = useRef<string | null>(null);
   const isTabSwitchingRef = useRef<boolean>(false);
+  const isZoomingRef = useRef<boolean>(false);
+  const zoomEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { currentDocument, setActivePageIndex } = useDocumentStore();
   const { zoom, setZoom, viewMode } = useViewerStore();
@@ -66,9 +68,37 @@ export const PdfViewer: React.FC = () => {
     }
   }, [currentDocument?.activePageIndex]);
 
+  // FIX: When zoom changes, suppress scroll-handler and restore scroll to the active page
+  // This prevents the page-jump bug where growing/shrinking page heights shift the visible page
+  useEffect(() => {
+    if (!currentDocument || !containerRef.current) return;
+
+    // Mark as zooming so handleScroll won't reassign activePageIndex mid-resize
+    isZoomingRef.current = true;
+    if (zoomEndTimerRef.current) clearTimeout(zoomEndTimerRef.current);
+
+    // Two rAFs: first lets React commit new page sizes, second lets browser re-layout
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const pageEl = document.getElementById(`page-container-${currentDocument.activePageIndex}`);
+        if (pageEl && containerRef.current) {
+          containerRef.current.scrollTo({
+            top: Math.max(0, pageEl.offsetTop - 16),
+            behavior: 'auto',
+          });
+        }
+        // Keep suppression briefly to absorb the scroll event fired by scrollTo above
+        zoomEndTimerRef.current = setTimeout(() => {
+          isZoomingRef.current = false;
+        }, 120);
+      });
+    });
+  }, [zoom]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Track scroll position to update tab state
   const handleScroll = useCallback(() => {
-    if (isTabSwitchingRef.current || !containerRef.current || !currentDocument) return;
+    // Suppress during tab switch AND during zoom restore
+    if (isTabSwitchingRef.current || isZoomingRef.current || !containerRef.current || !currentDocument) return;
     const scrollTop = containerRef.current.scrollTop;
     updateActiveTabState(currentDocument.activePageIndex, scrollTop, zoom);
   }, [currentDocument, zoom, updateActiveTabState]);
