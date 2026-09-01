@@ -46,9 +46,9 @@ export const useTabStore = create<TabState>()(
         };
 
         if (existingIdx !== -1) {
-          state.tabs[existingIdx] = item;
+          state.tabs[existingIdx] = item as any;
         } else {
-          state.tabs.push(item);
+          state.tabs.push(item as any);
         }
         state.activeTabId = model.id;
       }),

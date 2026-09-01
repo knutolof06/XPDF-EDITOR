@@ -14,7 +14,7 @@ export const PdfViewer: React.FC = () => {
 
   const { currentDocument, setActivePageIndex } = useDocumentStore();
   const { zoom, setZoom, viewMode } = useViewerStore();
-  const { updateActiveTabState, tabs, activeTabId } = useTabStore();
+  const { updateActiveTabState, tabs } = useTabStore();
 
   // On Tab switch / document change: scroll container to this tab's own active page/scroll position
   useEffect(() => {
