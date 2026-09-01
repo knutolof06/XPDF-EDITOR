@@ -86,7 +86,7 @@ export const SearchOverlay: React.FC = () => {
   const currentResultIndex = totalResults > 0 ? searchState.currentIndex + 1 : 0;
 
   return (
-    <div className="absolute top-4 right-8 z-40 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700/80 rounded-2xl shadow-2xl p-2 flex items-center gap-2 backdrop-blur-md animate-in fade-in slide-in-from-top-4 duration-200 text-slate-800 dark:text-slate-100">
+    <div className="fixed top-16 right-8 z-50 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700/80 rounded-2xl shadow-2xl p-2 flex items-center gap-2 backdrop-blur-md animate-in fade-in slide-in-from-top-4 duration-200 text-slate-800 dark:text-slate-100">
       <div className="flex items-center gap-2 px-2 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
         <Search className="w-4 h-4 text-sky-500 dark:text-sky-400 shrink-0" />
         <input

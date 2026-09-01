@@ -32,7 +32,6 @@ import {
   CheckSquare,
   Ruler,
 } from 'lucide-react';
-import { PageTransitionType } from '@/types/document';
 import { cn } from '@/utils/cn';
 
 export const TopToolbar: React.FC = () => {
@@ -57,8 +56,6 @@ export const TopToolbar: React.FC = () => {
     zoomOut,
     viewMode,
     setViewMode,
-    pageTransition,
-    setPageTransition,
     theme,
     setTheme,
     openSearch,
@@ -464,20 +461,6 @@ export const TopToolbar: React.FC = () => {
             <Search className="w-4 h-4 text-sky-500 dark:text-sky-400" />
           </button>
         )}
-
-        {/* Transition selector */}
-        <select
-          value={pageTransition}
-          onChange={(e) => setPageTransition(e.target.value as PageTransitionType)}
-          className="hidden 2xl:inline-block bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 text-slate-700 dark:text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none"
-          title="Sayfa Geçiş Animasyonu"
-        >
-          <option value="smooth">Animasyon: Smooth</option>
-          <option value="slide">Animasyon: Slide</option>
-          <option value="classic">Animasyon: Classic Fade</option>
-          <option value="zoom">Animasyon: Zoom</option>
-          <option value="instant">Animasyon: Kapalı</option>
-        </select>
 
         {/* Theme Toggle (Güneş / Ay) */}
         <button

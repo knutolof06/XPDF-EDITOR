@@ -50,7 +50,9 @@ export interface ViewerPreferences {
   theme: 'dark' | 'light' | 'system';
   pageTransition: PageTransitionType;
   reduceMotion: boolean;
-  thumbnailSize: 'small' | 'medium' | 'large';
+  thumbnailColumns: number; // 1 to 4
+  sidebarWidth: number;
   sidebarOpen: boolean;
   activeSidebarTab: SidebarTab;
 }
+

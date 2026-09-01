@@ -29,11 +29,22 @@ interface DocumentState {
   addRecentDocument: (item: RecentDocumentItem) => void;
 }
 
+const loadRecentDocuments = (): RecentDocumentItem[] => {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+  try {
+    const raw = localStorage.getItem('xpdf_recent_documents');
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // fallback
+  }
+  return [];
+};
+
 export const useDocumentStore = create<DocumentState>()(
   immer((set) => ({
     currentDocument: null,
     pdfDocProxy: null,
-    recentDocuments: [],
+    recentDocuments: loadRecentDocuments(),
     isLoading: false,
     loadingProgress: 0,
     loadingError: null,
@@ -217,7 +228,15 @@ export const useDocumentStore = create<DocumentState>()(
     addRecentDocument: (item) =>
       set((state) => {
         const filtered = state.recentDocuments.filter((d) => d.name !== item.name);
-        state.recentDocuments = [item, ...filtered].slice(0, 10);
+        const updated = [item, ...filtered].slice(0, 10);
+        state.recentDocuments = updated;
+        if (typeof window !== 'undefined' && window.localStorage) {
+          try {
+            localStorage.setItem('xpdf_recent_documents', JSON.stringify(updated));
+          } catch {
+            // ignore
+          }
+        }
       }),
   }))
 );
