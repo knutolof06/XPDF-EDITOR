@@ -288,25 +288,28 @@ export const PageManagerModal: React.FC = () => {
     }
   };
 
-  const handlePageClick = useCallback(
-    (pageId: string, idx: number, isMulti: boolean, isShift: boolean) => {
-      if (isShift && lastClickedIndexRef.current !== null) {
-        const start = Math.min(lastClickedIndexRef.current, idx);
-        const end = Math.max(lastClickedIndexRef.current, idx);
-        const rangeIds = currentDocument.pages.slice(start, end + 1).map((p) => p.id);
-        const combined = new Set(currentDocument.selectedPageIds);
-        rangeIds.forEach((id) => combined.add(id));
-        selectPages(Array.from(combined), false);
-      } else if (isMulti) {
-        selectPages([pageId], true);
-        lastClickedIndexRef.current = idx;
-      } else {
-        setActivePageIndex(idx);
-        lastClickedIndexRef.current = idx;
-      }
-    },
-    [currentDocument.pages, currentDocument.selectedPageIds, selectPages, setActivePageIndex]
-  );
+  const handlePageClick = (
+    pageId: string,
+    idx: number,
+    isMulti: boolean,
+    isShift: boolean
+  ) => {
+    if (!currentDocument) return;
+    if (isShift && lastClickedIndexRef.current !== null) {
+      const start = Math.min(lastClickedIndexRef.current, idx);
+      const end = Math.max(lastClickedIndexRef.current, idx);
+      const rangeIds = currentDocument.pages.slice(start, end + 1).map((p) => p.id);
+      const combined = new Set(currentDocument.selectedPageIds);
+      rangeIds.forEach((id) => combined.add(id));
+      selectPages(Array.from(combined), false);
+    } else if (isMulti) {
+      selectPages([pageId], true);
+      lastClickedIndexRef.current = idx;
+    } else {
+      setActivePageIndex(idx);
+      lastClickedIndexRef.current = idx;
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/70 dark:bg-slate-950/90 backdrop-blur-md flex flex-col animate-in fade-in duration-200">
