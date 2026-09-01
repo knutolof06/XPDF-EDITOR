@@ -64,6 +64,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "XPDF Editor",
       "artifactName": "XPDF-Editor-Kurulum-Setup.exe",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "include": "build/installer.nsh"
     }
   },
