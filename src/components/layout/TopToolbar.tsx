@@ -140,7 +140,7 @@ export const TopToolbar: React.FC = () => {
       {/* Left Section: Logo, File Ops, Tools */}
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 mr-1">
-          <img src="./logo.png" alt="XPDF" className="w-8 h-8 object-contain rounded-lg shadow-sm" />
+          <img src="./icons/icon48.png" alt="XPDF" className="w-8 h-8 object-contain" />
           <span className="font-bold text-base text-slate-900 dark:text-white tracking-tight hidden sm:inline">
             XPDF <span className="text-sky-500 dark:text-sky-400 font-medium text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 border border-sky-500/30">PRO</span>
           </span>

@@ -87,8 +87,8 @@ export const EmptyState: React.FC = () => {
 
       <div className="max-w-xl w-full flex flex-col items-center">
         {/* Modern App Icon */}
-        <div className="w-24 h-24 flex items-center justify-center mb-4 group hover:scale-105 transition-transform duration-300">
-          <img src="./logo.png" alt="XPDF Logo" className="w-full h-full object-contain drop-shadow-2xl" />
+        <div className="w-28 h-28 flex items-center justify-center mb-4 group hover:scale-105 transition-transform duration-300">
+          <img src="./icons/icon256.png" alt="XPDF Logo" className="w-full h-full object-contain drop-shadow-2xl" />
         </div>
 
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight mb-2">
