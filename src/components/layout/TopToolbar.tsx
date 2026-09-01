@@ -30,6 +30,7 @@ import {
   Scissors,
   Sparkles,
   CheckSquare,
+  Ruler,
 } from 'lucide-react';
 import { PageTransitionType } from '@/types/document';
 import { cn } from '@/utils/cn';
@@ -71,6 +72,7 @@ export const TopToolbar: React.FC = () => {
     setMergeModalOpen,
     setSplitModalOpen,
     setPageLayoutModalOpen,
+    setPageEqualizeModalOpen,
     addToast,
   } = useUIStore();
 
@@ -247,6 +249,17 @@ export const TopToolbar: React.FC = () => {
             >
               <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
               <span>N-up</span>
+            </button>
+          )}
+
+          {currentDocument && (
+            <button
+              onClick={() => setPageEqualizeModalOpen(true)}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-orange-100 dark:bg-orange-950/40 hover:bg-orange-200 dark:hover:bg-orange-900/60 text-orange-700 dark:text-orange-300 transition-colors border border-orange-200 dark:border-orange-800/60 text-xs font-medium"
+              title="Sayfa Boyutlarını Eşitle"
+            >
+              <Ruler className="w-3.5 h-3.5 text-orange-500 dark:text-orange-400" />
+              <span>Eşitle</span>
             </button>
           )}
         </div>

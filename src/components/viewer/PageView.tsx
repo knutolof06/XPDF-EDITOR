@@ -55,12 +55,11 @@ export const PageView: React.FC<PageViewProps> = ({
         if (entry.isIntersecting) {
           setIsVisible(true);
         } else {
-          // If page is far away, keep rendered state or unload to save memory
           setIsVisible(false);
         }
       },
       {
-        rootMargin: '500px 0px 500px 0px', // Preload 500px before appearing
+        rootMargin: '300px 0px 300px 0px', // Preload ~1 page before appearing
         threshold: 0.01,
       }
     );

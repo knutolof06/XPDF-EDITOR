@@ -22,6 +22,7 @@ import { PageLayoutSynthesisModal } from './components/dialogs/PageLayoutSynthes
 import { SignatureModal } from './components/dialogs/SignatureModal';
 import { StampModal } from './components/dialogs/StampModal';
 import { PageNumberModal } from './components/dialogs/PageNumberModal';
+import { EqualizePagesModal } from './components/dialogs/EqualizePagesModal';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { ToastContainer } from './components/ui/ToastContainer';
@@ -293,6 +294,7 @@ export const App: React.FC = () => {
       <PageNumberModal />
       <DocumentPropertiesModal />
       <ShortcutsModal />
+      <EqualizePagesModal />
       <ToastContainer />
     </div>
   );

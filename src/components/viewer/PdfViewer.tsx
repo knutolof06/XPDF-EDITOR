@@ -59,12 +59,16 @@ export const PdfViewer: React.FC = () => {
     );
     if (pageElement && containerRef.current) {
       const targetTop = Math.max(0, pageElement.offsetTop - 16);
-      if (Math.abs(containerRef.current.scrollTop - targetTop) > 30) {
-        containerRef.current.scrollTo({
-          top: targetTop,
-          behavior: 'smooth',
-        });
-      }
+      const currentTop = containerRef.current.scrollTop;
+      const diff = Math.abs(targetTop - currentTop);
+
+      if (diff < 30) return; // Already there
+
+      // For large jumps (>3 page heights ≈ 2500px), use instant scroll.
+      // Smooth scroll through 50 pages renders ALL intermediate pages → 1 min wait.
+      const behavior: ScrollBehavior = diff > 2500 ? 'auto' : 'smooth';
+
+      containerRef.current.scrollTo({ top: targetTop, behavior });
     }
   }, [currentDocument?.activePageIndex]);
 
