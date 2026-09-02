@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAnnotationStore } from '@/store/annotation-store';
 import { useUIStore } from '@/store/ui-store';
+import { useDocumentStore } from '@/store/document-store';
 import { ActiveTool } from '@/types/viewer';
 import {
   MousePointer,
@@ -11,12 +12,15 @@ import {
   Circle,
   Minus,
   ArrowUpRight,
+  Eraser,
   FileSignature,
   Stamp,
   Image as ImageIcon,
   Hash,
   Bold,
   Italic,
+  Copy,
+  Trash2,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -36,6 +40,9 @@ export const EditorToolbar: React.FC = () => {
     setActiveTool,
     toolStyles,
     setToolStyles,
+    selectedAnnotationId,
+    cloneAnnotation,
+    deleteAnnotation,
   } = useAnnotationStore();
 
   const {
@@ -43,6 +50,9 @@ export const EditorToolbar: React.FC = () => {
     setStampModalOpen,
     setPageNumberModalOpen,
   } = useUIStore();
+
+  const currentDocument = useDocumentStore((s) => s.currentDocument);
+  const activePageId = currentDocument?.activePageId || currentDocument?.pages?.[currentDocument?.activePageIndex || 0]?.id;
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -52,13 +62,11 @@ export const EditorToolbar: React.FC = () => {
     reader.onload = () => {
       const dataUrl = reader.result as string;
       const { addAnnotation, setSelectedAnnotationId } = useAnnotationStore.getState();
-      const { currentDocument } = (window as any).__docStore?.getState?.() || {};
 
-      const pageId = currentDocument?.activePageId || currentDocument?.pages?.[0]?.id;
-      if (pageId) {
+      if (activePageId) {
         const newImgAnn = {
           id: 'img_' + Date.now(),
-          pageId,
+          pageId: activePageId,
           type: 'image' as const,
           x: 100,
           y: 100,
@@ -66,7 +74,7 @@ export const EditorToolbar: React.FC = () => {
           height: 150,
           dataUrl,
         };
-        addAnnotation(pageId, newImgAnn);
+        addAnnotation(activePageId, newImgAnn);
         setSelectedAnnotationId(newImgAnn.id);
         setActiveTool('select');
       }
@@ -77,8 +85,9 @@ export const EditorToolbar: React.FC = () => {
   const imageInputRef = React.useRef<HTMLInputElement>(null);
 
   const tools: { id: ActiveTool; label: string; icon: React.ReactNode }[] = [
-    { id: 'select', label: 'Seç / Taşı (V)', icon: <MousePointer className="w-4 h-4" /> },
+    { id: 'select', label: 'Seç / Taşı / Klonla (V)', icon: <MousePointer className="w-4 h-4" /> },
     { id: 'text-add', label: 'Metin Ekle (T)', icon: <Type className="w-4 h-4" /> },
+    { id: 'whiteout', label: 'Beyazlat / Öğe Kapat (W)', icon: <Eraser className="w-4 h-4" /> },
     { id: 'draw', label: 'Çizim Kalemi (P)', icon: <Pen className="w-4 h-4" /> },
     { id: 'highlight', label: 'Fosforlu Kalem (H)', icon: <Highlighter className="w-4 h-4" /> },
     { id: 'rect', label: 'Dikdörtgen', icon: <Square className="w-4 h-4" /> },
@@ -88,7 +97,7 @@ export const EditorToolbar: React.FC = () => {
   ];
 
   return (
-    <div className="h-11 bg-white dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between text-xs text-slate-700 dark:text-slate-200 select-none z-20 shrink-0 backdrop-blur-sm overflow-x-auto shadow-sm transition-colors">
+    <div className="h-11 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between text-xs text-slate-700 dark:text-slate-200 select-none z-20 shrink-0 overflow-x-auto shadow-sm transition-colors">
       <input
         type="file"
         ref={imageInputRef}
@@ -155,8 +164,31 @@ export const EditorToolbar: React.FC = () => {
         </button>
       </div>
 
-      {/* Contextual Styling Palette */}
+      {/* Contextual Styling & Selection Actions */}
       <div className="flex items-center gap-2">
+        {/* If an annotation is selected: Quick Action Buttons */}
+        {selectedAnnotationId && activePageId && (
+          <div className="flex items-center gap-1 bg-sky-50 dark:bg-sky-950/40 px-2 py-0.5 rounded-lg border border-sky-200 dark:border-sky-800/60 animate-in fade-in duration-100">
+            <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 mr-1">Seçili Nesne:</span>
+            <button
+              onClick={() => cloneAnnotation(activePageId, selectedAnnotationId)}
+              className="flex items-center gap-1 px-1.5 py-1 hover:bg-sky-100 dark:hover:bg-sky-900 rounded text-sky-700 dark:text-sky-300 font-medium text-xs transition-colors"
+              title="Nesneyi Klonla / Çoğalt (Ctrl+D)"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>Klonla</span>
+            </button>
+            <button
+              onClick={() => deleteAnnotation(activePageId, selectedAnnotationId)}
+              className="flex items-center gap-1 px-1.5 py-1 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded text-rose-600 dark:text-rose-400 font-medium text-xs transition-colors"
+              title="Nesneyi Kaldır / Sil (Delete)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Sil</span>
+            </button>
+          </div>
+        )}
+
         {/* Colors Palette */}
         <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-lg border border-slate-200 dark:border-slate-700/80">
           {COLORS.map((c) => (

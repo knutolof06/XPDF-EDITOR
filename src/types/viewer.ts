@@ -17,6 +17,7 @@ export type ActiveTool =
   | 'signature'
   | 'stamp'
   | 'image'
+  | 'whiteout'
   | 'crop';
 
 export interface SearchMatch {

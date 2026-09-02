@@ -1,13 +1,13 @@
 import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib';
 import { PdfDocumentModel } from '@/types/document';
-import { DrawingAnnotation, ShapeAnnotation, TextAnnotation, ImageAnnotation } from '@/types/annotations';
+import { DrawingAnnotation, ShapeAnnotation, TextAnnotation, ImageAnnotation, WhiteoutAnnotation } from '@/types/annotations';
 import { binaryStore } from '../storage/binary-store';
 import { useAnnotationStore } from '@/store/annotation-store';
 
 export class PdfExporter {
   /**
    * Exports the entire PdfDocumentModel with all structural changes and
-   * all annotation overlays (text, drawings, shapes, signatures, stamps, page numbers) flattened.
+   * all annotation overlays (text, drawings, shapes, signatures, stamps, whiteouts, page numbers) flattened.
    */
   public static async exportDocumentWithAnnotations(
     docModel: PdfDocumentModel
@@ -47,6 +47,18 @@ export class PdfExporter {
             font,
             color: hexToRgb(textAnn.color),
             opacity: textAnn.opacity ?? 1,
+          });
+        } else if (ann.type === 'whiteout') {
+          const wh = ann as WhiteoutAnnotation;
+          copiedPage.drawRectangle({
+            x: wh.x,
+            y: pageHeight - wh.y - wh.height,
+            width: wh.width,
+            height: wh.height,
+            color: hexToRgb(wh.color || '#ffffff'),
+            borderColor: wh.borderColor ? hexToRgb(wh.borderColor) : undefined,
+            borderWidth: wh.borderWidth || 0,
+            opacity: wh.opacity ?? 1,
           });
         } else if (ann.type === 'rect') {
           const sh = ann as ShapeAnnotation;

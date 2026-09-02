@@ -6,6 +6,7 @@ export type AnnotationType =
   | 'circle'
   | 'line'
   | 'arrow'
+  | 'whiteout'
   | 'signature'
   | 'stamp'
   | 'image'
@@ -44,10 +45,17 @@ export interface DrawingAnnotation extends BaseAnnotation {
 }
 
 export interface ShapeAnnotation extends BaseAnnotation {
-  type: 'rect' | 'circle' | 'line' | 'arrow';
+  type: 'rect' | 'circle' | 'line' | 'arrow' | 'whiteout';
   strokeColor: string;
   fillColor?: string;
   strokeWidth: number;
+}
+
+export interface WhiteoutAnnotation extends BaseAnnotation {
+  type: 'whiteout';
+  color: string; // usually #ffffff or custom match
+  borderColor?: string;
+  borderWidth?: number;
 }
 
 export interface ImageAnnotation extends BaseAnnotation {
@@ -77,4 +85,5 @@ export type AnyAnnotation =
   | TextAnnotation
   | DrawingAnnotation
   | ShapeAnnotation
+  | WhiteoutAnnotation
   | ImageAnnotation;
