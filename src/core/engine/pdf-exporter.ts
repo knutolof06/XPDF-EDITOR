@@ -3,6 +3,7 @@ import { PdfDocumentModel } from '@/types/document';
 import { DrawingAnnotation, ShapeAnnotation, TextAnnotation, ImageAnnotation, WhiteoutAnnotation } from '@/types/annotations';
 import { binaryStore } from '../storage/binary-store';
 import { useAnnotationStore } from '@/store/annotation-store';
+import { useNativeObjectStore } from '@/store/native-object-store';
 
 export class PdfExporter {
   /**
@@ -124,6 +125,43 @@ export class PdfExporter {
             } catch (err) {
               console.error('Image embed error:', err);
             }
+          }
+        }
+      }
+
+      // ── Moved Native PDF Objects ─────────────────────────────────────────
+      // For any existing PDF text that the user dragged to a new position:
+      //  1. Draw a white rectangle to mask the original text
+      //  2. Redraw the text at the new position
+      const nativeObjects = useNativeObjectStore.getState().getObjectsForPage(pageModel.id);
+      for (const nObj of nativeObjects) {
+        if (!nObj.moved) continue;
+
+        if (nObj.type === 'native-text' && nObj.text) {
+          const fontSize = nObj.fontSize || 12;
+
+          // 1. Whiteout the original position (slightly enlarged to ensure full coverage)
+          copiedPage.drawRectangle({
+            x: nObj.originalX - 1,
+            y: pageHeight - nObj.originalY - nObj.originalHeight - 2,
+            width: nObj.originalWidth + 4,
+            height: nObj.originalHeight + 4,
+            color: rgb(1, 1, 1),
+            opacity: 1,
+          });
+
+          // 2. Redraw at new position
+          try {
+            copiedPage.drawText(nObj.text, {
+              x: nObj.x,
+              y: pageHeight - nObj.y - fontSize,
+              size: fontSize,
+              font: fontHelvetica,
+              color: rgb(0, 0, 0),
+              opacity: 1,
+            });
+          } catch (textErr) {
+            console.warn('Native text redraw error:', textErr);
           }
         }
       }

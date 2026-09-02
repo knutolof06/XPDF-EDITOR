@@ -87,3 +87,35 @@ export type AnyAnnotation =
   | ShapeAnnotation
   | WhiteoutAnnotation
   | ImageAnnotation;
+
+/**
+ * Represents an object that already exists in the original PDF
+ * (text block or image). When moved, the original position gets
+ * whiteout-masked and the content is redrawn at the new position.
+ */
+export interface PdfNativeObject {
+  id: string;
+  pageId: string;
+  type: 'native-text' | 'native-image';
+  // Current (possibly moved) position — in PDF points, unscaled
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  // Original position — never changes after extraction
+  originalX: number;
+  originalY: number;
+  originalWidth: number;
+  originalHeight: number;
+  // Text fields
+  text?: string;
+  fontSize?: number;
+  fontName?: string;
+  color?: string;
+  // Raw 6-element PDF transform matrix from getTextContent()
+  transform?: number[];
+  // Image fields
+  dataUrl?: string;
+  // State flag: true = user moved this object away from its original position
+  moved: boolean;
+}
