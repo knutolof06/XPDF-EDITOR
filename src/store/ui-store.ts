@@ -20,6 +20,7 @@ interface UIState {
   isPageNumberModalOpen: boolean;
   isHeaderFooterModalOpen: boolean;
   isPageEqualizeModalOpen: boolean;
+  isObjectEditorOpen: boolean;
   pendingInsertFile: File | null;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
@@ -35,6 +36,7 @@ interface UIState {
   setPageNumberModalOpen: (open: boolean) => void;
   setHeaderFooterModalOpen: (open: boolean) => void;
   setPageEqualizeModalOpen: (open: boolean) => void;
+  setObjectEditorOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -50,6 +52,7 @@ export const useUIStore = create<UIState>((set) => ({
   isPageNumberModalOpen: false,
   isHeaderFooterModalOpen: false,
   isPageEqualizeModalOpen: false,
+  isObjectEditorOpen: false,
   pendingInsertFile: null,
 
   addToast: (message, type = 'info', duration = 3000) => {
@@ -84,4 +87,5 @@ export const useUIStore = create<UIState>((set) => ({
   setPageNumberModalOpen: (open) => set({ isPageNumberModalOpen: open }),
   setHeaderFooterModalOpen: (open) => set({ isHeaderFooterModalOpen: open }),
   setPageEqualizeModalOpen: (open) => set({ isPageEqualizeModalOpen: open }),
+  setObjectEditorOpen: (open) => set({ isObjectEditorOpen: open }),
 }));

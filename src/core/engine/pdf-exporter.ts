@@ -163,6 +163,34 @@ export class PdfExporter {
           } catch (textErr) {
             console.warn('Native text redraw error:', textErr);
           }
+        } else if (nObj.type === 'native-image') {
+          // 1. Mask original position
+          copiedPage.drawRectangle({
+            x: nObj.originalX - 1,
+            y: pageHeight - nObj.originalY - nObj.originalHeight - 1,
+            width: nObj.originalWidth + 2,
+            height: nObj.originalHeight + 2,
+            color: rgb(1, 1, 1),
+            opacity: 1,
+          });
+
+          // 2. If image dataUrl is available, redraw at new position
+          if (nObj.dataUrl) {
+            try {
+              const imgBytes = dataUrlToUint8Array(nObj.dataUrl);
+              const isPng = nObj.dataUrl.includes('image/png');
+              const embedded = isPng ? await outDoc.embedPng(imgBytes) : await outDoc.embedJpg(imgBytes);
+              copiedPage.drawImage(embedded, {
+                x: nObj.x,
+                y: pageHeight - nObj.y - nObj.height,
+                width: nObj.width,
+                height: nObj.height,
+                opacity: 1,
+              });
+            } catch (imgErr) {
+              console.warn('Native image redraw error:', imgErr);
+            }
+          }
         }
       }
 

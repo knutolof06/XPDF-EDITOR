@@ -23,6 +23,7 @@ import { SignatureModal } from './components/dialogs/SignatureModal';
 import { StampModal } from './components/dialogs/StampModal';
 import { PageNumberModal } from './components/dialogs/PageNumberModal';
 import { EqualizePagesModal } from './components/dialogs/EqualizePagesModal';
+import { ObjectEditorModal } from './components/dialogs/ObjectEditorModal';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { ToastContainer } from './components/ui/ToastContainer';
@@ -61,6 +62,8 @@ export const App: React.FC = () => {
     setStampModalOpen,
     isPageNumberModalOpen,
     setPageNumberModalOpen,
+    isObjectEditorOpen,
+    setObjectEditorOpen,
     addToast,
   } = useUIStore();
 
@@ -137,6 +140,7 @@ export const App: React.FC = () => {
         if (isSignatureModalOpen) setSignatureModalOpen(false);
         if (isStampModalOpen) setStampModalOpen(false);
         if (isPageNumberModalOpen) setPageNumberModalOpen(false);
+        if (isObjectEditorOpen) setObjectEditorOpen(false);
         return;
       }
 
@@ -299,6 +303,7 @@ export const App: React.FC = () => {
       <DocumentPropertiesModal />
       <ShortcutsModal />
       <EqualizePagesModal />
+      <ObjectEditorModal />
       <ToastContainer />
     </div>
   );

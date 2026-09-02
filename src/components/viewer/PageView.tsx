@@ -5,7 +5,6 @@ import { PdfPageModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore } from '@/store/viewer-store';
 import { AnnotationLayer } from './AnnotationLayer';
-import { NativeObjectLayer } from './NativeObjectLayer';
 import { enqueuePageRender } from '@/core/cache/thumbnail-queue';
 import { cn } from '@/utils/cn';
 
@@ -31,8 +30,6 @@ export const PageView: React.FC<PageViewProps> = ({
   const [isVisible, setIsVisible] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [renderScale, setRenderScale] = useState(scale);
-  // Holds the resolved PDFPageProxy so NativeObjectLayer can extract text objects
-  const [resolvedPdfPage, setResolvedPdfPage] = useState<pdfjsLib.PDFPageProxy | null>(null);
   const { pdfDocProxy: globalPdfDocProxy } = useDocumentStore();
   const pdfDocProxy = customPdfDocProxy || globalPdfDocProxy;
   const pageTransition = useViewerStore((s) => s.pageTransition);
@@ -90,9 +87,6 @@ export const PageView: React.FC<PageViewProps> = ({
       try {
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
         if (isCancelled) return;
-
-        // Share the resolved page proxy with NativeObjectLayer for text extraction
-        setResolvedPdfPage(pdfPage);
 
         const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
         const viewport = pdfPage.getViewport({
@@ -323,13 +317,6 @@ export const PageView: React.FC<PageViewProps> = ({
           <div
             ref={textLayerRef}
             className="textLayer absolute left-0 top-0 select-text cursor-text z-[2]"
-          />
-
-          {/* Native PDF Object Layer: drag-to-move existing PDF text blocks */}
-          <NativeObjectLayer
-            page={page}
-            scale={scale}
-            pdfPage={resolvedPdfPage}
           />
 
           {/* V3 Interactive Annotation Layer */}

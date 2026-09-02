@@ -31,6 +31,7 @@ import {
   Sparkles,
   CheckSquare,
   Ruler,
+  Move,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -70,6 +71,7 @@ export const TopToolbar: React.FC = () => {
     setSplitModalOpen,
     setPageLayoutModalOpen,
     setPageEqualizeModalOpen,
+    setObjectEditorOpen,
     addToast,
   } = useUIStore();
 
@@ -316,6 +318,17 @@ export const TopToolbar: React.FC = () => {
             >
               <Ruler className="w-3.5 h-3.5 text-orange-500 dark:text-orange-400" />
               <span>Eşitle</span>
+            </button>
+          )}
+
+          {currentDocument && (
+            <button
+              onClick={() => setObjectEditorOpen(true)}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-100 dark:bg-sky-950/40 hover:bg-sky-200 dark:hover:bg-sky-900/60 text-sky-700 dark:text-sky-300 transition-colors border border-sky-200 dark:border-sky-800/60 text-xs font-semibold"
+              title="PDF İçindeki Mevcut Nesneleri (Metin, Görsel, QR Kod) Taşı ve Düzenle"
+            >
+              <Move className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+              <span>Nesneleri Düzenle</span>
             </button>
           )}
         </div>
