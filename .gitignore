@@ -24,3 +24,6 @@ Thumbs.db
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Workflows (ignored locally to avoid PAT workflow scope restriction)
+.github/
