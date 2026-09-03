@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showSaveDialog: (options) => ipcRenderer.invoke('show-save-dialog', options),
   showOpenDialog: (options) => ipcRenderer.invoke('show-open-dialog', options),
   saveFile: (filePath, buffer) => ipcRenderer.invoke('save-file', { filePath, buffer }),
+  printDocument: (options) => ipcRenderer.invoke('print-document', options),
 
   // Windows Integration & Native Drag
   registerPdfAssociation: () => ipcRenderer.invoke('register-pdf-association'),

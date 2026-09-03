@@ -67,8 +67,17 @@ export const DropZone: React.FC<DropZoneProps> = ({ children }) => {
       addToast(`"${pdfFile.name}" başarıyla açıldı (${model.totalPages} sayfa).`, 'success');
     } catch (err: any) {
       console.error('PDF yükleme hatası:', err);
-      setError(err?.message || 'PDF dosyası yüklenirken bir hata oluştu.');
-      addToast('PDF açılamadı. Dosya bozuk veya şifreli olabilir.', 'error');
+      if (err?.isPasswordProtected) {
+        useUIStore.getState().setPasswordModalOpen(true, {
+          name: err.fileName || pdfFile.name,
+          buffer: err.buffer,
+          filePath: err.filePath,
+        });
+        addToast('Bu PDF parola ile korunmaktadır. Lütfen parolayı girin.', 'warning');
+      } else {
+        setError(err?.message || 'PDF dosyası yüklenirken bir hata oluştu.');
+        addToast('PDF açılamadı. Dosya bozuk veya desteklenmiyor olabilir.', 'error');
+      }
     }
   };
 

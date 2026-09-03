@@ -24,6 +24,8 @@ import { StampModal } from './components/dialogs/StampModal';
 import { PageNumberModal } from './components/dialogs/PageNumberModal';
 import { EqualizePagesModal } from './components/dialogs/EqualizePagesModal';
 import { ObjectEditorModal } from './components/dialogs/ObjectEditorModal';
+import { PasswordModal } from './components/dialogs/PasswordModal';
+import { CloseConfirmModal } from './components/dialogs/CloseConfirmModal';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { ToastContainer } from './components/ui/ToastContainer';
@@ -64,6 +66,10 @@ export const App: React.FC = () => {
     setPageNumberModalOpen,
     isObjectEditorOpen,
     setObjectEditorOpen,
+    isPasswordModalOpen,
+    setPasswordModalOpen,
+    isCloseConfirmModalOpen,
+    setCloseConfirmModalOpen,
     addToast,
   } = useUIStore();
 
@@ -98,7 +104,16 @@ export const App: React.FC = () => {
             addToast(`"${fileData.name}" başarıyla açıldı.`, 'success');
           } catch (err: any) {
             console.error(err);
-            addToast('PDF açılırken hata oluştu.', 'error');
+            if (err?.isPasswordProtected) {
+              useUIStore.getState().setPasswordModalOpen(true, {
+                name: err.fileName || fileData.name,
+                buffer: err.buffer || fileData.buffer,
+                filePath: err.filePath || fileData.path,
+              });
+              addToast('Bu döküman parola ile korunmaktadır. Lütfen parolayı girin.', 'warning');
+            } else {
+              addToast('PDF açılırken hata oluştu.', 'error');
+            }
           }
         }
       };
@@ -141,6 +156,8 @@ export const App: React.FC = () => {
         if (isStampModalOpen) setStampModalOpen(false);
         if (isPageNumberModalOpen) setPageNumberModalOpen(false);
         if (isObjectEditorOpen) setObjectEditorOpen(false);
+        if (isPasswordModalOpen) setPasswordModalOpen(false, null);
+        if (isCloseConfirmModalOpen) setCloseConfirmModalOpen(false, null);
         return;
       }
 
@@ -188,6 +205,18 @@ export const App: React.FC = () => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         openSearch();
+        return;
+      }
+
+      // Ctrl + P -> Print
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        const electron = (window as any).electronAPI;
+        if (electron?.printDocument) {
+          electron.printDocument();
+        } else {
+          window.print();
+        }
         return;
       }
 
@@ -304,6 +333,8 @@ export const App: React.FC = () => {
       <ShortcutsModal />
       <EqualizePagesModal />
       <ObjectEditorModal />
+      <PasswordModal />
+      <CloseConfirmModal />
       <ToastContainer />
     </div>
   );

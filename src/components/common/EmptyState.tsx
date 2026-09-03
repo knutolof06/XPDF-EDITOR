@@ -45,8 +45,17 @@ export const EmptyState: React.FC = () => {
       addToast(`"${file.name}" başarıyla açıldı.`, 'success');
     } catch (err: any) {
       console.error(err);
-      setError(err?.message || 'PDF yüklenemedi.');
-      addToast('PDF yüklenemedi.', 'error');
+      if (err?.isPasswordProtected) {
+        useUIStore.getState().setPasswordModalOpen(true, {
+          name: err.fileName || file.name,
+          buffer: err.buffer,
+          filePath: err.filePath,
+        });
+        addToast('Bu PDF parola ile korunmaktadır. Lütfen parolayı girin.', 'warning');
+      } else {
+        setError(err?.message || 'PDF yüklenemedi.');
+        addToast('PDF yüklenemedi.', 'error');
+      }
     }
   };
 

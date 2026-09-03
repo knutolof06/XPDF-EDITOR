@@ -21,6 +21,10 @@ interface UIState {
   isHeaderFooterModalOpen: boolean;
   isPageEqualizeModalOpen: boolean;
   isObjectEditorOpen: boolean;
+  isPasswordModalOpen: boolean;
+  pendingPasswordDoc: { name: string; buffer: ArrayBuffer; filePath?: string } | null;
+  isCloseConfirmModalOpen: boolean;
+  pendingCloseTabId: string | null;
   pendingInsertFile: File | null;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
@@ -37,6 +41,8 @@ interface UIState {
   setHeaderFooterModalOpen: (open: boolean) => void;
   setPageEqualizeModalOpen: (open: boolean) => void;
   setObjectEditorOpen: (open: boolean) => void;
+  setPasswordModalOpen: (open: boolean, doc?: { name: string; buffer: ArrayBuffer; filePath?: string } | null) => void;
+  setCloseConfirmModalOpen: (open: boolean, tabId?: string | null) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -53,6 +59,10 @@ export const useUIStore = create<UIState>((set) => ({
   isHeaderFooterModalOpen: false,
   isPageEqualizeModalOpen: false,
   isObjectEditorOpen: false,
+  isPasswordModalOpen: false,
+  pendingPasswordDoc: null,
+  isCloseConfirmModalOpen: false,
+  pendingCloseTabId: null,
   pendingInsertFile: null,
 
   addToast: (message, type = 'info', duration = 3000) => {
@@ -88,4 +98,6 @@ export const useUIStore = create<UIState>((set) => ({
   setHeaderFooterModalOpen: (open) => set({ isHeaderFooterModalOpen: open }),
   setPageEqualizeModalOpen: (open) => set({ isPageEqualizeModalOpen: open }),
   setObjectEditorOpen: (open) => set({ isObjectEditorOpen: open }),
+  setPasswordModalOpen: (open, doc = null) => set({ isPasswordModalOpen: open, pendingPasswordDoc: doc }),
+  setCloseConfirmModalOpen: (open, tabId = null) => set({ isCloseConfirmModalOpen: open, pendingCloseTabId: tabId }),
 }));

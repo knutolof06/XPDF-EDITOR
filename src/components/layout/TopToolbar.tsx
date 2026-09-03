@@ -32,6 +32,7 @@ import {
   CheckSquare,
   Ruler,
   Move,
+  Printer,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -96,8 +97,17 @@ export const TopToolbar: React.FC = () => {
       addToast(`"${file.name}" başarıyla açıldı.`, 'success');
     } catch (err: any) {
       console.error(err);
-      setError(err?.message || 'PDF yüklenemedi.');
-      addToast('PDF açılamadı.', 'error');
+      if (err?.isPasswordProtected) {
+        useUIStore.getState().setPasswordModalOpen(true, {
+          name: err.fileName || file.name,
+          buffer: err.buffer,
+          filePath: err.filePath,
+        });
+        addToast('Bu PDF parola ile korunmaktadır. Lütfen parolayı girin.', 'warning');
+      } else {
+        setError(err?.message || 'PDF yüklenemedi.');
+        addToast('PDF açılamadı.', 'error');
+      }
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -172,6 +182,22 @@ export const TopToolbar: React.FC = () => {
     }
   };
 
+  // Yazdır (Print)
+  const handlePrint = async () => {
+    if (!currentDocument) return;
+    const electron = (window as any).electronAPI;
+    try {
+      if (electron?.printDocument) {
+        await electron.printDocument();
+      } else {
+        window.print();
+      }
+    } catch (err: any) {
+      console.error('Print error:', err);
+      window.print();
+    }
+  };
+
   return (
     <header className="h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 flex items-center justify-between text-slate-700 dark:text-slate-200 select-none z-30 shrink-0 shadow-sm transition-colors duration-200">
       <input
@@ -225,6 +251,18 @@ export const TopToolbar: React.FC = () => {
               <span className="text-sky-100">↓</span>
             </button>
           </div>
+        )}
+
+        {/* Print */}
+        {currentDocument && (
+          <button
+            onClick={handlePrint}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80"
+            title="Yazdır (Ctrl + P)"
+          >
+            <Printer className="w-3.5 h-3.5 text-slate-600 dark:text-slate-400" />
+            <span className="hidden md:inline">Yazdır</span>
+          </button>
         )}
 
         {/* Undo / Redo */}

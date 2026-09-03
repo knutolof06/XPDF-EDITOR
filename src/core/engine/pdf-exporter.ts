@@ -1,9 +1,42 @@
-import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb, degrees, StandardFonts, PDFFont } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import { PdfDocumentModel } from '@/types/document';
 import { DrawingAnnotation, ShapeAnnotation, TextAnnotation, ImageAnnotation, WhiteoutAnnotation } from '@/types/annotations';
 import { binaryStore } from '../storage/binary-store';
 import { useAnnotationStore } from '@/store/annotation-store';
 import { useNativeObjectStore } from '@/store/native-object-store';
+
+let cachedRegularFont: ArrayBuffer | null = null;
+let cachedBoldFont: ArrayBuffer | null = null;
+
+async function loadUnicodeFonts(): Promise<{ regular: ArrayBuffer | null; bold: ArrayBuffer | null }> {
+  if (cachedRegularFont && cachedBoldFont) {
+    return { regular: cachedRegularFont, bold: cachedBoldFont };
+  }
+  try {
+    const urls = ['./fonts/font-regular.ttf', './fonts/font-bold.ttf'];
+    const [resReg, resBold] = await Promise.all([
+      fetch(urls[0]),
+      fetch(urls[1]),
+    ]);
+    if (resReg.ok && resBold.ok) {
+      cachedRegularFont = await resReg.arrayBuffer();
+      cachedBoldFont = await resBold.arrayBuffer();
+      return { regular: cachedRegularFont, bold: cachedBoldFont };
+    }
+  } catch (err) {
+    console.warn('Unicode fonts could not be fetched from ./fonts/, trying fallback:', err);
+  }
+  return { regular: null, bold: null };
+}
+
+function safeText(text: string, isCustomFont: boolean): string {
+  if (isCustomFont || !text) return text || '';
+  return text
+    .replace(/ğ/g, 'g').replace(/Ğ/g, 'G')
+    .replace(/ş/g, 's').replace(/Ş/g, 'S')
+    .replace(/ı/g, 'i').replace(/İ/g, 'I');
+}
 
 export class PdfExporter {
   /**
@@ -19,8 +52,20 @@ export class PdfExporter {
     const srcDoc = await PDFDocument.load(rawBuffer);
     const outDoc = await PDFDocument.create();
 
-    const fontHelvetica = await outDoc.embedFont(StandardFonts.Helvetica);
-    const fontHelveticaBold = await outDoc.embedFont(StandardFonts.HelveticaBold);
+    outDoc.registerFontkit(fontkit);
+
+    const { regular, bold } = await loadUnicodeFonts();
+    let fontHelvetica: PDFFont;
+    let fontHelveticaBold: PDFFont;
+    const isCustomFont = Boolean(regular && bold);
+
+    if (isCustomFont && regular && bold) {
+      fontHelvetica = await outDoc.embedFont(regular, { subset: true });
+      fontHelveticaBold = await outDoc.embedFont(bold, { subset: true });
+    } else {
+      fontHelvetica = await outDoc.embedFont(StandardFonts.Helvetica);
+      fontHelveticaBold = await outDoc.embedFont(StandardFonts.HelveticaBold);
+    }
 
     const { pageNumberConfig, headerFooterConfig } = useAnnotationStore.getState();
 
@@ -41,7 +86,7 @@ export class PdfExporter {
         if (ann.type === 'text') {
           const textAnn = ann as TextAnnotation;
           const font = textAnn.isBold ? fontHelveticaBold : fontHelvetica;
-          copiedPage.drawText(textAnn.text, {
+          copiedPage.drawText(safeText(textAnn.text, isCustomFont), {
             x: textAnn.x,
             y: pageHeight - textAnn.y - textAnn.fontSize,
             size: textAnn.fontSize,
@@ -152,7 +197,7 @@ export class PdfExporter {
 
           // 2. Redraw at new position
           try {
-            copiedPage.drawText(nObj.text, {
+            copiedPage.drawText(safeText(nObj.text, isCustomFont), {
               x: nObj.x,
               y: pageHeight - nObj.y - fontSize,
               size: fontSize,
@@ -210,7 +255,7 @@ export class PdfExporter {
         else if (pageNumberConfig.position === 'top-center') { numX = pageWidth / 2 - 25; numY = pageHeight - 30; }
         else if (pageNumberConfig.position === 'top-right') { numX = pageWidth - 80; numY = pageHeight - 30; }
 
-        copiedPage.drawText(numText, {
+        copiedPage.drawText(safeText(numText, isCustomFont), {
           x: numX,
           y: numY,
           size: pageNumberConfig.fontSize,
@@ -221,7 +266,7 @@ export class PdfExporter {
 
       // Header / Footer
       if (headerFooterConfig.headerText) {
-        copiedPage.drawText(headerFooterConfig.headerText, {
+        copiedPage.drawText(safeText(headerFooterConfig.headerText, isCustomFont), {
           x: 30,
           y: pageHeight - 25,
           size: headerFooterConfig.fontSize,
@@ -231,7 +276,7 @@ export class PdfExporter {
       }
 
       if (headerFooterConfig.footerText) {
-        copiedPage.drawText(headerFooterConfig.footerText, {
+        copiedPage.drawText(safeText(headerFooterConfig.footerText, isCustomFont), {
           x: 30,
           y: 20,
           size: headerFooterConfig.fontSize,

@@ -15,6 +15,16 @@ interface PageViewProps {
   customPdfDocProxy?: pdfjsLib.PDFDocumentProxy;
 }
 
+interface PdfLinkItem {
+  id: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  url?: string;
+  dest?: any;
+}
+
 export const PageView: React.FC<PageViewProps> = ({
   page,
   index,
@@ -30,7 +40,8 @@ export const PageView: React.FC<PageViewProps> = ({
   const [isVisible, setIsVisible] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [renderScale, setRenderScale] = useState(scale);
-  const { pdfDocProxy: globalPdfDocProxy } = useDocumentStore();
+  const [pageLinks, setPageLinks] = useState<PdfLinkItem[]>([]);
+  const { pdfDocProxy: globalPdfDocProxy, setActivePageIndex } = useDocumentStore();
   const pdfDocProxy = customPdfDocProxy || globalPdfDocProxy;
   const pageTransition = useViewerStore((s) => s.pageTransition);
   const searchState = useViewerStore((s) => s.searchState);
@@ -185,6 +196,36 @@ export const PageView: React.FC<PageViewProps> = ({
             container.appendChild(fragment);
           }
         }
+
+        // Extract native PDF Links (Hyperlinks and Internal Page Navigation)
+        try {
+          const annotations = await pdfPage.getAnnotations({ intent: 'display' });
+          if (!isCancelled) {
+            const links: PdfLinkItem[] = [];
+            for (const ann of annotations) {
+              if (ann.subtype === 'Link' && ann.rect) {
+                const rect = cssViewport.convertToViewportRectangle(ann.rect);
+                const left = Math.min(rect[0], rect[2]);
+                const top = Math.min(rect[1], rect[3]);
+                const width = Math.abs(rect[2] - rect[0]);
+                const height = Math.abs(rect[3] - rect[1]);
+
+                links.push({
+                  id: ann.id || `link_${page.id}_${Math.random().toString(36).substring(2, 7)}`,
+                  left,
+                  top,
+                  width,
+                  height,
+                  url: ann.url || undefined,
+                  dest: ann.dest || undefined,
+                });
+              }
+            }
+            setPageLinks(links);
+          }
+        } catch (linkErr) {
+          console.warn('Link extraction error:', linkErr);
+        }
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') {
           console.error(`Page ${index + 1} render error:`, err);
@@ -285,6 +326,30 @@ export const PageView: React.FC<PageViewProps> = ({
     instant: '',
   }[pageTransition] || '';
 
+  // Handle clicking on links
+  const handleLinkClick = async (e: React.MouseEvent, link: PdfLinkItem) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (link.url) {
+      window.open(link.url, '_blank');
+    } else if (link.dest && pdfDocProxy) {
+      try {
+        let dest = link.dest;
+        if (typeof dest === 'string') {
+          dest = await pdfDocProxy.getDestination(dest);
+        }
+        if (Array.isArray(dest) && dest[0]) {
+          const targetPageIndex = await pdfDocProxy.getPageIndex(dest[0]);
+          if (targetPageIndex >= 0) {
+            setActivePageIndex(targetPageIndex);
+          }
+        }
+      } catch (err) {
+        console.warn('Internal destination navigation error:', err);
+      }
+    }
+  };
+
   const baseWidth = (page.width || 595.28) * scale;
   const baseHeight = (page.height || 841.89) * scale;
 
@@ -318,6 +383,27 @@ export const PageView: React.FC<PageViewProps> = ({
             ref={textLayerRef}
             className="textLayer absolute left-0 top-0 select-text cursor-text z-[2]"
           />
+
+          {/* Native Clickable PDF Links & Navigation Layer */}
+          {pageLinks.length > 0 && (
+            <div className="absolute left-0 top-0 w-full h-full pointer-events-none z-[3]">
+              {pageLinks.map((link) => (
+                <a
+                  key={link.id}
+                  href={link.url || '#'}
+                  onClick={(e) => handleLinkClick(e, link)}
+                  style={{
+                    left: `${link.left}px`,
+                    top: `${link.top}px`,
+                    width: `${link.width}px`,
+                    height: `${link.height}px`,
+                  }}
+                  className="absolute pointer-events-auto cursor-pointer rounded-[2px] hover:bg-sky-500/20 hover:ring-1 hover:ring-sky-500 transition-all"
+                  title={link.url ? `Bağlantıyı Aç: ${link.url}` : 'Sayfaya Git'}
+                />
+              ))}
+            </div>
+          )}
 
           {/* V3 Interactive Annotation Layer */}
           <AnnotationLayer page={page} scale={scale} />

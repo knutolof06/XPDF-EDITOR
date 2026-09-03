@@ -231,6 +231,24 @@ ipcMain.handle('save-file', async (_event, { filePath, buffer }) => {
   }
 });
 
+ipcMain.handle('print-document', async (_event, options) => {
+  if (!mainWindow) return { success: false, error: 'Pencere bulunamadı' };
+  try {
+    mainWindow.webContents.print({
+      silent: false,
+      printBackground: true,
+      deviceName: options?.deviceName || '',
+    }, (success, failureReason) => {
+      if (!success && failureReason !== 'cancelled') {
+        console.warn('Print result:', success, failureReason);
+      }
+    });
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // Windows File Association & Thumbnail Registration Helper
 ipcMain.handle('register-pdf-association', async () => {
   if (process.platform !== 'win32') return { success: false, message: 'Only Windows supported' };

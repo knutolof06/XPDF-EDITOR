@@ -36,6 +36,13 @@ export const TabBar: React.FC = () => {
 
   const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
     e.stopPropagation();
+    const targetTab = tabs.find((t) => t.id === tabId);
+    const isCurrentDirty = targetTab?.id === currentDocument?.id && currentDocument?.isModified;
+    if (targetTab && (targetTab.model.isModified || isCurrentDirty)) {
+      useUIStore.getState().setCloseConfirmModalOpen(true, tabId);
+      return;
+    }
+
     closeTab(tabId);
     const remaining = tabs.filter((t) => t.id !== tabId);
     if (remaining.length > 0) {
@@ -63,7 +70,16 @@ export const TabBar: React.FC = () => {
       addToast(`"${file.name}" açıldı.`, 'success');
     } catch (err: any) {
       console.error(err);
-      addToast('Yeni sekme açılamadı.', 'error');
+      if (err?.isPasswordProtected) {
+        useUIStore.getState().setPasswordModalOpen(true, {
+          name: err.fileName || file.name,
+          buffer: err.buffer || (await file.arrayBuffer()),
+          filePath: err.filePath,
+        });
+        addToast('Bu döküman parola ile korunmaktadır. Lütfen parolayı girin.', 'warning');
+      } else {
+        addToast('Yeni sekme açılamadı.', 'error');
+      }
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }

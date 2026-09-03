@@ -46,7 +46,8 @@ export class PdfLoader {
   public static async loadDocument(
     name: string,
     data: any,
-    filePath?: string
+    filePath?: string,
+    password?: string
   ): Promise<LoadedPdfResult> {
     const rawBuffer = toArrayBuffer(data);
     const id = crypto.randomUUID ? crypto.randomUUID() : 'doc_' + Date.now();
@@ -62,9 +63,24 @@ export class PdfLoader {
       cMapUrl: getAssetUrl('pdfjs/cmaps/'),
       cMapPacked: true,
       standardFontDataUrl: getAssetUrl('pdfjs/standard_fonts/'),
+      password: password || undefined,
     });
 
-    const pdfDoc = await loadingTask.promise;
+    let pdfDoc: pdfjsLib.PDFDocumentProxy;
+    try {
+      pdfDoc = await loadingTask.promise;
+    } catch (err: any) {
+      if (err?.name === 'PasswordException' || err?.message?.toLowerCase().includes('password')) {
+        const passErr: any = new Error('Bu PDF dökümanı parola ile korunmaktadır.');
+        passErr.isPasswordProtected = true;
+        passErr.fileName = name;
+        passErr.buffer = rawBuffer;
+        passErr.filePath = filePath;
+        throw passErr;
+      }
+      throw err;
+    }
+
     const totalPages = pdfDoc.numPages;
 
     // Extract metadata

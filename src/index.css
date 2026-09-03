@@ -125,3 +125,29 @@ body.is-dragging-page * {
   transition: none !important;
   animation: none !important;
 }
+
+/* Print Media Stylesheet */
+@media print {
+  html, body, #root {
+    width: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    position: static !important;
+    background: white !important;
+  }
+
+  /* Hide app frame elements */
+  header, nav, aside, footer, .no-print, [role="toolbar"], #tab-bar, .search-overlay {
+    display: none !important;
+  }
+
+  /* Expand viewer */
+  div[tabindex="0"], div[id^="page-container-"] {
+    overflow: visible !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    page-break-after: always;
+    break-after: page;
+  }
+}
+
