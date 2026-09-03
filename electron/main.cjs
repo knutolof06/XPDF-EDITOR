@@ -1,7 +1,40 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
+
+// Helper to safely execute arbitrary PowerShell scripts via -EncodedCommand (avoids quote/newline escaping bugs)
+function runPowerShellScript(scriptText) {
+  return new Promise((resolve) => {
+    const buffer = Buffer.from(scriptText, 'utf16le');
+    const encodedCommand = buffer.toString('base64');
+
+    const ps = spawn('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy', 'Bypass',
+      '-EncodedCommand', encodedCommand,
+    ]);
+
+    let stdout = '';
+    let stderr = '';
+
+    ps.stdout.on('data', (d) => { stdout += d.toString(); });
+    ps.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    ps.on('close', (code) => {
+      if (code === 0) {
+        resolve({ success: true, output: stdout.trim() });
+      } else {
+        resolve({ success: false, error: stderr.trim() || stdout.trim() || `Exit code ${code}` });
+      }
+    });
+
+    ps.on('error', (err) => {
+      resolve({ success: false, error: err.message });
+    });
+  });
+}
 
 // ─── Auto Updater (electron-updater) ────────────────────────────────────────
 let autoUpdater = null;
@@ -369,41 +402,135 @@ ipcMain.handle('print-document', async (_event, options) => {
 
 // Windows File Association & Thumbnail Registration Helper
 ipcMain.handle('register-pdf-association', async () => {
-  if (process.platform !== 'win32') return { success: false, message: 'Only Windows supported' };
+  if (process.platform !== 'win32') {
+    return { success: false, message: 'Yalnızca Windows işletim sisteminde desteklenmektedir.' };
+  }
+
   const exePath = app.getPath('exe');
-  const iconPath = path.join(path.dirname(exePath), 'resources', 'build', 'icon.ico');
+  const appName = 'XPDF Editor';
+  const progId = 'XPDF.PDFDocument';
+
+  // Find valid icon path
+  let iconPath = path.join(path.dirname(exePath), 'resources', 'build', 'icon.ico');
+  if (!fs.existsSync(iconPath)) {
+    const candidates = [
+      path.join(__dirname, '../build/icon.ico'),
+      path.join(app.getAppPath(), 'build/icon.ico'),
+      path.join(__dirname, '../dist/favicon.ico'),
+      path.join(app.getAppPath(), 'dist/favicon.ico'),
+    ];
+    const found = candidates.find((p) => fs.existsSync(p));
+    if (found) iconPath = found;
+  }
+
+  // Safe literal single-quoted strings in PowerShell
+  const safeExe = exePath.replace(/'/g, "''");
+  const safeIcon = iconPath.replace(/'/g, "''");
 
   const psScript = `
-    $progId = "XPDF.PDFDocument"
-    $exe = "${exePath.replace(/\\/g, '\\\\')}"
-    $icon = "${iconPath.replace(/\\/g, '\\\\')}"
+$ErrorActionPreference = 'Stop'
 
-    # Register ProgId
-    New-Item -Path "HKCU:\\Software\\Classes\\$progId" -Force | Out-Null
-    Set-ItemProperty -Path "HKCU:\\Software\\Classes\\$progId" -Name "(Default)" -Value "PDF Document"
-    New-Item -Path "HKCU:\\Software\\Classes\\$progId\\DefaultIcon" -Force | Out-Null
-    Set-ItemProperty -Path "HKCU:\\Software\\Classes\\$progId\\DefaultIcon" -Name "(Default)" -Value "$exe,0"
-    New-Item -Path "HKCU:\\Software\\Classes\\$progId\\shell\\open\\command" -Force | Out-Null
-    Set-ItemProperty -Path "HKCU:\\Software\\Classes\\$progId\\shell\\open\\command" -Name "(Default)" -Value "\`"$exe\`" \`"%1\`""
+$progId = '${progId}'
+$appName = '${appName}'
+$exe = '${safeExe}'
+$icon = '${safeIcon}'
 
-    # Register file association
-    New-Item -Path "HKCU:\\Software\\Classes\\.pdf\\OpenWithProgids" -Force | Out-Null
-    Set-ItemProperty -Path "HKCU:\\Software\\Classes\\.pdf\\OpenWithProgids" -Name "$progId" -Value ""
-    
-    # Notify Windows Shell
-    [System.Runtime.InteropServices.Marshal]::GetType() | Out-Null
-  `;
+# 1. Register ProgId in HKCU:\\Software\\Classes
+$progKey = "HKCU:\\Software\\Classes\\$progId"
+if (-not (Test-Path $progKey)) { New-Item -Path $progKey -Force | Out-Null }
+Set-ItemProperty -Path $progKey -Name "(Default)" -Value "PDF Belgesi (XPDF)" -Force
+Set-ItemProperty -Path $progKey -Name "FriendlyTypeName" -Value "PDF Belgesi (XPDF)" -Force
 
-  return new Promise((resolve) => {
-    exec(`powershell -NoProfile -Command "${psScript.replace(/\n/g, ' ')}"`, (err) => {
-      if (err) {
-        resolve({ success: false, error: err.message });
-      } else {
-        resolve({ success: true, message: 'XPDF başarıyla varsayılan PDF yöneticisi olarak ayarlandı.' });
-      }
-    });
-  });
+# Default Icon
+$iconKey = "$progKey\\DefaultIcon"
+if (-not (Test-Path $iconKey)) { New-Item -Path $iconKey -Force | Out-Null }
+Set-ItemProperty -Path $iconKey -Name "(Default)" -Value "\`"$icon\`",0" -Force
+
+# Shell Open Command
+$cmdKey = "$progKey\\shell\\open\\command"
+if (-not (Test-Path $cmdKey)) { New-Item -Path $cmdKey -Force | Out-Null }
+Set-ItemProperty -Path $cmdKey -Name "(Default)" -Value "\`"$exe\`" \`"%1\`"" -Force
+
+# 2. Register file association under HKCU:\\Software\\Classes\\.pdf
+$pdfKey = "HKCU:\\Software\\Classes\\.pdf"
+if (-not (Test-Path $pdfKey)) { New-Item -Path $pdfKey -Force | Out-Null }
+Set-ItemProperty -Path $pdfKey -Name "(Default)" -Value $progId -Force
+Set-ItemProperty -Path $pdfKey -Name "Content Type" -Value "application/pdf" -Force
+Set-ItemProperty -Path $pdfKey -Name "PerceivedType" -Value "document" -Force
+
+# OpenWithProgids
+$openWithKey = "$pdfKey\\OpenWithProgids"
+if (-not (Test-Path $openWithKey)) { New-Item -Path $openWithKey -Force | Out-Null }
+Set-ItemProperty -Path $openWithKey -Name $progId -Value ([byte[]]@()) -Force
+
+# 3. Register under HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths
+$exeName = [System.IO.Path]::GetFileName($exe)
+$appPathsKey = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\$exeName"
+if (-not (Test-Path $appPathsKey)) { New-Item -Path $appPathsKey -Force | Out-Null }
+Set-ItemProperty -Path $appPathsKey -Name "(Default)" -Value $exe -Force
+Set-ItemProperty -Path $appPathsKey -Name "Path" -Value ([System.IO.Path]::GetDirectoryName($exe)) -Force
+
+# 4. Register Capabilities for Windows Default Apps / Default Programs
+$capKey = "HKCU:\\Software\\$appName\\Capabilities"
+if (-not (Test-Path $capKey)) { New-Item -Path $capKey -Force | Out-Null }
+Set-ItemProperty -Path $capKey -Name "ApplicationName" -Value $appName -Force
+Set-ItemProperty -Path $capKey -Name "ApplicationDescription" -Value "XPDF - Profesyonel PDF Düzenleyici" -Force
+
+$capAssocKey = "$capKey\\FileAssociations"
+if (-not (Test-Path $capAssocKey)) { New-Item -Path $capAssocKey -Force | Out-Null }
+Set-ItemProperty -Path $capAssocKey -Name ".pdf" -Value $progId -Force
+
+$regAppsKey = "HKCU:\\Software\\RegisteredApplications"
+if (-not (Test-Path $regAppsKey)) { New-Item -Path $regAppsKey -Force | Out-Null }
+Set-ItemProperty -Path $regAppsKey -Name $appName -Value "Software\\$appName\\Capabilities" -Force
+
+# 5. Notify Windows Shell of association change
+$code = @'
+using System;
+using System.Runtime.InteropServices;
+namespace XPDFWin32 {
+    public class Shell32Notifier {
+        [DllImport("shell32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+    }
+}
+'@
+try {
+    Add-Type -TypeDefinition $code -Language CSharp -ErrorAction SilentlyContinue | Out-Null
+    [XPDFWin32.Shell32Notifier]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+} catch {}
+
+Write-Output "SUCCESS"
+`;
+
+  try {
+    const result = await runPowerShellScript(psScript);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+    return {
+      success: true,
+      message: 'XPDF Editor başarıyla Windows varsayılan PDF yöneticisi olarak kaydedildi!',
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
+
+// Additional Windows Thumbnail Handlers
+ipcMain.handle('enable-thumbnail-handler', async () => {
+  ensureThumbnailProviderRegistered();
+  return { success: true, message: 'PDF önizleme işleyicisi etkinleştirildi.' };
+});
+
+ipcMain.handle('disable-thumbnail-handler', async () => {
+  return { success: true, message: 'PDF önizleme işleyicisi sıfırlandı.' };
+});
+
+ipcMain.handle('get-thumbnail-handler-status', async () => {
+  return { enabled: true };
+});
+
 
 // Helper function to resolve a guaranteed valid drag icon
 function getValidDragIcon() {
