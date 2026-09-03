@@ -3,6 +3,25 @@ const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
 
+// ─── Auto Updater (electron-updater) ────────────────────────────────────────
+let autoUpdater = null;
+try {
+  autoUpdater = require('electron-updater').autoUpdater;
+  // Log updater events to console (visible in DevTools)
+  autoUpdater.logger = {
+    info: (...a) => console.log('[Updater]', ...a),
+    warn: (...a) => console.warn('[Updater]', ...a),
+    error: (...a) => console.error('[Updater]', ...a),
+    debug: (...a) => console.debug('[Updater]', ...a),
+  };
+  autoUpdater.autoDownload = true;        // Download automatically in background
+  autoUpdater.autoInstallOnAppQuit = true; // Install on next quit/restart
+} catch (e) {
+  console.warn('[Updater] electron-updater not available:', e.message);
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+
 let mainWindow = null;
 let fileToOpenOnReady = null;
 
@@ -162,6 +181,75 @@ app.whenReady().then(() => {
   createWindow();
   ensureThumbnailProviderRegistered();
 
+  // ─── Auto Update Check ──────────────────────────────────────────────────
+  if (autoUpdater && app.isPackaged) {
+    // Wait 3 seconds after launch so the window is fully loaded first
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((err) => {
+        console.warn('[Updater] checkForUpdates failed:', err.message);
+      });
+    }, 3000);
+
+    autoUpdater.on('update-available', (info) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('updater-status', {
+          type: 'available',
+          version: info.version,
+          message: `Yeni sürüm (v${info.version}) bulundu. Arka planda indiriliyor...`,
+        });
+      }
+    });
+
+    autoUpdater.on('update-not-available', () => {
+      console.log('[Updater] App is up to date.');
+    });
+
+    autoUpdater.on('download-progress', (progress) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('updater-status', {
+          type: 'progress',
+          percent: Math.round(progress.percent),
+          message: `Güncelleme indiriliyor... %${Math.round(progress.percent)}`,
+        });
+      }
+    });
+
+    autoUpdater.on('update-downloaded', (info) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('updater-status', {
+          type: 'downloaded',
+          version: info.version,
+          message: `v${info.version} indirildi. Uygulamayı yeniden başlatın.`,
+        });
+      }
+      // Show native dialog asking user to restart
+      dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'XPDF Editor — Güncelleme Hazır',
+        message: `Yeni sürüm (v${info.version}) indirildi.`,
+        detail: 'Güncellemeyi uygulamak için uygulamayı şimdi yeniden başlatmak ister misiniz?',
+        buttons: ['Şimdi Yeniden Başlat', 'Sonra'],
+        defaultId: 0,
+        cancelId: 1,
+      }).then(({ response }) => {
+        if (response === 0) {
+          autoUpdater.quitAndInstall(false, true);
+        }
+      });
+    });
+
+    autoUpdater.on('error', (err) => {
+      console.error('[Updater] Error:', err.message);
+      if (mainWindow) {
+        mainWindow.webContents.send('updater-status', {
+          type: 'error',
+          message: `Güncelleme hatası: ${err.message}`,
+        });
+      }
+    });
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -170,6 +258,26 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// IPC: Manuel güncelleme kontrolü (renderer'dan tetiklenebilir)
+ipcMain.handle('check-for-updates', async () => {
+  if (!autoUpdater || !app.isPackaged) return { status: 'dev-mode' };
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    return { status: 'checking', version: result?.updateInfo?.version };
+  } catch (err) {
+    return { status: 'error', message: err.message };
+  }
+});
+
+ipcMain.handle('install-update-now', async () => {
+  if (autoUpdater) autoUpdater.quitAndInstall(false, true);
+});
+
+ipcMain.handle('get-app-version', async () => {
+  return app.getVersion();
+});
+
 
 // IPC Handlers
 ipcMain.handle('get-initial-file', async () => {
@@ -297,23 +405,84 @@ ipcMain.handle('register-pdf-association', async () => {
   });
 });
 
-// Drag-to-Desktop / Windows Explorer Native File Drag Handler
-ipcMain.on('start-drag-page', (event, { fileName, buffer }) => {
-  try {
-    const tempDir = app.getPath('temp');
-    const safeFileName = (fileName || 'sayfa.pdf').replace(/[/\\?%*:|"<>]/g, '_');
-    const tempFilePath = path.join(tempDir, safeFileName);
-    fs.writeFileSync(tempFilePath, Buffer.from(buffer));
-
-    let iconPath = path.join(__dirname, '../build/icon.ico');
-    if (!fs.existsSync(iconPath)) {
-      iconPath = path.join(app.getAppPath(), 'build/icon.ico');
+// Helper function to resolve a guaranteed valid drag icon
+function getValidDragIcon() {
+  let dragIcon = nativeImage.createEmpty();
+  const candidateIcons = [
+    path.join(__dirname, '../dist/favicon.ico'),
+    path.join(app.getAppPath(), 'dist/favicon.ico'),
+    path.join(__dirname, '../public/favicon.ico'),
+    path.join(__dirname, '../build/icon.ico'),
+    path.join(app.getAppPath(), 'build/icon.ico'),
+  ];
+  for (const p of candidateIcons) {
+    if (fs.existsSync(p)) {
+      try {
+        const img = nativeImage.createFromPath(p);
+        if (!img.isEmpty()) {
+          dragIcon = img;
+          break;
+        }
+      } catch {}
     }
+  }
+  return dragIcon;
+}
 
-    event.sender.startDrag({
-      file: tempFilePath,
-      icon: iconPath,
-    });
+// Prepare file on disk ahead of time (synchronously or ahead of drag)
+ipcMain.handle('prepare-drag-file', async (event, data) => {
+  try {
+    if (!data || !data.buffer) return { success: false, error: 'No buffer' };
+    const tempDir = path.join(app.getPath('temp'), 'xpdf_drag');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    const safeFileName = (data.fileName || 'sayfa.pdf').replace(/[/\\?%*:|"<>]/g, '_');
+    const tempFilePath = path.join(tempDir, safeFileName);
+    fs.writeFileSync(tempFilePath, Buffer.from(data.buffer));
+    return { success: true, filePath: tempFilePath };
+  } catch (err) {
+    console.error('prepare-drag-file error:', err);
+    return { success: false, error: String(err) };
+  }
+});
+
+// Start native OS Drag (to Desktop, Explorer, or external apps)
+ipcMain.on('start-drag-file', (event, { filePath }) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return;
+    const dragIcon = getValidDragIcon();
+
+    if (event.sender && !event.sender.isDestroyed()) {
+      event.sender.startDrag({
+        file: filePath,
+        icon: dragIcon,
+      });
+    }
+  } catch (err) {
+    console.error('start-drag-file error:', err);
+  }
+});
+
+// Legacy start-drag-page (fallback)
+ipcMain.on('start-drag-page', (event, data) => {
+  try {
+    if (!data || !data.buffer) return;
+    const tempDir = path.join(app.getPath('temp'), 'xpdf_drag');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    const safeFileName = (data.fileName || 'sayfa.pdf').replace(/[/\\?%*:|"<>]/g, '_');
+    const tempFilePath = path.join(tempDir, safeFileName);
+    fs.writeFileSync(tempFilePath, Buffer.from(data.buffer));
+
+    const dragIcon = getValidDragIcon();
+    if (event.sender && !event.sender.isDestroyed()) {
+      event.sender.startDrag({
+        file: tempFilePath,
+        icon: dragIcon,
+      });
+    }
   } catch (err) {
     console.error('startDrag error:', err);
   }

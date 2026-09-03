@@ -12,7 +12,7 @@ export class PdfFormsEngine {
     if (!rawBuffer) return [];
 
     try {
-      const pdfDoc = await PDFDocument.load(rawBuffer);
+      const pdfDoc = await PDFDocument.load(rawBuffer, { ignoreEncryption: true });
       const form = pdfDoc.getForm();
       const fields = form.getFields();
       const results: FormFieldModel[] = [];
@@ -66,7 +66,7 @@ export class PdfFormsEngine {
     const rawBuffer = binaryStore.get(docId);
     if (!rawBuffer) throw new Error('Döküman verisi bulunamadı.');
 
-    const pdfDoc = await PDFDocument.load(rawBuffer);
+    const pdfDoc = await PDFDocument.load(rawBuffer, { ignoreEncryption: true });
     const form = pdfDoc.getForm();
 
     Object.entries(values).forEach(([fieldName, val]) => {
@@ -86,6 +86,51 @@ export class PdfFormsEngine {
         console.warn(`Field ${fieldName} could not be updated:`, err);
       }
     });
+
+    const bytes = await pdfDoc.save();
+    const outBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    ) as ArrayBuffer;
+
+    return await PdfLoader.loadDocument(docName, outBuffer);
+  }
+
+  /**
+   * Flattens all form fields into permanent vector text and shapes.
+   * Locked against further editing.
+   */
+  public static async flattenFormFields(
+    docId: string,
+    docName: string,
+    currentValues?: Record<string, string | boolean>
+  ): Promise<LoadedPdfResult> {
+    const rawBuffer = binaryStore.get(docId);
+    if (!rawBuffer) throw new Error('Döküman verisi bulunamadı.');
+
+    const pdfDoc = await PDFDocument.load(rawBuffer, { ignoreEncryption: true });
+    const form = pdfDoc.getForm();
+
+    // If current in-memory values provided, apply before flattening
+    if (currentValues) {
+      Object.entries(currentValues).forEach(([fieldName, val]) => {
+        try {
+          const field = form.getField(fieldName);
+          if (field instanceof PDFTextField && typeof val === 'string') {
+            field.setText(val);
+          } else if (field instanceof PDFCheckBox && typeof val === 'boolean') {
+            if (val) field.check();
+            else field.uncheck();
+          } else if (field instanceof PDFDropdown && typeof val === 'string') {
+            field.select(val);
+          } else if (field instanceof PDFRadioGroup && typeof val === 'string') {
+            field.select(val);
+          }
+        } catch {}
+      });
+    }
+
+    form.flatten();
 
     const bytes = await pdfDoc.save();
     const outBuffer = bytes.buffer.slice(

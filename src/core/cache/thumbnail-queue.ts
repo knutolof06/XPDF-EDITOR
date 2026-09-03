@@ -1,9 +1,8 @@
 /**
- * Low-Overhead Adaptive Render Queue
- * - Prioritizes the most recently visible items (LIFO first).
- * - Dynamically bounds concurrency (max 2 concurrent thumbnails) to ensure 60 FPS
- *   even on older dual/quad-core CPUs.
- * - Instantly cancels off-screen tasks without wasting CPU cycles.
+ * High-Performance Forward-Prioritized Render Queue (FIFO / Page Index Order)
+ * - Prioritizes earliest pages first (Page 1 -> Page 2 -> Page 3...).
+ * - Concurrency: 4 parallel workers for ultra-fast thumbnail loading.
+ * - Yields to main thread between tasks to maintain smooth 60 FPS UI.
  */
 
 type RenderTask = () => Promise<void>;
@@ -23,8 +22,8 @@ function createQueue(maxConcurrent: number) {
 
   function runNext() {
     while (running < maxConcurrent && queue.length > 0) {
-      // Sort descending: highest priority (most recently visible item) runs first!
-      queue.sort((a, b) => b.priority - a.priority);
+      // Sort ascending: lowest priority (earliest pages: Page 0, 1, 2...) run first!
+      queue.sort((a, b) => a.priority - b.priority);
       const entry = queue.shift();
       if (!entry) break;
       if (entry.cancelled) {
@@ -36,7 +35,6 @@ function createQueue(maxConcurrent: number) {
         .catch(() => {})
         .finally(() => {
           running--;
-          // Yield to main thread before starting next task to prevent UI lockup
           setTimeout(runNext, 0);
         });
     }
@@ -67,8 +65,8 @@ function createQueue(maxConcurrent: number) {
   return { enqueue, clear };
 }
 
-// Adaptive concurrency: 2 for thumbnails, 2 for main pages
-const thumbnailQ = createQueue(2);
+// 4 concurrent workers for fast thumbnail rendering in forward order
+const thumbnailQ = createQueue(4);
 export const enqueueThumbnail = thumbnailQ.enqueue;
 export const clearThumbnailQueue = thumbnailQ.clear;
 

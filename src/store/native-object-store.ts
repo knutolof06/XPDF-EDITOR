@@ -23,6 +23,18 @@ interface NativeObjectState {
   /** Reset multiple objects back to their original position */
   resetMultipleObjects: (pageId: string, ids: string[]) => void;
 
+  /** Update text content of a native text object */
+  updateObjectText: (pageId: string, id: string, newText: string) => void;
+
+  /** Mark a single object as deleted */
+  deleteObject: (pageId: string, id: string) => void;
+
+  /** Mark multiple objects as deleted */
+  deleteMultipleObjects: (pageId: string, ids: string[]) => void;
+
+  /** Restore a deleted object */
+  restoreObject: (pageId: string, id: string) => void;
+
   /** Reset all objects on a page (undo all moves) */
   resetAllOnPage: (pageId: string) => void;
 
@@ -104,8 +116,65 @@ export const useNativeObjectStore = create<NativeObjectState>((set, get) => ({
           ...state.objectsByPage,
           [pageId]: list.map((obj) =>
             idSet.has(obj.id)
-              ? { ...obj, x: obj.originalX, y: obj.originalY, moved: false }
+              ? { ...obj, x: obj.originalX, y: obj.originalY, moved: false, deleted: false, isEdited: false }
               : obj
+          ),
+        },
+      };
+    }),
+
+  updateObjectText: (pageId, id, newText) =>
+    set((state) => {
+      const list = state.objectsByPage[pageId];
+      if (!list) return state;
+      return {
+        objectsByPage: {
+          ...state.objectsByPage,
+          [pageId]: list.map((obj) =>
+            obj.id === id ? { ...obj, text: newText, moved: true, isEdited: true } : obj
+          ),
+        },
+      };
+    }),
+
+  deleteObject: (pageId, id) =>
+    set((state) => {
+      const list = state.objectsByPage[pageId];
+      if (!list) return state;
+      return {
+        objectsByPage: {
+          ...state.objectsByPage,
+          [pageId]: list.map((obj) =>
+            obj.id === id ? { ...obj, deleted: true } : obj
+          ),
+        },
+      };
+    }),
+
+  deleteMultipleObjects: (pageId, ids) =>
+    set((state) => {
+      const list = state.objectsByPage[pageId];
+      if (!list) return state;
+      const idSet = new Set(ids);
+      return {
+        objectsByPage: {
+          ...state.objectsByPage,
+          [pageId]: list.map((obj) =>
+            idSet.has(obj.id) ? { ...obj, deleted: true } : obj
+          ),
+        },
+      };
+    }),
+
+  restoreObject: (pageId, id) =>
+    set((state) => {
+      const list = state.objectsByPage[pageId];
+      if (!list) return state;
+      return {
+        objectsByPage: {
+          ...state.objectsByPage,
+          [pageId]: list.map((obj) =>
+            obj.id === id ? { ...obj, deleted: false } : obj
           ),
         },
       };
@@ -123,6 +192,8 @@ export const useNativeObjectStore = create<NativeObjectState>((set, get) => ({
             x: obj.originalX,
             y: obj.originalY,
             moved: false,
+            deleted: false,
+            isEdited: false,
           })),
         },
       };

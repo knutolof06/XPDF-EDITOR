@@ -16,6 +16,8 @@ import {
   CheckCircle2,
   CheckSquare,
   QrCode,
+  Trash2,
+  Edit3,
 } from 'lucide-react';
 
 export const ObjectEditorModal: React.FC = () => {
@@ -28,6 +30,9 @@ export const ObjectEditorModal: React.FC = () => {
     moveMultipleObjects,
     resetObject,
     resetMultipleObjects,
+    updateObjectText,
+    deleteMultipleObjects,
+    restoreObject,
     resetAllOnPage,
   } = useNativeObjectStore();
 
@@ -60,13 +65,58 @@ export const ObjectEditorModal: React.FC = () => {
     currentY: number;
   } | null>(null);
 
+  // Inline text editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTextValue, setEditTextValue] = useState<string>('');
+
   const totalPages = currentDocument?.pages.length || 0;
   const activePage = currentDocument?.pages[pageIndex];
   const pageId = activePage?.id || '';
   const objects: PdfNativeObject[] = objectsByPage[pageId] ?? [];
   const movedCount = objects.filter((o) => o.moved).length;
+  const deletedCount = objects.filter((o) => o.deleted).length;
+  const editedCount = objects.filter((o) => o.isEdited).length;
+  const modifiedCount = objects.filter((o) => o.moved || o.deleted || o.isEdited).length;
 
   const isDark = theme === 'dark';
+
+  const handleDeleteSelected = () => {
+    if (selectedIds.size === 0) return;
+    deleteMultipleObjects(pageId, Array.from(selectedIds));
+    addToast(`${selectedIds.size} nesne silindi (kalıcı olarak maskelenecek).`, 'info');
+  };
+
+  const handleStartEdit = (obj: PdfNativeObject) => {
+    if (obj.type === 'native-text') {
+      setEditingId(obj.id);
+      setEditTextValue(obj.text || '');
+    }
+  };
+
+  useEffect(() => {
+    if (!isObjectEditorOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.size > 0) {
+        e.preventDefault();
+        handleDeleteSelected();
+      } else if (e.key.toLowerCase() === 'e' && selectedIds.size === 1) {
+        const selObj = objects.find((o) => selectedIds.has(o.id));
+        if (selObj && selObj.type === 'native-text') {
+          e.preventDefault();
+          handleStartEdit(selObj);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isObjectEditorOpen, selectedIds, objects, pageId]);
 
   // Render canvas when page or scale changes
   useEffect(() => {
@@ -259,7 +309,7 @@ export const ObjectEditorModal: React.FC = () => {
   };
 
   const handleApply = () => {
-    if (movedCount > 0) {
+    if (modifiedCount > 0) {
       useDocumentStore.setState((state) => {
         if (!state.currentDocument) return state;
         return {
@@ -270,7 +320,7 @@ export const ObjectEditorModal: React.FC = () => {
         };
       });
     }
-    addToast(`${movedCount} nesne taşıması dökümana uygulandı.`, 'success');
+    addToast(`${modifiedCount} nesne değişikliği dökümana uygulandı.`, 'success');
     setObjectEditorOpen(false);
   };
 
@@ -332,8 +382,52 @@ export const ObjectEditorModal: React.FC = () => {
           </div>
         )}
 
+        {editedCount > 0 && (
+          <div className="flex items-center gap-1.5 bg-blue-500/15 text-blue-600 dark:text-blue-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-blue-500/30">
+            <Edit3 className="w-3.5 h-3.5" />
+            {editedCount} düzenlendi
+          </div>
+        )}
+
+        {deletedCount > 0 && (
+          <div className="flex items-center gap-1.5 bg-rose-500/15 text-rose-600 dark:text-rose-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-rose-500/30">
+            <Trash2 className="w-3.5 h-3.5" />
+            {deletedCount} silindi
+          </div>
+        )}
+
         {/* Action Controls */}
         <div className="ml-auto flex items-center gap-2">
+          {/* Edit Text Button (if 1 text object selected) */}
+          {selectedIds.size === 1 && (() => {
+            const selObj = objects.find((o) => selectedIds.has(o.id));
+            if (selObj?.type === 'native-text') {
+              return (
+                <button
+                  onClick={() => handleStartEdit(selObj)}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-medium shadow-sm transition-colors"
+                  title="Metni Düzenle (E tuşu veya çift tık)"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  Metni Düzenle
+                </button>
+              );
+            }
+            return null;
+          })()}
+
+          {/* Delete Button */}
+          {selectedIds.size > 0 && (
+            <button
+              onClick={handleDeleteSelected}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium shadow-sm transition-colors"
+              title="Seçili nesneleri sil (Delete tuşu)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Sil ({selectedIds.size})
+            </button>
+          )}
+
           {/* Zoom controls */}
           <div
             className={cn(
@@ -366,7 +460,7 @@ export const ObjectEditorModal: React.FC = () => {
                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
                   : 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
               )}
-              title="Seçili nesnelerin konumunu sıfırla"
+              title="Seçili nesnelerin konumunu ve durumunu sıfırla"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               Seçilenleri Sıfırla
@@ -380,7 +474,7 @@ export const ObjectEditorModal: React.FC = () => {
                   ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
               )}
-              title="Sayfadaki tüm taşımaları sıfırla"
+              title="Sayfadaki tüm değişiklikleri sıfırla"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               Tümünü Sıfırla
@@ -509,9 +603,9 @@ export const ObjectEditorModal: React.FC = () => {
             {/* Interactive Object Layer */}
             {!isLoading && (
               <div className="absolute inset-0 pointer-events-none overflow-visible">
-                {/* 1. Whiteout Masks for Original Spots of Moved Objects */}
+                {/* 1. Whiteout Masks for Original Spots of Moved, Edited, or Deleted Objects */}
                 {objects.map((obj) => {
-                  if (!obj.moved) return null;
+                  if (!obj.moved && !obj.deleted && !obj.isEdited) return null;
                   return (
                     <div
                       key={`mask_${obj.id}`}
@@ -521,20 +615,53 @@ export const ObjectEditorModal: React.FC = () => {
                         width: `${obj.originalWidth * scale + 2}px`,
                         height: `${obj.originalHeight * scale + 2}px`,
                       }}
-                      className="absolute bg-white z-10 border border-dashed border-amber-400/60 rounded-[2px]"
-                      title="Orijinal konum (beyazla kapatıldı)"
+                      className={cn(
+                        'absolute bg-white z-10 border border-dashed rounded-[2px]',
+                        obj.deleted ? 'border-rose-400/80 bg-rose-50/60' : 'border-amber-400/60'
+                      )}
+                      title={obj.deleted ? 'Silindi (beyazla kapatıldı)' : 'Orijinal konum (beyazla kapatıldı)'}
                     />
                   );
                 })}
 
-                {/* 2. Interactive Draggable Objects */}
+                {/* 2. Interactive Objects (Draggable, Editable, Deletable) */}
                 {objects.map((obj) => {
                   const isSelected = selectedIds.has(obj.id);
                   const isText = obj.type === 'native-text';
+                  const isEditing = editingId === obj.id;
                   const x = obj.x * scale;
                   const y = obj.y * scale;
                   const w = Math.max(obj.width * scale, 14);
                   const h = Math.max(obj.height * scale, 14);
+
+                  if (obj.deleted) {
+                    return (
+                      <div
+                        key={obj.id}
+                        style={{
+                          left: `${obj.originalX * scale}px`,
+                          top: `${obj.originalY * scale}px`,
+                          width: `${w}px`,
+                          height: `${h}px`,
+                        }}
+                        className="absolute pointer-events-auto z-20 border-2 border-dashed border-rose-500/70 bg-rose-500/10 rounded flex items-center justify-between px-2 text-[10px] text-rose-600 dark:text-rose-400 font-bold"
+                      >
+                        <span className="line-through truncate opacity-70">
+                          {isText ? obj.text : 'Görsel'}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            restoreObject(pageId, obj.id);
+                          }}
+                          className="ml-1 px-1.5 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold transition-colors text-[9px] shadow"
+                          title="Silmeyi geri al"
+                        >
+                          Kurtar
+                        </button>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div
@@ -545,12 +672,16 @@ export const ObjectEditorModal: React.FC = () => {
                         width: `${w}px`,
                         height: `${h}px`,
                       }}
-                      onMouseDown={(e) => handleDragStart(e, obj)}
+                      onMouseDown={(e) => !isEditing && handleDragStart(e, obj)}
                       onClick={(e) => handleObjectClick(e, obj)}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        if (isText) handleStartEdit(obj);
+                      }}
                       className={cn(
                         'absolute pointer-events-auto cursor-move select-none transition-all duration-75 flex items-center overflow-visible',
                         // Unselected styling
-                        !isSelected && !obj.moved && (isText
+                        !isSelected && !obj.moved && !obj.isEdited && (isText
                           ? 'hover:bg-sky-500/10 hover:ring-1 hover:ring-sky-500/60'
                           : 'hover:bg-emerald-500/15 hover:ring-1 hover:ring-emerald-500/80 bg-emerald-500/5'
                         ),
@@ -559,56 +690,88 @@ export const ObjectEditorModal: React.FC = () => {
                           ? 'bg-sky-500/20 ring-2 ring-sky-500 z-30 shadow-lg'
                           : 'bg-emerald-500/25 ring-2 ring-emerald-500 z-30 shadow-lg'
                         ),
-                        // Moved styling
-                        obj.moved && 'ring-2 ring-amber-500 bg-amber-500/10 z-20 shadow-md'
+                        // Moved/Edited styling
+                        (obj.moved || obj.isEdited) && 'ring-2 ring-amber-500 bg-amber-500/10 z-20 shadow-md'
                       )}
                       title={
                         isText
-                          ? `Metin: "${(obj.text || '').slice(0, 50)}"`
+                          ? `Metin: "${(obj.text || '').slice(0, 50)}" (Düzenlemek için çift tıklayın)`
                           : `Görsel / QR Kod (${Math.round(obj.width)}x${Math.round(obj.height)})`
                       }
                     >
-                      {/* Live moving preview for text if moved or selected */}
-                      {isText && obj.moved && (
+                      {/* Inline Input when editing */}
+                      {isEditing ? (
                         <div
-                          style={{
-                            fontSize: `${(obj.fontSize || 12) * scale}px`,
-                            fontFamily: obj.fontName || 'sans-serif',
-                            color: obj.color || '#000000',
-                            lineHeight: 1,
-                          }}
-                          className="w-full h-full flex items-center px-0.5 bg-white/95 rounded-[2px] shadow-sm font-normal whitespace-pre"
-                        >
-                          {obj.text}
-                        </div>
-                      )}
-
-                      {/* Live moving preview for image/QR if moved */}
-                      {!isText && obj.moved && (
-                        <div className="w-full h-full bg-emerald-50 border border-emerald-400 rounded flex flex-col items-center justify-center p-1 text-emerald-800 shadow-sm">
-                          <QrCode className="w-4 h-4 text-emerald-600 mb-0.5" />
-                          <span className="text-[9px] font-bold">Görsel / QR</span>
-                        </div>
-                      )}
-
-                      {/* Moved Badge */}
-                      {obj.moved && (
-                        <div
-                          className="absolute -top-6 left-0 flex items-center gap-1 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-lg z-40 whitespace-nowrap pointer-events-auto"
+                          className="absolute inset-0 z-50 flex items-center bg-white rounded shadow-xl p-0.5"
                           onMouseDown={(e) => e.stopPropagation()}
                         >
-                          <span>Taşındı</span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              resetObject(pageId, obj.id);
+                          <input
+                            type="text"
+                            autoFocus
+                            value={editTextValue}
+                            onChange={(e) => setEditTextValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                updateObjectText(pageId, obj.id, editTextValue);
+                                setEditingId(null);
+                                addToast('Metin güncellendi.', 'success', 1500);
+                              } else if (e.key === 'Escape') {
+                                setEditingId(null);
+                              }
                             }}
-                            className="hover:bg-amber-600 rounded px-1 transition-colors flex items-center gap-0.5"
-                            title="Orijinal yerine sıfırla"
-                          >
-                            <RotateCcw className="w-2.5 h-2.5" />
-                          </button>
+                            onBlur={() => {
+                              updateObjectText(pageId, obj.id, editTextValue);
+                              setEditingId(null);
+                            }}
+                            className="w-full h-full text-xs font-medium border border-sky-500 rounded px-1.5 py-0.5 text-slate-900 bg-sky-50/50 focus:outline-none"
+                          />
                         </div>
+                      ) : (
+                        <>
+                          {/* Live moving preview for text if moved or selected */}
+                          {isText && (obj.moved || obj.isEdited) && (
+                            <div
+                              style={{
+                                fontSize: `${(obj.fontSize || 12) * scale}px`,
+                                fontFamily: obj.fontName || 'sans-serif',
+                                color: obj.color || '#000000',
+                                lineHeight: 1,
+                              }}
+                              className="w-full h-full flex items-center px-0.5 bg-white/95 rounded-[2px] shadow-sm font-normal whitespace-pre"
+                            >
+                              {obj.text}
+                            </div>
+                          )}
+
+                          {/* Live moving preview for image/QR if moved */}
+                          {!isText && obj.moved && (
+                            <div className="w-full h-full bg-emerald-50 border border-emerald-400 rounded flex flex-col items-center justify-center p-1 text-emerald-800 shadow-sm">
+                              <QrCode className="w-4 h-4 text-emerald-600 mb-0.5" />
+                              <span className="text-[9px] font-bold">Görsel / QR</span>
+                            </div>
+                          )}
+
+                          {/* Moved or Edited Badge */}
+                          {(obj.moved || obj.isEdited) && (
+                            <div
+                              className="absolute -top-6 left-0 flex items-center gap-1 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-lg z-40 whitespace-nowrap pointer-events-auto"
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >
+                              <span>{obj.isEdited ? 'Düzenlendi' : 'Taşındı'}</span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  resetObject(pageId, obj.id);
+                                }}
+                                className="hover:bg-amber-600 rounded px-1 transition-colors flex items-center gap-0.5"
+                                title="Orijinal haline sıfırla"
+                              >
+                                <RotateCcw className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   );

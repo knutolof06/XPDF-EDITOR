@@ -141,4 +141,56 @@ export class PdfAssembler {
 
     return await PdfLoader.loadDocument(docModel.name, updatedBuffer);
   }
+
+  /**
+   * Inserts a clean blank page (A4, Letter or matching current page) at the specified index
+   */
+  public static async insertBlankPage(
+    docModel: PdfDocumentModel,
+    insertAtIndex: number,
+    pageSize: 'a4' | 'letter' | 'match' = 'a4',
+    orientation: 'portrait' | 'landscape' = 'portrait',
+    count: number = 1
+  ): Promise<LoadedPdfResult> {
+    const rawBuffer = binaryStore.get(docModel.id);
+    if (!rawBuffer) throw new Error('Döküman bulunamadı.');
+
+    const pdfLibDoc = await PDFDocument.load(rawBuffer);
+
+    let width = 595.28; // Standard A4 in points
+    let height = 841.89;
+
+    if (pageSize === 'letter') {
+      width = 612.0;
+      height = 792.0;
+    } else if (pageSize === 'match' && pdfLibDoc.getPageCount() > 0) {
+      const refIdx = Math.max(0, Math.min(insertAtIndex, pdfLibDoc.getPageCount() - 1));
+      const refPage = pdfLibDoc.getPage(refIdx);
+      width = refPage.getWidth();
+      height = refPage.getHeight();
+    }
+
+    if (orientation === 'landscape' && width < height) {
+      const tmp = width;
+      width = height;
+      height = tmp;
+    } else if (orientation === 'portrait' && width > height) {
+      const tmp = width;
+      width = height;
+      height = tmp;
+    }
+
+    const safeIndex = Math.max(0, Math.min(insertAtIndex, pdfLibDoc.getPageCount()));
+    for (let c = 0; c < count; c++) {
+      pdfLibDoc.insertPage(safeIndex + c, [width, height]);
+    }
+
+    const bytes = await pdfLibDoc.save();
+    const updatedBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    ) as ArrayBuffer;
+
+    return await PdfLoader.loadDocument(docModel.name, updatedBuffer);
+  }
 }

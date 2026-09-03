@@ -4,7 +4,12 @@ import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
 import { thumbnailCache } from '@/core/cache/render-cache';
 import { enqueueThumbnail } from '@/core/cache/thumbnail-queue';
-import { historyManager, MoveMultiplePagesCommand, RotatePageCommand, DeletePageCommand } from '@/core/history/command-manager';
+import {
+  historyManager,
+  MoveMultiplePagesCommand,
+  RotatePageCommand,
+  DeletePageCommand,
+} from '@/core/history/command-manager';
 import { binaryStore } from '@/core/storage/binary-store';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
 import { PDFDocument } from 'pdf-lib';
@@ -17,6 +22,7 @@ interface ThumbnailItemProps {
   isActive: boolean;
   isSelected: boolean;
   onPageClick: (pageId: string, index: number, isMulti: boolean, isShift: boolean) => void;
+  onContextMenu?: (e: React.MouseEvent, pageId: string, index: number) => void;
 }
 
 export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
@@ -25,54 +31,73 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   isActive,
   isSelected,
   onPageClick,
+  onContextMenu,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const dropLineLeftRef = useRef<HTMLDivElement>(null);
-  const dropLineRightRef = useRef<HTMLDivElement>(null);
-  const [isVisible, setIsVisible] = useState(false);
-  const [isRendered, setIsRendered] = useState(false);
+  const renderedKeyRef = useRef<string>('');
   const dropPositionRef = useRef<'before' | 'after' | null>(null);
+  const preparedFilePathRef = useRef<string | null>(null);
+
+  const [isRendered, setIsRendered] = useState(false);
+  const [dragOverPosition, setDragOverPosition] = useState<'before' | 'after' | null>(null);
 
   const pdfDocProxy = useDocumentStore((s) => s.pdfDocProxy);
 
-  // Lazy load thumbnails when they scroll into viewport
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
+  // Pre-generate single page PDF file ahead of drag
+  const prepareSinglePagePdf = useCallback(async () => {
+    if (preparedFilePathRef.current) return;
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc || !(window as any).electronAPI?.prepareDragFile) return;
+    try {
+      const raw = binaryStore.get(doc.id);
+      if (!raw) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (entry.isIntersecting) {
-          setIsVisible(true);
-        } else {
-          // Scrolled away before rendering: cancel
-          setIsVisible(false);
-        }
-      },
-      {
-        rootMargin: '150px 0px 150px 0px',
-        threshold: 0.01,
+      const srcDoc = await PDFDocument.load(raw.slice(0));
+      const outDoc = await PDFDocument.create();
+      const [cp] = await outDoc.copyPages(srcDoc, [page.sourcePageIndex]);
+      if (page.rotation !== 0) {
+        try {
+          // @ts-ignore
+          cp.setRotation({ type: 'degrees', angle: page.rotation });
+        } catch {}
       }
-    );
+      outDoc.addPage(cp);
+      const bytes = await outDoc.save();
+      const baseName = doc.name.replace(/\.pdf$/i, '');
+      const fileName = `${baseName}_sayfa_${page.displayPageNumber}.pdf`;
 
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+      const res = await (window as any).electronAPI.prepareDragFile({
+        fileName,
+        buffer: bytes,
+      });
+      if (res?.success && res.filePath) {
+        preparedFilePathRef.current = res.filePath;
+      }
+    } catch (err) {
+      // silent
+    }
+  }, [page.sourcePageIndex, page.displayPageNumber, page.rotation]);
 
+  // Render or restore thumbnail from cache
   useEffect(() => {
-    if (!isVisible || isRendered) return;
+    const cacheKey = `thumb_${page.id}_p${page.sourcePageIndex}_rot${page.rotation}`;
+
+    // Already rendered for this exact page and rotation
+    if (renderedKeyRef.current === cacheKey) {
+      return;
+    }
+
+    if (!pdfDocProxy || !canvasRef.current) return;
 
     let isCancelled = false;
 
     async function renderThumbnail() {
-      if (!pdfDocProxy || !canvasRef.current) return;
+      if (!pdfDocProxy || !canvasRef.current || isCancelled) return;
 
-      const cacheKey = `thumb_${page.id}_rot${page.rotation}`;
       const cachedBitmap = thumbnailCache.get(cacheKey);
 
-      // Instant hardware-accelerated GPU draw from ImageBitmap cache
+      // Instant hardware-accelerated draw from ImageBitmap cache (<1ms)
       if (cachedBitmap && canvasRef.current) {
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
@@ -80,6 +105,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
           canvas.width = cachedBitmap.width;
           canvas.height = cachedBitmap.height;
           ctx.drawImage(cachedBitmap, 0, 0);
+          renderedKeyRef.current = cacheKey;
           setIsRendered(true);
           return;
         }
@@ -106,6 +132,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         await renderTask.promise;
         if (isCancelled) return;
 
+        renderedKeyRef.current = cacheKey;
         setIsRendered(true);
 
         try {
@@ -114,22 +141,46 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
               thumbnailCache.set(cacheKey, bmp);
             });
           }
-        } catch { /* ignore */ }
+        } catch {
+          // ignore cache bitmap failure
+        }
       } catch (err) {
-        if (!isCancelled) console.error('Thumbnail render error:', err);
+        if (!isCancelled) {
+          console.error('Thumbnail render error:', err);
+        }
       }
     }
 
-    // Auto-prioritized: currently visible items get top priority (LIFO)
-    const cancelQueue = enqueueThumbnail(renderThumbnail);
+    // Auto-prioritized thumbnail render queue (lowest page index first)
+    const cancelQueue = enqueueThumbnail(renderThumbnail, page.sourcePageIndex);
 
     return () => {
       isCancelled = true;
       cancelQueue();
     };
-  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, page.id, isRendered]);
+  }, [pdfDocProxy, page.id, page.sourcePageIndex, page.rotation]);
 
-  // Instant Drag Start — 0ms Latency
+  // Global cleanup: clear stale ring/highlight artifacts when any drag ends
+  useEffect(() => {
+    const clearDragState = () => {
+      dropPositionRef.current = null;
+      setDragOverPosition(null);
+    };
+    // dragend fires on the dragged element; drop fires on the target element.
+    // Both together guarantee all cards are cleaned up regardless of which
+    // card was being dragged over when the user released the mouse.
+    window.addEventListener('dragend', clearDragState);
+    window.addEventListener('drop', clearDragState);
+    // pointerup catches cases where the drag was cancelled (e.g., Escape key)
+    window.addEventListener('pointerup', clearDragState);
+    return () => {
+      window.removeEventListener('dragend', clearDragState);
+      window.removeEventListener('drop', clearDragState);
+      window.removeEventListener('pointerup', clearDragState);
+    };
+  }, []);
+
+  // Drag Start
   const handleDragStart = useCallback((e: React.DragEvent) => {
     document.body.classList.add('is-dragging-page');
 
@@ -146,53 +197,51 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     e.dataTransfer.setData('text/plain', movingPageIds.join(','));
     e.dataTransfer.effectAllowed = 'copyMove';
 
-    // Asynchronous Drag-Out to Desktop (never blocks mouse dragging)
-    if (typeof window !== 'undefined' && (window as any).electronAPI?.startDragPage) {
-      setTimeout(async () => {
-        try {
-          const raw = binaryStore.get(doc.id);
-          if (raw) {
-            const srcDoc = await PDFDocument.load(raw.slice(0));
-            const outDoc = await PDFDocument.create();
-            const selectedPages = doc.pages.filter((p) => movingPageIds.includes(p.id));
-            const indices = selectedPages.map((p) => p.sourcePageIndex);
-            const copiedPages = await outDoc.copyPages(srcDoc, indices);
-            copiedPages.forEach((cp, i) => {
-              const orig = selectedPages[i];
-              if (orig && orig.rotation !== 0) {
-                try {
-                  // @ts-ignore
-                  cp.setRotation({ type: 'degrees', angle: orig.rotation });
-                } catch {
-                  // fallback
-                }
-              }
-              outDoc.addPage(cp);
-            });
-            const bytes = await outDoc.save();
-            const baseName = doc.name.replace(/\.pdf$/i, '');
-            const fileName =
-              movingPageIds.length === 1
-                ? `${baseName}_sayfa_${page.displayPageNumber}.pdf`
-                : `${baseName}_${movingPageIds.length}_sayfa.pdf`;
-
-            (window as any).electronAPI.startDragPage({
-              fileName,
-              buffer: bytes,
-            });
-          }
-        } catch (err) {
-          console.error('Drag-to-desktop generation error:', err);
-        }
-      }, 50);
+    if (preparedFilePathRef.current) {
+      const baseName = doc.name.replace(/\.pdf$/i, '');
+      const fileName =
+        movingPageIds.length === 1
+          ? `${baseName}_sayfa_${page.displayPageNumber}.pdf`
+          : `${baseName}_${movingPageIds.length}_sayfa.pdf`;
+      const fileUrl = `file:///${preparedFilePathRef.current.replace(/\\/g, '/')}`;
+      try {
+        e.dataTransfer.setData('DownloadURL', `application/pdf:${fileName}:${fileUrl}`);
+      } catch {}
     }
+
+    // Create high-contrast floating drag ghost pill
+    try {
+      const ghost = document.createElement('div');
+      ghost.style.position = 'absolute';
+      ghost.style.top = '-1000px';
+      ghost.style.left = '-1000px';
+      ghost.style.padding = '8px 14px';
+      ghost.style.borderRadius = '12px';
+      ghost.style.background = '#0284c7';
+      ghost.style.color = '#ffffff';
+      ghost.style.fontWeight = '700';
+      ghost.style.fontSize = '12px';
+      ghost.style.boxShadow = '0 10px 25px rgba(2, 132, 199, 0.5)';
+      ghost.style.border = '2px solid rgba(255, 255, 255, 0.6)';
+      ghost.style.display = 'flex';
+      ghost.style.alignItems = 'center';
+      ghost.style.gap = '6px';
+      ghost.style.zIndex = '9999';
+      ghost.innerHTML = `<span>📄</span> <span>${
+        movingPageIds.length > 1
+          ? `${movingPageIds.length} Sayfa Taşınıyor`
+          : `Sayfa ${page.displayPageNumber} Taşınıyor`
+      }</span>`;
+      document.body.appendChild(ghost);
+      e.dataTransfer.setDragImage(ghost, 20, 20);
+      setTimeout(() => ghost.remove(), 100);
+    } catch {}
   }, [page.id, page.displayPageNumber]);
 
   const handleDragEnd = useCallback(() => {
     document.body.classList.remove('is-dragging-page');
-    if (dropLineLeftRef.current) dropLineLeftRef.current.style.display = 'none';
-    if (dropLineRightRef.current) dropLineRightRef.current.style.display = 'none';
     dropPositionRef.current = null;
+    setDragOverPosition(null);
   }, []);
 
   const handleQuickDownload = useCallback(async (e: React.MouseEvent) => {
@@ -225,28 +274,34 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     }
   }, [page.sourcePageIndex, page.displayPageNumber]);
 
-  // Ultra-Fast Zero-Reflow & State-Deduplicated Drag Over
+  // High-Precision Drag Over
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'copy';
 
-    const offsetX = e.nativeEvent.offsetX;
-    const targetWidth = containerRef.current?.offsetWidth || 140;
-    const isBefore = offsetX < targetWidth / 2;
-    const nextPos = isBefore ? 'before' : 'after';
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const isBefore = e.clientX < rect.left + rect.width / 2;
+    const nextPos: 'before' | 'after' = isBefore ? 'before' : 'after';
 
-    if (dropPositionRef.current !== nextPos) {
-      dropPositionRef.current = nextPos;
-      if (dropLineLeftRef.current) dropLineLeftRef.current.style.display = isBefore ? 'block' : 'none';
-      if (dropLineRightRef.current) dropLineRightRef.current.style.display = isBefore ? 'none' : 'block';
-    }
+    dropPositionRef.current = nextPos;
+    setDragOverPosition((prev) => (prev !== nextPos ? nextPos : prev));
   }, []);
 
-  const handleDragLeave = useCallback(() => {
-    dropPositionRef.current = null;
-    if (dropLineLeftRef.current) dropLineLeftRef.current.style.display = 'none';
-    if (dropLineRightRef.current) dropLineRightRef.current.style.display = 'none';
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    // Only reset if mouse left the card's boundary
+    if (
+      e.clientX < rect.left ||
+      e.clientX >= rect.right ||
+      e.clientY < rect.top ||
+      e.clientY >= rect.bottom
+    ) {
+      dropPositionRef.current = null;
+      setDragOverPosition(null);
+    }
   }, []);
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
@@ -255,11 +310,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     document.body.classList.remove('is-dragging-page');
 
     const position = dropPositionRef.current || 'after';
-
-    // Hide lines immediately
-    if (dropLineLeftRef.current) dropLineLeftRef.current.style.display = 'none';
-    if (dropLineRightRef.current) dropLineRightRef.current.style.display = 'none';
     dropPositionRef.current = null;
+    setDragOverPosition(null);
 
     const doc = useDocumentStore.getState().currentDocument;
     if (!doc) return;
@@ -349,36 +401,45 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     <div
       ref={containerRef}
       draggable
+      onMouseEnter={prepareSinglePagePdf}
+      onMouseDown={prepareSinglePagePdf}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={handleClick}
-      style={{
-        contentVisibility: 'auto',
-        containIntrinsicSize: '140px 200px',
+      onContextMenu={(e) => {
+        if (onContextMenu) {
+          onContextMenu(e, page.id, index);
+        }
       }}
       className={cn(
-        'group relative flex flex-col items-center p-2 rounded-xl cursor-grab active:cursor-grabbing border-2 select-none min-h-[120px] transition-transform duration-100 will-change-transform',
-        isActive
+        'group relative flex flex-col items-center p-2 rounded-xl cursor-grab active:cursor-grabbing border-2 select-none min-h-[120px] transition-all duration-150',
+        dragOverPosition
+          ? 'ring-2 ring-sky-500 border-sky-400 bg-sky-500/5 shadow-md scale-[1.02]'
+          : isActive
           ? 'bg-sky-500/10 border-sky-500 shadow-md shadow-sky-500/10'
           : isSelected
           ? 'bg-slate-200/80 dark:bg-slate-800/80 border-sky-500/70 shadow-sm'
           : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-transparent hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/70'
       )}
     >
-      {/* Drop indicator lines */}
-      <div
-        ref={dropLineLeftRef}
-        style={{ display: 'none' }}
-        className="absolute -left-2 top-0 bottom-0 w-1.5 bg-sky-500 rounded-full shadow-lg shadow-sky-500/50 z-30 pointer-events-none"
-      />
-      <div
-        ref={dropLineRightRef}
-        style={{ display: 'none' }}
-        className="absolute -right-2 top-0 bottom-0 w-1.5 bg-sky-500 rounded-full shadow-lg shadow-sky-500/50 z-30 pointer-events-none"
-      />
+      {/* Sleek Minimalist Insertion Indicator on the LEFT */}
+      {dragOverPosition === 'before' && (
+        <div className="absolute -left-3 top-0 bottom-0 w-1.5 bg-sky-500 rounded-full shadow-[0_0_12px_rgba(14,165,233,0.9)] z-50 pointer-events-none flex flex-col justify-between items-center py-0.5">
+          <div className="w-2.5 h-2.5 rounded-full bg-sky-500 shadow-md ring-2 ring-white dark:ring-slate-900" />
+          <div className="w-2.5 h-2.5 rounded-full bg-sky-500 shadow-md ring-2 ring-white dark:ring-slate-900" />
+        </div>
+      )}
+
+      {/* Sleek Minimalist Insertion Indicator on the RIGHT */}
+      {dragOverPosition === 'after' && (
+        <div className="absolute -right-3 top-0 bottom-0 w-1.5 bg-sky-500 rounded-full shadow-[0_0_12px_rgba(14,165,233,0.9)] z-50 pointer-events-none flex flex-col justify-between items-center py-0.5">
+          <div className="w-2.5 h-2.5 rounded-full bg-sky-500 shadow-md ring-2 ring-white dark:ring-slate-900" />
+          <div className="w-2.5 h-2.5 rounded-full bg-sky-500 shadow-md ring-2 ring-white dark:ring-slate-900" />
+        </div>
+      )}
 
       {/* Thumbnail Canvas Container */}
       <div className="relative w-full aspect-[1/1.414] bg-slate-100 dark:bg-slate-900/60 rounded-lg overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700/50 shadow-sm">
@@ -436,8 +497,19 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
           </button>
         </div>
 
-        {/* Drag handle indicator */}
-        <div className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 text-slate-400">
+        {/* Native Drag-to-Desktop Handle */}
+        <div
+          draggable
+          onMouseEnter={prepareSinglePagePdf}
+          onDragStart={(e) => {
+            e.stopPropagation();
+            if (preparedFilePathRef.current && (window as any).electronAPI?.startDragFile) {
+              (window as any).electronAPI.startDragFile({ filePath: preparedFilePathRef.current });
+            }
+          }}
+          className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 p-1 rounded-md bg-white/95 dark:bg-slate-800/95 text-slate-500 hover:text-sky-600 hover:bg-sky-50 dark:hover:bg-slate-700 shadow-xs border border-slate-200 dark:border-slate-700 cursor-grab active:cursor-grabbing transition-all z-20"
+          title="Masaüstüne veya Klasöre Sürükle (PDF Olarak Çıkart)"
+        >
           <GripVertical className="w-3.5 h-3.5" />
         </div>
       </div>

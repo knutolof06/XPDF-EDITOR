@@ -10,6 +10,7 @@ import { TopToolbar } from './components/layout/TopToolbar';
 import { EditorToolbar } from './components/toolbar/EditorToolbar';
 import { TabBar } from './components/layout/TabBar';
 import { LeftSidebar } from './components/layout/LeftSidebar';
+import { RightToolsSidebar } from './components/layout/RightToolsSidebar';
 import { BottomBar } from './components/layout/BottomBar';
 import { PdfViewer } from './components/viewer/PdfViewer';
 import { PageManagerModal } from './components/page-manager/PageManagerModal';
@@ -26,6 +27,14 @@ import { EqualizePagesModal } from './components/dialogs/EqualizePagesModal';
 import { ObjectEditorModal } from './components/dialogs/ObjectEditorModal';
 import { PasswordModal } from './components/dialogs/PasswordModal';
 import { CloseConfirmModal } from './components/dialogs/CloseConfirmModal';
+import { CompressPdfModal } from './components/dialogs/CompressPdfModal';
+import { ExportImageModal } from './components/dialogs/ExportImageModal';
+import { ImagesToPdfModal } from './components/dialogs/ImagesToPdfModal';
+import { WatermarkModal } from './components/dialogs/WatermarkModal';
+import { ExtractTextModal } from './components/dialogs/ExtractTextModal';
+import { SecurityPermissionsModal } from './components/dialogs/SecurityPermissionsModal';
+import { SignatureVerifyModal } from './components/dialogs/SignatureVerifyModal';
+import { InsertBlankPageModal } from './components/dialogs/InsertBlankPageModal';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { PdfExporter } from '@/core/engine/pdf-exporter';
@@ -341,6 +350,7 @@ export const App: React.FC = () => {
           <div className="flex-1 flex overflow-hidden">
             <LeftSidebar />
             <PdfViewer />
+            <RightToolsSidebar />
           </div>
         ) : (
           <EmptyState />
@@ -365,6 +375,14 @@ export const App: React.FC = () => {
       <ObjectEditorModal />
       <PasswordModal />
       <CloseConfirmModal />
+      <CompressPdfModal />
+      <ExportImageModal />
+      <ImagesToPdfModal />
+      <WatermarkModal />
+      <ExtractTextModal />
+      <SecurityPermissionsModal />
+      <SignatureVerifyModal />
+      <InsertBlankPageModal />
       <ToastContainer />
     </div>
   );

@@ -1,10 +1,11 @@
-import { PDFDocument, rgb, degrees, StandardFonts, PDFFont } from 'pdf-lib';
+import { PDFDocument, rgb, degrees, StandardFonts, PDFFont, PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup, PDFPage } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { PdfDocumentModel } from '@/types/document';
 import { DrawingAnnotation, ShapeAnnotation, TextAnnotation, ImageAnnotation, WhiteoutAnnotation } from '@/types/annotations';
 import { binaryStore } from '../storage/binary-store';
 import { useAnnotationStore } from '@/store/annotation-store';
 import { useNativeObjectStore } from '@/store/native-object-store';
+import { useFormStore } from '@/store/form-store';
 
 let cachedRegularFont: ArrayBuffer | null = null;
 let cachedBoldFont: ArrayBuffer | null = null;
@@ -59,8 +60,36 @@ export class PdfExporter {
     if (!rawBuffer) throw new Error('Döküman binary verisi bulunamadı.');
 
     const srcDoc = await PDFDocument.load(rawBuffer, { ignoreEncryption: true });
-    const outDoc = await PDFDocument.create();
 
+    // 1. If user filled in interactive form fields, write them into AcroForm
+    const formValues = useFormStore.getState().valuesByDoc[docModel.id];
+    if (formValues && Object.keys(formValues).length > 0) {
+      try {
+        const form = srcDoc.getForm();
+        Object.entries(formValues).forEach(([fieldName, val]) => {
+          try {
+            const field = form.getField(fieldName);
+            if (field instanceof PDFTextField && typeof val === 'string') {
+              field.setText(val);
+            } else if (field instanceof PDFCheckBox && typeof val === 'boolean') {
+              if (val) field.check();
+              else field.uncheck();
+            } else if (field instanceof PDFDropdown && typeof val === 'string') {
+              field.select(val);
+            } else if (field instanceof PDFRadioGroup && typeof val === 'string') {
+              field.select(val);
+            }
+          } catch {}
+        });
+      } catch {}
+    }
+
+    // 2. Check if document page structure is identical to source
+    const isStructureUnchanged =
+      docModel.pages.length === srcDoc.getPageCount() &&
+      docModel.pages.every((p, idx) => p.sourcePageIndex === idx);
+
+    const outDoc = isStructureUnchanged ? srcDoc : await PDFDocument.create();
     outDoc.registerFontkit(fontkit);
 
     const { regular, bold } = await loadUnicodeFonts();
@@ -80,11 +109,21 @@ export class PdfExporter {
 
     for (let i = 0; i < docModel.pages.length; i++) {
       const pageModel = docModel.pages[i];
-      const [copiedPage] = await outDoc.copyPages(srcDoc, [pageModel.sourcePageIndex]);
+      let copiedPage: PDFPage;
 
-      if (pageModel.rotation !== 0) {
-        const curRot = copiedPage.getRotation().angle;
-        copiedPage.setRotation(degrees((curRot + pageModel.rotation) % 360));
+      if (isStructureUnchanged) {
+        copiedPage = srcDoc.getPage(i);
+        if (pageModel.rotation !== 0) {
+          const curRot = copiedPage.getRotation().angle;
+          copiedPage.setRotation(degrees((curRot + pageModel.rotation) % 360));
+        }
+      } else {
+        const [p] = await outDoc.copyPages(srcDoc, [pageModel.sourcePageIndex]);
+        if (pageModel.rotation !== 0) {
+          const curRot = p.getRotation().angle;
+          p.setRotation(degrees((curRot + pageModel.rotation) % 360));
+        }
+        copiedPage = p;
       }
 
       const pageWidth = copiedPage.getWidth();
@@ -183,13 +222,13 @@ export class PdfExporter {
         }
       }
 
-      // ── Moved Native PDF Objects ─────────────────────────────────────────
-      // For any existing PDF text that the user dragged to a new position:
-      //  1. Draw a white rectangle to mask the original text
-      //  2. Redraw the text at the new position
+      // ── Native PDF Objects (Moved, Edited, or Deleted) ───────────────────
+      // For any existing PDF text or image that the user dragged, edited, or deleted:
+      //  1. Draw a white rectangle to mask the original position
+      //  2. If not deleted, redraw at the new position (with updated text if edited)
       const nativeObjects = useNativeObjectStore.getState().getObjectsForPage(pageModel.id);
       for (const nObj of nativeObjects) {
-        if (!nObj.moved) continue;
+        if (!nObj.moved && !nObj.deleted && !nObj.isEdited) continue;
 
         if (nObj.type === 'native-text' && nObj.text) {
           const fontSize = nObj.fontSize || 12;
@@ -204,18 +243,20 @@ export class PdfExporter {
             opacity: 1,
           });
 
-          // 2. Redraw at new position
-          try {
-            copiedPage.drawText(safeText(nObj.text, isCustomFont), {
-              x: nObj.x,
-              y: pageHeight - nObj.y - fontSize,
-              size: fontSize,
-              font: fontHelvetica,
-              color: rgb(0, 0, 0),
-              opacity: 1,
-            });
-          } catch (textErr) {
-            console.warn('Native text redraw error:', textErr);
+          // 2. Redraw at new position (only if not deleted)
+          if (!nObj.deleted) {
+            try {
+              copiedPage.drawText(safeText(nObj.text, isCustomFont), {
+                x: nObj.x,
+                y: pageHeight - nObj.y - fontSize,
+                size: fontSize,
+                font: fontHelvetica,
+                color: rgb(0, 0, 0),
+                opacity: 1,
+              });
+            } catch (textErr) {
+              console.warn('Native text redraw error:', textErr);
+            }
           }
         } else if (nObj.type === 'native-image') {
           // 1. Mask original position
@@ -228,8 +269,8 @@ export class PdfExporter {
             opacity: 1,
           });
 
-          // 2. If image dataUrl is available, redraw at new position
-          if (nObj.dataUrl) {
+          // 2. If image dataUrl is available and not deleted, redraw at new position
+          if (nObj.dataUrl && !nObj.deleted) {
             try {
               const imgBytes = dataUrlToUint8Array(nObj.dataUrl);
               const isPng = nObj.dataUrl.includes('image/png');
@@ -294,7 +335,9 @@ export class PdfExporter {
         });
       }
 
-      outDoc.addPage(copiedPage);
+      if (!isStructureUnchanged) {
+        outDoc.addPage(copiedPage);
+      }
     }
 
     const pdfBytes = await outDoc.save();

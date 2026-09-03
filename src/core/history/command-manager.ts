@@ -1,4 +1,4 @@
-import { PdfPageModel } from '@/types/document';
+import { PdfPageModel, PdfDocumentModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
 
 export interface ICommand {
@@ -41,24 +41,59 @@ export class MoveMultiplePagesCommand implements ICommand {
     this.description = `${pageIds.length} sayfa taşındı`;
     const doc = useDocumentStore.getState().currentDocument;
     if (doc) {
-      this.originalOrder = [...doc.pages];
+      this.originalOrder = doc.pages.map((p) => ({ ...p }));
     }
   }
 
   public execute(): void {
-    useDocumentStore.getState().moveMultiplePages(this.pageIds, this.targetIndex, this.position);
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc || this.pageIds.length === 0) return;
+
+    const pages = [...doc.pages];
+    const targetPage = pages[this.targetIndex];
+    if (!targetPage) return;
+
+    const movingPages = pages.filter((p) => this.pageIds.includes(p.id));
+    const remainingPages = pages.filter((p) => !this.pageIds.includes(p.id));
+
+    let insertIndex = remainingPages.findIndex((p) => p.id === targetPage.id);
+    if (insertIndex === -1) {
+      insertIndex = this.targetIndex;
+    } else if (this.position === 'after') {
+      insertIndex += 1;
+    }
+
+    remainingPages.splice(insertIndex, 0, ...movingPages);
+    const updatedPages = remainingPages.map((p, idx) => ({
+      ...p,
+      displayPageNumber: idx + 1,
+    }));
+
+    useDocumentStore.setState({
+      currentDocument: {
+        ...doc,
+        pages: updatedPages,
+        selectedPageIds: this.pageIds,
+        isModified: true,
+      },
+    });
   }
 
   public undo(): void {
-    useDocumentStore.setState((state) => {
-      if (state.currentDocument && this.originalOrder.length > 0) {
-        state.currentDocument.pages = [...this.originalOrder];
-        state.currentDocument.pages.forEach((p, idx) => {
-          p.displayPageNumber = idx + 1;
-        });
-        state.currentDocument.isModified = true;
-      }
-    });
+    const doc = useDocumentStore.getState().currentDocument;
+    if (doc && this.originalOrder.length > 0) {
+      const restoredPages = this.originalOrder.map((p, idx) => ({
+        ...p,
+        displayPageNumber: idx + 1,
+      }));
+      useDocumentStore.setState({
+        currentDocument: {
+          ...doc,
+          pages: restoredPages,
+          isModified: true,
+        },
+      });
+    }
   }
 }
 
@@ -74,13 +109,39 @@ export class RotatePageCommand implements ICommand {
   }
 
   public execute(): void {
-    const store = useDocumentStore.getState();
-    this.pageIds.forEach((id) => store.rotatePage(id, this.angle));
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+    const pages = doc.pages.map((p) => {
+      if (this.pageIds.includes(p.id)) {
+        return { ...p, rotation: (p.rotation + this.angle + 360) % 360 };
+      }
+      return { ...p };
+    });
+    useDocumentStore.setState({
+      currentDocument: {
+        ...doc,
+        pages,
+        isModified: true,
+      },
+    });
   }
 
   public undo(): void {
-    const store = useDocumentStore.getState();
-    this.pageIds.forEach((id) => store.rotatePage(id, -this.angle));
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+    const pages = doc.pages.map((p) => {
+      if (this.pageIds.includes(p.id)) {
+        return { ...p, rotation: (p.rotation - this.angle + 360) % 360 };
+      }
+      return { ...p };
+    });
+    useDocumentStore.setState({
+      currentDocument: {
+        ...doc,
+        pages,
+        isModified: true,
+      },
+    });
   }
 }
 
@@ -89,37 +150,92 @@ export class DeletePageCommand implements ICommand {
   private deletedPages: { page: PdfPageModel; index: number }[];
 
   constructor(deletedPages: { page: PdfPageModel; index: number }[]) {
-    this.deletedPages = deletedPages;
+    this.deletedPages = deletedPages.map((d) => ({
+      page: { ...d.page },
+      index: d.index,
+    }));
     this.description = `${deletedPages.length} sayfa silindi`;
   }
 
   public execute(): void {
-    const store = useDocumentStore.getState();
-    this.deletedPages.forEach(({ page }) => store.deletePage(page.id));
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+    const idsToDelete = new Set(this.deletedPages.map((d) => d.page.id));
+    const remaining = doc.pages.filter((p) => !idsToDelete.has(p.id));
+    const updatedPages = remaining.map((p, idx) => ({
+      ...p,
+      displayPageNumber: idx + 1,
+    }));
+    useDocumentStore.setState({
+      currentDocument: {
+        ...doc,
+        pages: updatedPages,
+        totalPages: updatedPages.length,
+        selectedPageIds: [],
+        isModified: true,
+      },
+    });
   }
 
   public undo(): void {
-    const store = useDocumentStore.getState();
-    const doc = store.currentDocument;
+    const doc = useDocumentStore.getState().currentDocument;
     if (!doc) return;
 
-    // Restore pages at their original indices
-    useDocumentStore.setState((state) => {
-      if (!state.currentDocument) return;
-      const pages = [...state.currentDocument.pages];
-      
-      this.deletedPages.forEach(({ page, index }) => {
-        pages.splice(index, 0, page);
-      });
-
-      pages.forEach((p, idx) => {
-        p.displayPageNumber = idx + 1;
-      });
-
-      state.currentDocument.pages = pages;
-      state.currentDocument.totalPages = pages.length;
-      state.currentDocument.isModified = true;
+    const pages = [...doc.pages];
+    // Sort ascending by index before inserting
+    const sorted = [...this.deletedPages].sort((a, b) => a.index - b.index);
+    sorted.forEach(({ page, index }) => {
+      const safeIndex = Math.min(index, pages.length);
+      pages.splice(safeIndex, 0, { ...page });
     });
+
+    const updatedPages = pages.map((p, idx) => ({
+      ...p,
+      displayPageNumber: idx + 1,
+    }));
+
+    useDocumentStore.setState({
+      currentDocument: {
+        ...doc,
+        pages: updatedPages,
+        totalPages: updatedPages.length,
+        isModified: true,
+      },
+    });
+  }
+}
+
+export class GenericCommand implements ICommand {
+  constructor(
+    public description: string,
+    private executeFn: () => void,
+    private undoFn: () => void
+  ) {}
+
+  public execute(): void {
+    this.executeFn();
+  }
+
+  public undo(): void {
+    this.undoFn();
+  }
+}
+
+export class DocumentStateSnapshotCommand implements ICommand {
+  constructor(
+    public description: string,
+    private prevModel: PdfDocumentModel,
+    private prevProxy: any,
+    private nextModel: PdfDocumentModel,
+    private nextProxy: any
+  ) {}
+
+  public execute(): void {
+    useDocumentStore.getState().setDocument(this.nextModel, this.nextProxy);
+  }
+
+  public undo(): void {
+    useDocumentStore.getState().setDocument(this.prevModel, this.prevProxy);
   }
 }
 
@@ -127,6 +243,22 @@ class HistoryManager {
   private undoStack: ICommand[] = [];
   private redoStack: ICommand[] = [];
   private maxHistory: number = 50;
+  private listeners: Set<() => void> = new Set();
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private notify(): void {
+    this.listeners.forEach((l) => {
+      try {
+        l();
+      } catch (e) {
+        console.error('History listener error:', e);
+      }
+    });
+  }
 
   public execute(command: ICommand): void {
     command.execute();
@@ -135,6 +267,16 @@ class HistoryManager {
       this.undoStack.shift();
     }
     this.redoStack = []; // Clear redo on new action
+    this.notify();
+  }
+
+  public push(command: ICommand): void {
+    this.undoStack.push(command);
+    if (this.undoStack.length > this.maxHistory) {
+      this.undoStack.shift();
+    }
+    this.redoStack = [];
+    this.notify();
   }
 
   public undo(): boolean {
@@ -142,6 +284,7 @@ class HistoryManager {
     if (!command) return false;
     command.undo();
     this.redoStack.push(command);
+    this.notify();
     return true;
   }
 
@@ -150,6 +293,7 @@ class HistoryManager {
     if (!command) return false;
     command.execute();
     this.undoStack.push(command);
+    this.notify();
     return true;
   }
 
@@ -164,6 +308,7 @@ class HistoryManager {
   public clear(): void {
     this.undoStack = [];
     this.redoStack = [];
+    this.notify();
   }
 }
 

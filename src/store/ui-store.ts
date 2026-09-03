@@ -26,6 +26,16 @@ interface UIState {
   isCloseConfirmModalOpen: boolean;
   pendingCloseTabId: string | null;
   pendingInsertFile: File | null;
+  isCompressModalOpen: boolean;
+  isExportImageModalOpen: boolean;
+  isImagesToPdfModalOpen: boolean;
+  isWatermarkModalOpen: boolean;
+  isRightToolsSidebarOpen: boolean;
+  isExtractTextModalOpen: boolean;
+  isSecurityModalOpen: boolean;
+  isSignatureVerifyModalOpen: boolean;
+  isInsertBlankPageModalOpen: boolean;
+  pendingBlankPageInsertIndex: number | null;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
   removeToast: (id: string) => void;
@@ -34,6 +44,7 @@ interface UIState {
   setMergeModalOpen: (open: boolean) => void;
   setSplitModalOpen: (open: boolean) => void;
   setInsertModalOpen: (open: boolean, file?: File | null) => void;
+  setInsertBlankPageModalOpen: (open: boolean, insertIndex?: number | null) => void;
   setPageLayoutModalOpen: (open: boolean) => void;
   setSignatureModalOpen: (open: boolean) => void;
   setStampModalOpen: (open: boolean) => void;
@@ -43,6 +54,14 @@ interface UIState {
   setObjectEditorOpen: (open: boolean) => void;
   setPasswordModalOpen: (open: boolean, doc?: { name: string; buffer: ArrayBuffer; filePath?: string } | null) => void;
   setCloseConfirmModalOpen: (open: boolean, tabId?: string | null) => void;
+  setCompressModalOpen: (open: boolean) => void;
+  setExportImageModalOpen: (open: boolean) => void;
+  setImagesToPdfModalOpen: (open: boolean) => void;
+  setWatermarkModalOpen: (open: boolean) => void;
+  setRightToolsSidebarOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  setExtractTextModalOpen: (open: boolean) => void;
+  setSecurityModalOpen: (open: boolean) => void;
+  setSignatureVerifyModalOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -64,6 +83,16 @@ export const useUIStore = create<UIState>((set) => ({
   isCloseConfirmModalOpen: false,
   pendingCloseTabId: null,
   pendingInsertFile: null,
+  isCompressModalOpen: false,
+  isExportImageModalOpen: false,
+  isImagesToPdfModalOpen: false,
+  isWatermarkModalOpen: false,
+  isRightToolsSidebarOpen: true,
+  isExtractTextModalOpen: false,
+  isSecurityModalOpen: false,
+  isSignatureVerifyModalOpen: false,
+  isInsertBlankPageModalOpen: false,
+  pendingBlankPageInsertIndex: null,
 
   addToast: (message, type = 'info', duration = 3000) => {
     const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5);
@@ -91,6 +120,8 @@ export const useUIStore = create<UIState>((set) => ({
   setSplitModalOpen: (open) => set({ isSplitModalOpen: open }),
   setInsertModalOpen: (open, file = null) =>
     set({ isInsertModalOpen: open, pendingInsertFile: file }),
+  setInsertBlankPageModalOpen: (open, insertIndex = null) =>
+    set({ isInsertBlankPageModalOpen: open, pendingBlankPageInsertIndex: insertIndex }),
   setPageLayoutModalOpen: (open) => set({ isPageLayoutModalOpen: open }),
   setSignatureModalOpen: (open) => set({ isSignatureModalOpen: open }),
   setStampModalOpen: (open) => set({ isStampModalOpen: open }),
@@ -100,4 +131,15 @@ export const useUIStore = create<UIState>((set) => ({
   setObjectEditorOpen: (open) => set({ isObjectEditorOpen: open }),
   setPasswordModalOpen: (open, doc = null) => set({ isPasswordModalOpen: open, pendingPasswordDoc: doc }),
   setCloseConfirmModalOpen: (open, tabId = null) => set({ isCloseConfirmModalOpen: open, pendingCloseTabId: tabId }),
+  setCompressModalOpen: (open) => set({ isCompressModalOpen: open }),
+  setExportImageModalOpen: (open) => set({ isExportImageModalOpen: open }),
+  setImagesToPdfModalOpen: (open) => set({ isImagesToPdfModalOpen: open }),
+  setWatermarkModalOpen: (open) => set({ isWatermarkModalOpen: open }),
+  setRightToolsSidebarOpen: (open) =>
+    set((state) => ({
+      isRightToolsSidebarOpen: typeof open === 'function' ? open(state.isRightToolsSidebarOpen) : open,
+    })),
+  setExtractTextModalOpen: (open) => set({ isExtractTextModalOpen: open }),
+  setSecurityModalOpen: (open) => set({ isSecurityModalOpen: open }),
+  setSignatureVerifyModalOpen: (open) => set({ isSignatureVerifyModalOpen: open }),
 }));

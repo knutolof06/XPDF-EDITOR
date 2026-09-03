@@ -10,7 +10,9 @@ export type AnnotationType =
   | 'signature'
   | 'stamp'
   | 'image'
-  | 'page-number';
+  | 'page-number'
+  | 'underline'
+  | 'strikethrough';
 
 export interface BaseAnnotation {
   id: string;
@@ -118,4 +120,8 @@ export interface PdfNativeObject {
   dataUrl?: string;
   // State flag: true = user moved this object away from its original position
   moved: boolean;
+  // State flag: true = user permanently deleted this object (whiteout masked, no redraw)
+  deleted?: boolean;
+  // State flag: true = user modified text content
+  isEdited?: boolean;
 }

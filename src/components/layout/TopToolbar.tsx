@@ -15,7 +15,6 @@ import {
   RotateCw,
   RotateCcw,
   Search,
-  LayoutGrid,
   Sun,
   Moon,
   Info,
@@ -26,13 +25,9 @@ import {
   Rows,
   Undo2,
   Redo2,
-  Layers,
-  Scissors,
-  Sparkles,
-  CheckSquare,
-  Ruler,
-  Move,
   Printer,
+  FileImage,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -61,18 +56,14 @@ export const TopToolbar: React.FC = () => {
     theme,
     setTheme,
     openSearch,
-    isPageManagerOpen,
-    setPageManagerOpen,
   } = useViewerStore();
 
   const {
     setPropertiesModalOpen,
     setShortcutsModalOpen,
-    setMergeModalOpen,
-    setSplitModalOpen,
-    setPageLayoutModalOpen,
-    setPageEqualizeModalOpen,
-    setObjectEditorOpen,
+    setImagesToPdfModalOpen,
+    isRightToolsSidebarOpen,
+    setRightToolsSidebarOpen,
     addToast,
   } = useUIStore();
 
@@ -265,6 +256,16 @@ export const TopToolbar: React.FC = () => {
           <span className="hidden md:inline">Aç</span>
         </button>
 
+        {/* Images to PDF */}
+        <button
+          onClick={() => setImagesToPdfModalOpen(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-xs font-semibold text-purple-700 dark:text-purple-300 transition-colors border border-purple-200 dark:border-purple-800/60"
+          title="Görsellerden (JPG, PNG) Yeni PDF Oluştur"
+        >
+          <FileImage className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+          <span className="hidden xl:inline">Görselden PDF</span>
+        </button>
+
         {/* Save / Save As */}
         {currentDocument && (
           <div className="flex items-center rounded-lg overflow-hidden border border-sky-600/60 shadow-sm shadow-sky-600/20">
@@ -327,100 +328,32 @@ export const TopToolbar: React.FC = () => {
           </div>
         )}
 
-        {/* Merge, Split, Compare, Forms buttons */}
-        <div className="hidden lg:flex items-center gap-1 ml-1">
-          <button
-            onClick={() => setMergeModalOpen(true)}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80"
-            title="Birden Fazla PDF'i Birleştir"
-          >
-            <Layers className="w-3.5 h-3.5 text-sky-500 dark:text-sky-400" />
-            <span>Birleştir</span>
-          </button>
+        {/* Hidden modal triggers for RightToolsSidebar */}
+        <button
+          id="btn-open-forms-modal"
+          onClick={() => setIsFormsModalOpen(true)}
+          className="hidden"
+        />
+        <button
+          id="btn-open-compare-modal"
+          onClick={() => setIsCompareModalOpen(true)}
+          className="hidden"
+        />
 
-          {currentDocument && (
-            <button
-              onClick={() => setSplitModalOpen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80"
-              title="PDF'i Parçala / Sayfaları Ayır"
-            >
-              <Scissors className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />
-              <span>Böl</span>
-            </button>
+        {/* Adobe Acrobat Style "Tüm Araçlar" (Tools) Panel Toggle */}
+        <button
+          onClick={() => setRightToolsSidebarOpen((prev: boolean) => !prev)}
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border shadow-xs ml-1.5',
+            isRightToolsSidebarOpen
+              ? 'bg-sky-500 text-white border-sky-600 shadow-sky-500/20'
+              : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
           )}
-
-          {currentDocument && (
-            <button
-              onClick={() => setIsCompareModalOpen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80"
-              title="İki Belgeyi Yan Yana Karşılaştır"
-            >
-              <Columns className="w-3.5 h-3.5 text-sky-500 dark:text-sky-400" />
-              <span>Karşılaştır</span>
-            </button>
-          )}
-
-          {currentDocument && (
-            <button
-              onClick={() => setIsFormsModalOpen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80"
-              title="PDF Form Alanları"
-            >
-              <CheckSquare className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
-              <span>Formlar</span>
-            </button>
-          )}
-
-          {currentDocument && (
-            <button
-              onClick={() => setPageLayoutModalOpen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-purple-100 dark:bg-purple-950/40 hover:bg-purple-200 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 transition-colors border border-purple-200 dark:border-purple-800/60 text-xs font-medium"
-              title="Sayfaları Birleştirip Tek Sayfa Yap (N-up Layout)"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-              <span>N-up</span>
-            </button>
-          )}
-
-          {currentDocument && (
-            <button
-              onClick={() => setPageEqualizeModalOpen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-orange-100 dark:bg-orange-950/40 hover:bg-orange-200 dark:hover:bg-orange-900/60 text-orange-700 dark:text-orange-300 transition-colors border border-orange-200 dark:border-orange-800/60 text-xs font-medium"
-              title="Sayfa Boyutlarını Eşitle"
-            >
-              <Ruler className="w-3.5 h-3.5 text-orange-500 dark:text-orange-400" />
-              <span>Eşitle</span>
-            </button>
-          )}
-
-          {currentDocument && (
-            <button
-              onClick={() => setObjectEditorOpen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-100 dark:bg-sky-950/40 hover:bg-sky-200 dark:hover:bg-sky-900/60 text-sky-700 dark:text-sky-300 transition-colors border border-sky-200 dark:border-sky-800/60 text-xs font-semibold"
-              title="PDF İçindeki Mevcut Nesneleri (Metin, Görsel, QR Kod) Taşı ve Düzenle"
-            >
-              <Move className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-              <span>Nesneleri Düzenle</span>
-            </button>
-          )}
-        </div>
-
-        {/* Page Manager Toggle */}
-        {currentDocument && (
-          <button
-            onClick={() => setPageManagerOpen(!isPageManagerOpen)}
-            className={cn(
-              'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors border',
-              isPageManagerOpen
-                ? 'bg-sky-500/20 border-sky-500/40 text-sky-600 dark:text-sky-300'
-                : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/80 text-slate-700 dark:text-slate-300'
-            )}
-            title="Gelişmiş Sayfa Düzenleyici (Grid Görünümü)"
-          >
-            <LayoutGrid className="w-4 h-4 text-sky-500 dark:text-sky-400" />
-            <span className="hidden xl:inline">Düzenleyici</span>
-          </button>
-        )}
+          title="Adobe Acrobat Tarzı Tüm Araçlar Panelini Aç / Kapat"
+        >
+          <SlidersHorizontal className="w-4 h-4 text-sky-400" />
+          <span className="hidden sm:inline">Tüm Araçlar</span>
+        </button>
       </div>
 
       {/* Center Section: Zoom & View Controls */}

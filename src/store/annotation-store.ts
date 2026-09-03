@@ -3,6 +3,7 @@ import { immer } from 'zustand/middleware/immer';
 import { ActiveTool, ToolStyleOptions } from '@/types/viewer';
 import { AnyAnnotation, PageNumberConfig, HeaderFooterConfig } from '@/types/annotations';
 import { useDocumentStore } from './document-store';
+import { historyManager, GenericCommand } from '@/core/history/command-manager';
 
 interface AnnotationState {
   activeTool: ActiveTool;
@@ -77,52 +78,153 @@ export const useAnnotationStore = create<AnnotationState>()(
       }),
 
     addAnnotation: (pageId, annotation) => {
-      useDocumentStore.setState((docState) => {
-        if (!docState.currentDocument) return;
-        const page = docState.currentDocument.pages.find((p) => p.id === pageId);
-        if (page) {
-          page.annotations = [...page.annotations, annotation];
-          docState.currentDocument.isModified = true;
-        }
-      });
+      const applyAdd = (ann: AnyAnnotation) => {
+        useDocumentStore.setState((docState) => {
+          if (!docState.currentDocument) return;
+          const page = docState.currentDocument.pages.find((p) => p.id === pageId);
+          if (page) {
+            page.annotations = [...page.annotations, ann];
+            docState.currentDocument.isModified = true;
+          }
+        });
+      };
+
+      const applyDelete = (annId: string) => {
+        useDocumentStore.setState((docState) => {
+          if (!docState.currentDocument) return;
+          const page = docState.currentDocument.pages.find((p) => p.id === pageId);
+          if (page) {
+            page.annotations = page.annotations.filter((a) => a.id !== annId);
+            docState.currentDocument.isModified = true;
+          }
+        });
+      };
+
+      applyAdd(annotation);
+      historyManager.push(
+        new GenericCommand(
+          `${annotation.type} açıklaması eklendi`,
+          () => applyAdd(annotation),
+          () => applyDelete(annotation.id)
+        )
+      );
     },
 
     updateAnnotation: (pageId, annotationId, patch) => {
-      useDocumentStore.setState((docState) => {
-        if (!docState.currentDocument) return;
-        const page = docState.currentDocument.pages.find((p) => p.id === pageId);
-        if (page) {
-          page.annotations = page.annotations.map((ann) =>
-            ann.id === annotationId ? ({ ...ann, ...patch } as AnyAnnotation) : ann
-          );
-          docState.currentDocument.isModified = true;
-        }
-      });
+      let beforeAnn: AnyAnnotation | undefined;
+      const doc = useDocumentStore.getState().currentDocument;
+      const page = doc?.pages.find((p) => p.id === pageId);
+      if (page) {
+        beforeAnn = page.annotations.find((a) => a.id === annotationId);
+      }
+
+      const applyUpdate = (p: Partial<AnyAnnotation>) => {
+        useDocumentStore.setState((docState) => {
+          if (!docState.currentDocument) return;
+          const pg = docState.currentDocument.pages.find((x) => x.id === pageId);
+          if (pg) {
+            pg.annotations = pg.annotations.map((ann) =>
+              ann.id === annotationId ? ({ ...ann, ...p } as AnyAnnotation) : ann
+            );
+            docState.currentDocument.isModified = true;
+          }
+        });
+      };
+
+      applyUpdate(patch);
+
+      if (beforeAnn) {
+        const savedBefore = { ...beforeAnn };
+        historyManager.push(
+          new GenericCommand(
+            'Açıklama güncellendi',
+            () => applyUpdate(patch),
+            () => applyUpdate(savedBefore)
+          )
+        );
+      }
     },
 
     deleteAnnotation: (pageId, annotationId) => {
-      useDocumentStore.setState((docState) => {
-        if (!docState.currentDocument) return;
-        const page = docState.currentDocument.pages.find((p) => p.id === pageId);
-        if (page) {
-          page.annotations = page.annotations.filter((ann) => ann.id !== annotationId);
-          docState.currentDocument.isModified = true;
-        }
-      });
+      let deletedAnn: AnyAnnotation | undefined;
+      const doc = useDocumentStore.getState().currentDocument;
+      const page = doc?.pages.find((p) => p.id === pageId);
+      if (page) {
+        deletedAnn = page.annotations.find((a) => a.id === annotationId);
+      }
+
+      const applyDelete = (annId: string) => {
+        useDocumentStore.setState((docState) => {
+          if (!docState.currentDocument) return;
+          const pg = docState.currentDocument.pages.find((x) => x.id === pageId);
+          if (pg) {
+            pg.annotations = pg.annotations.filter((ann) => ann.id !== annId);
+            docState.currentDocument.isModified = true;
+          }
+        });
+      };
+
+      const applyAdd = (ann: AnyAnnotation) => {
+        useDocumentStore.setState((docState) => {
+          if (!docState.currentDocument) return;
+          const pg = docState.currentDocument.pages.find((x) => x.id === pageId);
+          if (pg) {
+            pg.annotations = [...pg.annotations, ann];
+            docState.currentDocument.isModified = true;
+          }
+        });
+      };
+
+      applyDelete(annotationId);
       set((state) => {
         if (state.selectedAnnotationId === annotationId) {
           state.selectedAnnotationId = null;
         }
       });
+
+      if (deletedAnn) {
+        const savedAnn = deletedAnn;
+        historyManager.push(
+          new GenericCommand(
+            `${savedAnn.type} açıklaması silindi`,
+            () => applyDelete(annotationId),
+            () => applyAdd(savedAnn)
+          )
+        );
+      }
     },
 
     cloneAnnotation: (pageId, annotationId) => {
       let newId: string | null = null;
+      let clonedAnn: AnyAnnotation | null = null;
+
+      const applyAdd = (ann: AnyAnnotation) => {
+        useDocumentStore.setState((docState) => {
+          if (!docState.currentDocument) return;
+          const pg = docState.currentDocument.pages.find((x) => x.id === pageId);
+          if (pg) {
+            pg.annotations = [...pg.annotations, ann];
+            docState.currentDocument.isModified = true;
+          }
+        });
+      };
+
+      const applyDelete = (annId: string) => {
+        useDocumentStore.setState((docState) => {
+          if (!docState.currentDocument) return;
+          const pg = docState.currentDocument.pages.find((x) => x.id === pageId);
+          if (pg) {
+            pg.annotations = pg.annotations.filter((a) => a.id !== annId);
+            docState.currentDocument.isModified = true;
+          }
+        });
+      };
+
       useDocumentStore.setState((docState) => {
         if (!docState.currentDocument) return;
-        const page = docState.currentDocument.pages.find((p) => p.id === pageId);
-        if (!page) return;
-        const orig = page.annotations.find((a) => a.id === annotationId);
+        const pg = docState.currentDocument.pages.find((p) => p.id === pageId);
+        if (!pg) return;
+        const orig = pg.annotations.find((a) => a.id === annotationId);
         if (!orig) return;
 
         newId = 'ann_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
@@ -136,14 +238,24 @@ export const useAnnotationStore = create<AnnotationState>()(
           cloned.points = cloned.points.map((pt) => ({ x: pt.x + 15, y: pt.y + 15 }));
         }
 
-        page.annotations = [...page.annotations, cloned];
+        pg.annotations = [...pg.annotations, cloned];
+        clonedAnn = cloned;
         docState.currentDocument.isModified = true;
       });
 
-      if (newId) {
+      const createdCloned = clonedAnn as AnyAnnotation | null;
+      if (newId && createdCloned) {
+        const targetId = newId;
         set((state) => {
-          state.selectedAnnotationId = newId;
+          state.selectedAnnotationId = targetId;
         });
+        historyManager.push(
+          new GenericCommand(
+            'Açıklama çoğaltıldı',
+            () => applyAdd(createdCloned),
+            () => applyDelete(targetId)
+          )
+        );
       }
       return newId;
     },
