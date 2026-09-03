@@ -28,6 +28,7 @@ import { PasswordModal } from './components/dialogs/PasswordModal';
 import { CloseConfirmModal } from './components/dialogs/CloseConfirmModal';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
+import { PdfExporter } from '@/core/engine/pdf-exporter';
 import { ToastContainer } from './components/ui/ToastContainer';
 
 export const App: React.FC = () => {
@@ -208,15 +209,44 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Ctrl + P -> Print
+      // Ctrl + P -> Print (Vektör PDF yazdırma motoru)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault();
-        const electron = (window as any).electronAPI;
-        if (electron?.printDocument) {
-          electron.printDocument();
-        } else {
-          window.print();
-        }
+        if (!currentDocument) return;
+        (async () => {
+          try {
+            addToast('Yazdırma hazırlanıyor...', 'info', 2000);
+            const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
+            const blob = new Blob([rawOut], { type: 'application/pdf' });
+            const blobUrl = URL.createObjectURL(blob);
+            const iframe = document.createElement('iframe');
+            iframe.style.position = 'fixed';
+            iframe.style.right = '0';
+            iframe.style.bottom = '0';
+            iframe.style.width = '0';
+            iframe.style.height = '0';
+            iframe.style.border = '0';
+            iframe.src = blobUrl;
+            document.body.appendChild(iframe);
+            iframe.onload = () => {
+              try {
+                iframe.contentWindow?.focus();
+                iframe.contentWindow?.print();
+              } catch {
+                window.print();
+              }
+              setTimeout(() => {
+                try {
+                  document.body.removeChild(iframe);
+                  URL.revokeObjectURL(blobUrl);
+                } catch {}
+              }, 60000);
+            };
+          } catch (pErr) {
+            console.warn('Print error:', pErr);
+            window.print();
+          }
+        })();
         return;
       }
 

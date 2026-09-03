@@ -182,19 +182,53 @@ export const TopToolbar: React.FC = () => {
     }
   };
 
-  // Yazdır (Print)
+  // Yazdır (Print: Tüm sayfaları vektör kalitesinde ve açıklamalarla birlikte yazdırır)
   const handlePrint = async () => {
     if (!currentDocument) return;
     const electron = (window as any).electronAPI;
     try {
+      addToast('Yazdırma hazırlanıyor...', 'info', 2000);
+      const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
+      const blob = new Blob([rawOut], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+
+      const printIframe = document.createElement('iframe');
+      printIframe.style.position = 'fixed';
+      printIframe.style.right = '0';
+      printIframe.style.bottom = '0';
+      printIframe.style.width = '0';
+      printIframe.style.height = '0';
+      printIframe.style.border = '0';
+      printIframe.src = blobUrl;
+      document.body.appendChild(printIframe);
+
+      printIframe.onload = () => {
+        try {
+          printIframe.contentWindow?.focus();
+          printIframe.contentWindow?.print();
+        } catch {
+          if (electron?.printDocument) {
+            electron.printDocument();
+          } else {
+            window.print();
+          }
+        }
+        setTimeout(() => {
+          try {
+            document.body.removeChild(printIframe);
+            URL.revokeObjectURL(blobUrl);
+          } catch {
+            // ignore
+          }
+        }, 60000);
+      };
+    } catch (err: any) {
+      console.error('Print error:', err);
       if (electron?.printDocument) {
-        await electron.printDocument();
+        electron.printDocument();
       } else {
         window.print();
       }
-    } catch (err: any) {
-      console.error('Print error:', err);
-      window.print();
     }
   };
 

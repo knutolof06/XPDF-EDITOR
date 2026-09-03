@@ -13,20 +13,29 @@ async function loadUnicodeFonts(): Promise<{ regular: ArrayBuffer | null; bold: 
   if (cachedRegularFont && cachedBoldFont) {
     return { regular: cachedRegularFont, bold: cachedBoldFont };
   }
-  try {
-    const urls = ['./fonts/font-regular.ttf', './fonts/font-bold.ttf'];
-    const [resReg, resBold] = await Promise.all([
-      fetch(urls[0]),
-      fetch(urls[1]),
-    ]);
-    if (resReg.ok && resBold.ok) {
-      cachedRegularFont = await resReg.arrayBuffer();
-      cachedBoldFont = await resBold.arrayBuffer();
-      return { regular: cachedRegularFont, bold: cachedBoldFont };
+  const candidatePairs = [
+    ['./fonts/font-regular.ttf', './fonts/font-bold.ttf'],
+    ['/fonts/font-regular.ttf', '/fonts/font-bold.ttf'],
+    ['fonts/font-regular.ttf', 'fonts/font-bold.ttf'],
+  ];
+
+  for (const [regUrl, boldUrl] of candidatePairs) {
+    try {
+      const [resReg, resBold] = await Promise.all([
+        fetch(regUrl),
+        fetch(boldUrl),
+      ]);
+      if (resReg.ok && resBold.ok) {
+        cachedRegularFont = await resReg.arrayBuffer();
+        cachedBoldFont = await resBold.arrayBuffer();
+        return { regular: cachedRegularFont, bold: cachedBoldFont };
+      }
+    } catch {
+      // Try next path candidate
     }
-  } catch (err) {
-    console.warn('Unicode fonts could not be fetched from ./fonts/, trying fallback:', err);
   }
+
+  console.warn('Unicode fonts could not be fetched from any candidate path, falling back.');
   return { regular: null, bold: null };
 }
 
@@ -49,7 +58,7 @@ export class PdfExporter {
     const rawBuffer = binaryStore.get(docModel.id);
     if (!rawBuffer) throw new Error('Döküman binary verisi bulunamadı.');
 
-    const srcDoc = await PDFDocument.load(rawBuffer);
+    const srcDoc = await PDFDocument.load(rawBuffer, { ignoreEncryption: true });
     const outDoc = await PDFDocument.create();
 
     outDoc.registerFontkit(fontkit);

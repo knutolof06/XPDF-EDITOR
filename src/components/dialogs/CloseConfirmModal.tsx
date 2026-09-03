@@ -8,7 +8,7 @@ import { AlertTriangle, X, Save, Trash2 } from 'lucide-react';
 export const CloseConfirmModal: React.FC = () => {
   const { isCloseConfirmModalOpen, pendingCloseTabId, setCloseConfirmModalOpen, addToast } = useUIStore();
   const { tabs, closeTab } = useTabStore();
-  const { setDocument } = useDocumentStore();
+  const { setDocument, currentDocument } = useDocumentStore();
 
   if (!isCloseConfirmModalOpen || !pendingCloseTabId) return null;
 
@@ -33,7 +33,8 @@ export const CloseConfirmModal: React.FC = () => {
     const electron = (window as any).electronAPI;
     try {
       addToast('Kaydediliyor...', 'info');
-      const rawOut = await PdfExporter.exportDocumentWithAnnotations(targetTab.model);
+      const docToSave = (currentDocument && currentDocument.id === targetTab.id) ? currentDocument : targetTab.model;
+      const rawOut = await PdfExporter.exportDocumentWithAnnotations(docToSave);
 
       if (electron?.saveFile && targetTab.model.filePath) {
         await electron.saveFile(targetTab.model.filePath, rawOut);
