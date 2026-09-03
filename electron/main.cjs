@@ -228,7 +228,7 @@ app.whenReady().then(() => {
         mainWindow.webContents.send('updater-status', {
           type: 'available',
           version: info.version,
-          message: `Yeni sürüm (v${info.version}) bulundu. Arka planda indiriliyor...`,
+          message: 'Yeni güncelleme yükleniyor, lütfen bekleyin...',
         });
       }
     });
@@ -242,7 +242,7 @@ app.whenReady().then(() => {
         mainWindow.webContents.send('updater-status', {
           type: 'progress',
           percent: Math.round(progress.percent),
-          message: `Güncelleme indiriliyor... %${Math.round(progress.percent)}`,
+          message: `Güncelleme yükleniyor... %${Math.round(progress.percent)}`,
         });
       }
     });
@@ -252,23 +252,18 @@ app.whenReady().then(() => {
         mainWindow.webContents.send('updater-status', {
           type: 'downloaded',
           version: info.version,
-          message: `v${info.version} indirildi. Uygulamayı yeniden başlatın.`,
+          message: 'Güncelleme yüklendi, uygulama yeniden başlatılıyor...',
         });
       }
-      // Show native dialog asking user to restart
-      dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        title: 'XPDF Editor — Güncelleme Hazır',
-        message: `Yeni sürüm (v${info.version}) indirildi.`,
-        detail: 'Güncellemeyi uygulamak için uygulamayı şimdi yeniden başlatmak ister misiniz?',
-        buttons: ['Şimdi Yeniden Başlat', 'Sonra'],
-        defaultId: 0,
-        cancelId: 1,
-      }).then(({ response }) => {
-        if (response === 0) {
-          autoUpdater.quitAndInstall(false, true);
+      // Zero confirmation, zero user questions, zero Windows UAC prompt:
+      // Installs 100% silently in user scope (/S) without elevation, then relaunches app immediately
+      setTimeout(() => {
+        try {
+          autoUpdater.quitAndInstall(true, true);
+        } catch (e) {
+          console.error('[Updater] quitAndInstall error:', e);
         }
-      });
+      }, 1500);
     });
 
     autoUpdater.on('error', (err) => {

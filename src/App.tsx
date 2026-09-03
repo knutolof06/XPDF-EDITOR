@@ -139,14 +139,15 @@ export const App: React.FC = () => {
       if (electron.onUpdaterStatus) {
         cleanupUpdater = electron.onUpdaterStatus((status: any) => {
           if (status.type === 'available') {
-            addToast(`Yeni sürüm bulundu (v${status.version}). Arka planda indiriliyor...`, 'info', 6000);
+            addToast('Yeni güncelleme yükleniyor, lütfen bekleyin...', 'info', 5000);
           } else if (status.type === 'downloaded') {
-            addToast(`v${status.version} indirildi! Yeniden başlatıldığında otomatik yüklenecek.`, 'success', 8000);
+            addToast('Güncelleme yüklendi, uygulama yeniden başlatılıyor...', 'success', 3000);
           } else if (status.type === 'error') {
             console.warn('[Updater]', status.message);
           }
         });
       }
+
 
       return () => {
         if (cleanup) cleanup();
