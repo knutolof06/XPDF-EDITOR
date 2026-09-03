@@ -133,11 +133,28 @@ export const App: React.FC = () => {
 
       // Subsequent files opened while app is running
       const cleanup = electron.onOpenFile(handleIncomingPdf);
+
+      // Auto-updater status toast notifications
+      let cleanupUpdater: (() => void) | undefined;
+      if (electron.onUpdaterStatus) {
+        cleanupUpdater = electron.onUpdaterStatus((status: any) => {
+          if (status.type === 'available') {
+            addToast(`Yeni sürüm bulundu (v${status.version}). Arka planda indiriliyor...`, 'info', 6000);
+          } else if (status.type === 'downloaded') {
+            addToast(`v${status.version} indirildi! Yeniden başlatıldığında otomatik yüklenecek.`, 'success', 8000);
+          } else if (status.type === 'error') {
+            console.warn('[Updater]', status.message);
+          }
+        });
+      }
+
       return () => {
         if (cleanup) cleanup();
+        if (cleanupUpdater) cleanupUpdater();
       };
     }
   }, []);
+
 
   // Theme synchronization (Rule 1)
   useEffect(() => {
