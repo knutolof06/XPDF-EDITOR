@@ -31,6 +31,7 @@ import {
   Lock,
   ShieldCheck,
   FilePlus,
+  Replace,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -71,6 +72,7 @@ export const RightToolsSidebar: React.FC = () => {
     setSecurityModalOpen,
     setSignatureVerifyModalOpen,
     setInsertBlankPageModalOpen,
+    setFindReplaceModalOpen,
     addToast,
   } = useUIStore();
 
@@ -96,6 +98,16 @@ export const RightToolsSidebar: React.FC = () => {
 
   const tools: ToolItem[] = [
     // 1. PDF Edit
+    {
+      id: 'find_replace',
+      title: 'Bul ve Değiştir',
+      category: 'edit',
+      icon: Replace,
+      color: 'text-indigo-500 bg-indigo-500/10',
+      description: 'Dökümandaki metinleri akıllıca arayın ve doğrudan değiştirin (Ctrl+H)',
+      badge: 'Akıllı',
+      action: () => setFindReplaceModalOpen(true),
+    },
     {
       id: 'object_editor',
       title: 'Nesneleri Düzenle',

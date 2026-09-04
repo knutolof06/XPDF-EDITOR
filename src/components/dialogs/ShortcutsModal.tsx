@@ -11,6 +11,7 @@ const SHORTCUTS = [
   { key: 'Ctrl + P', desc: 'Vektör Kalitesinde Yazdır (Print)' },
   { key: 'Ctrl + O', desc: 'Yeni PDF Dosyası Aç' },
   { key: 'Ctrl + F', desc: 'Döküman İçinde Metin Ara' },
+  { key: 'Ctrl + H', desc: 'Döküman İçi Bul ve Değiştir (Akıllı)' },
   { key: 'Ctrl + R', desc: 'Hassas Cetvelleri Aç / Kapat' },
   { key: 'Ctrl + Z', desc: 'Son İşlemi Geri Al (Undo)' },
   { key: 'Ctrl + Y', desc: 'Son İşlemi Yinele (Redo)' },

@@ -35,6 +35,7 @@ import { ExtractTextModal } from './components/dialogs/ExtractTextModal';
 import { SecurityPermissionsModal } from './components/dialogs/SecurityPermissionsModal';
 import { SignatureVerifyModal } from './components/dialogs/SignatureVerifyModal';
 import { InsertBlankPageModal } from './components/dialogs/InsertBlankPageModal';
+import { FindReplaceModal } from './components/dialogs/FindReplaceModal';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { PdfExporter } from '@/core/engine/pdf-exporter';
@@ -80,6 +81,8 @@ export const App: React.FC = () => {
     setPasswordModalOpen,
     isCloseConfirmModalOpen,
     setCloseConfirmModalOpen,
+    isFindReplaceModalOpen,
+    setFindReplaceModalOpen,
     addToast,
   } = useUIStore();
 
@@ -186,6 +189,7 @@ export const App: React.FC = () => {
         if (isObjectEditorOpen) setObjectEditorOpen(false);
         if (isPasswordModalOpen) setPasswordModalOpen(false, null);
         if (isCloseConfirmModalOpen) setCloseConfirmModalOpen(false, null);
+        if (isFindReplaceModalOpen) setFindReplaceModalOpen(false);
         return;
       }
 
@@ -233,6 +237,13 @@ export const App: React.FC = () => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         openSearch();
+        return;
+      }
+
+      // Ctrl + H -> Open find and replace
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        setFindReplaceModalOpen(true);
         return;
       }
 
@@ -348,6 +359,8 @@ export const App: React.FC = () => {
     setSignatureModalOpen,
     setStampModalOpen,
     setPageNumberModalOpen,
+    isFindReplaceModalOpen,
+    setFindReplaceModalOpen,
     addToast,
   ]);
 
@@ -401,6 +414,7 @@ export const App: React.FC = () => {
       <SecurityPermissionsModal />
       <SignatureVerifyModal />
       <InsertBlankPageModal />
+      <FindReplaceModal />
       <ToastContainer />
     </div>
   );

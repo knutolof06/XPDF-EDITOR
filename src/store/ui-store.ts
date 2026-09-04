@@ -36,6 +36,7 @@ interface UIState {
   isSignatureVerifyModalOpen: boolean;
   isInsertBlankPageModalOpen: boolean;
   pendingBlankPageInsertIndex: number | null;
+  isFindReplaceModalOpen: boolean;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
   removeToast: (id: string) => void;
@@ -62,6 +63,7 @@ interface UIState {
   setExtractTextModalOpen: (open: boolean) => void;
   setSecurityModalOpen: (open: boolean) => void;
   setSignatureVerifyModalOpen: (open: boolean) => void;
+  setFindReplaceModalOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -93,6 +95,7 @@ export const useUIStore = create<UIState>((set) => ({
   isSignatureVerifyModalOpen: false,
   isInsertBlankPageModalOpen: false,
   pendingBlankPageInsertIndex: null,
+  isFindReplaceModalOpen: false,
 
   addToast: (message, type = 'info', duration = 3000) => {
     const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5);
@@ -142,4 +145,6 @@ export const useUIStore = create<UIState>((set) => ({
   setExtractTextModalOpen: (open) => set({ isExtractTextModalOpen: open }),
   setSecurityModalOpen: (open) => set({ isSecurityModalOpen: open }),
   setSignatureVerifyModalOpen: (open) => set({ isSignatureVerifyModalOpen: open }),
+  setFindReplaceModalOpen: (open) => set({ isFindReplaceModalOpen: open }),
 }));
+

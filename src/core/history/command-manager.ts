@@ -1,5 +1,6 @@
 import { PdfPageModel, PdfDocumentModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
+import { PdfLoader } from '@/core/pdf/pdf-loader';
 
 export interface ICommand {
   description: string;
@@ -236,6 +237,54 @@ export class DocumentStateSnapshotCommand implements ICommand {
 
   public undo(): void {
     useDocumentStore.getState().setDocument(this.prevModel, this.prevProxy);
+  }
+}
+
+export class ReplaceTextCommand implements ICommand {
+  public description: string;
+  private oldBuffer: ArrayBuffer;
+  private newBuffer: ArrayBuffer;
+  private docName: string;
+  private filePath?: string;
+
+  constructor(
+    oldBuffer: ArrayBuffer,
+    newBuffer: ArrayBuffer,
+    docName: string,
+    filePath: string | undefined,
+    count: number
+  ) {
+    this.oldBuffer = oldBuffer;
+    this.newBuffer = newBuffer;
+    this.docName = docName;
+    this.filePath = filePath;
+    this.description = `${count} metin değiştirildi`;
+  }
+
+  public async execute(): Promise<void> {
+    try {
+      const { model, pdfDoc } = await PdfLoader.loadDocument(
+        this.docName,
+        this.newBuffer.slice(0),
+        this.filePath
+      );
+      useDocumentStore.getState().setDocument(model, pdfDoc);
+    } catch (err) {
+      console.error('[ReplaceTextCommand] execute error:', err);
+    }
+  }
+
+  public async undo(): Promise<void> {
+    try {
+      const { model, pdfDoc } = await PdfLoader.loadDocument(
+        this.docName,
+        this.oldBuffer.slice(0),
+        this.filePath
+      );
+      useDocumentStore.getState().setDocument(model, pdfDoc);
+    } catch (err) {
+      console.error('[ReplaceTextCommand] undo error:', err);
+    }
   }
 }
 
