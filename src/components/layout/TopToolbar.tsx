@@ -28,6 +28,8 @@ import {
   Printer,
   FileImage,
   SlidersHorizontal,
+  FoldHorizontal,
+  Minimize2,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -48,7 +50,8 @@ export const TopToolbar: React.FC = () => {
 
   const {
     zoom,
-    setZoom,
+    fitMode,
+    setFitMode,
     zoomIn,
     zoomOut,
     viewMode,
@@ -371,9 +374,18 @@ export const TopToolbar: React.FC = () => {
               <ZoomOut className="w-4 h-4" />
             </button>
             <button
-              onClick={() => setZoom(1.0)}
-              className="px-2 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 min-w-[50px] text-center"
-              title="Yakınlaştırmayı Sıfırla"
+              onClick={() => setFitMode(fitMode === 'width' ? 'none' : 'width')}
+              className={cn(
+                'px-2 py-1 text-xs font-semibold rounded min-w-[52px] text-center transition-colors',
+                fitMode === 'width'
+                  ? 'text-sky-600 dark:text-sky-400 bg-sky-500/15'
+                  : 'text-slate-800 dark:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
+              )}
+              title={
+                fitMode === 'width'
+                  ? 'Genişliğe Sığdırıldı (Tıklayınca serbest bırakır)'
+                  : 'Genişliğe Sığdır (Pencere değiştikçe otomatik ayarlar)'
+              }
             >
               {Math.round(zoom * 100)}%
             </button>
@@ -383,6 +395,34 @@ export const TopToolbar: React.FC = () => {
               title="Yakınlaştır (Ctrl + +)"
             >
               <ZoomIn className="w-4 h-4" />
+            </button>
+
+            <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
+
+            <button
+              onClick={() => setFitMode(fitMode === 'width' ? 'none' : 'width')}
+              className={cn(
+                'p-1.5 rounded-md transition-colors',
+                fitMode === 'width'
+                  ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-xs'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              )}
+              title="Genişliğe Sığdır (Pencere boyutlandıkça sayfayı otomatik sığdırır)"
+            >
+              <FoldHorizontal className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={() => setFitMode(fitMode === 'page' ? 'none' : 'page')}
+              className={cn(
+                'p-1.5 rounded-md transition-colors',
+                fitMode === 'page'
+                  ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-xs'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              )}
+              title="Sayfaya Sığdır (Tüm sayfayı ekrana sığdırır)"
+            >
+              <Minimize2 className="w-4 h-4" />
             </button>
           </div>
 

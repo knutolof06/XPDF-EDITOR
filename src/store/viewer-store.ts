@@ -1,10 +1,13 @@
-﻿import { create } from 'zustand';
+import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { ViewMode, PageTransitionType } from '@/types/document';
 import { ActiveTool, SearchState, SidebarTab } from '@/types/viewer';
 
+export type FitMode = 'none' | 'width' | 'page';
+
 interface ViewerState {
   zoom: number;
+  fitMode: FitMode;
   viewMode: ViewMode;
   pageTransition: PageTransitionType;
   theme: 'dark' | 'light' | 'system';
@@ -19,7 +22,8 @@ interface ViewerState {
   searchState: SearchState;
 
   // Actions
-  setZoom: (zoom: number | ((prev: number) => number)) => void;
+  setZoom: (zoom: number | ((prev: number) => number), keepFitMode?: boolean) => void;
+  setFitMode: (mode: FitMode) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
@@ -52,6 +56,7 @@ interface SavedSettings {
   theme?: 'dark' | 'light' | 'system';
   viewMode?: ViewMode;
   zoom?: number;
+  fitMode?: FitMode;
   sidebarOpen?: boolean;
   sidebarWidth?: number;
   thumbnailColumns?: number;
@@ -85,6 +90,7 @@ const saved = loadSavedSettings();
 export const useViewerStore = create<ViewerState>()(
   immer((set) => ({
     zoom: saved.zoom || 1.0,
+    fitMode: saved.fitMode || 'width', // Default 'width' for responsive auto-fit
     viewMode: saved.viewMode || 'continuous',
     pageTransition: 'instant', // Kapali default
     theme: saved.theme || 'dark',
@@ -104,32 +110,46 @@ export const useViewerStore = create<ViewerState>()(
       isSearching: false,
     },
 
-    setZoom: (zoomOrFn) =>
+    setZoom: (zoomOrFn, keepFitMode = false) =>
       set((state) => {
         const nextZoom =
           typeof zoomOrFn === 'function' ? zoomOrFn(state.zoom) : zoomOrFn;
         state.zoom = Math.max(0.2, Math.min(5.0, parseFloat(nextZoom.toFixed(2))));
-        saveSettings({ zoom: state.zoom });
+        if (!keepFitMode) {
+          state.fitMode = 'none';
+          saveSettings({ zoom: state.zoom, fitMode: 'none' });
+        } else {
+          saveSettings({ zoom: state.zoom });
+        }
+      }),
+
+    setFitMode: (mode) =>
+      set((state) => {
+        state.fitMode = mode;
+        saveSettings({ fitMode: mode });
       }),
 
     zoomIn: () =>
       set((state) => {
         const next = ZOOM_STEPS.find((s) => s > state.zoom + 0.05);
         state.zoom = next || Math.min(5.0, state.zoom + 0.25);
-        saveSettings({ zoom: state.zoom });
+        state.fitMode = 'none';
+        saveSettings({ zoom: state.zoom, fitMode: 'none' });
       }),
 
     zoomOut: () =>
       set((state) => {
         const prev = [...ZOOM_STEPS].reverse().find((s) => s < state.zoom - 0.05);
         state.zoom = prev || Math.max(0.2, state.zoom - 0.25);
-        saveSettings({ zoom: state.zoom });
+        state.fitMode = 'none';
+        saveSettings({ zoom: state.zoom, fitMode: 'none' });
       }),
 
     resetZoom: () =>
       set((state) => {
         state.zoom = 1.0;
-        saveSettings({ zoom: 1.0 });
+        state.fitMode = 'none';
+        saveSettings({ zoom: 1.0, fitMode: 'none' });
       }),
 
     setViewMode: (mode) =>

@@ -17,8 +17,92 @@ export const PdfViewer: React.FC = () => {
   const zoomEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { currentDocument, setActivePageIndex } = useDocumentStore();
-  const { zoom, setZoom, viewMode } = useViewerStore();
+  const { zoom, setZoom, fitMode, viewMode } = useViewerStore();
   const { updateActiveTabState, tabs } = useTabStore();
+
+  const fitModeRef = useRef(fitMode);
+  fitModeRef.current = fitMode;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  // Calculate ideal scale for fit-to-width or fit-to-page
+  const computeFitScale = useCallback(() => {
+    if (!containerRef.current || !currentDocument) return null;
+    const container = containerRef.current;
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    if (containerWidth <= 100 || containerHeight <= 100) return null;
+
+    const activePage =
+      currentDocument.pages[currentDocument.activePageIndex] ||
+      currentDocument.pages[0];
+    const pageWidth = activePage?.width || 595.28;
+    const pageHeight = activePage?.height || 841.89;
+
+    const horizontalPadding = 56;
+    const verticalPadding = 48;
+
+    let targetWidth = pageWidth;
+    let targetHeight = pageHeight;
+
+    if (viewMode === 'two-page') {
+      targetWidth = pageWidth * 2 + 24;
+    } else if (viewMode === 'four-page') {
+      targetWidth = pageWidth * 2 + 24;
+      targetHeight = pageHeight * 2 + 24;
+    }
+
+    const availableWidth = Math.max(100, containerWidth - horizontalPadding);
+    const availableHeight = Math.max(100, containerHeight - verticalPadding);
+
+    const currentFit = fitModeRef.current;
+    if (currentFit === 'width') {
+      const scale = availableWidth / targetWidth;
+      return Math.max(0.2, Math.min(4.0, parseFloat(scale.toFixed(2))));
+    } else if (currentFit === 'page') {
+      const scaleW = availableWidth / targetWidth;
+      const scaleH = availableHeight / targetHeight;
+      const scale = Math.min(scaleW, scaleH);
+      return Math.max(0.2, Math.min(4.0, parseFloat(scale.toFixed(2))));
+    }
+
+    return null;
+  }, [currentDocument, viewMode]);
+
+  // Responsive ResizeObserver: automatically recalculate scale when container/window resizes
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let rafId: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (fitModeRef.current !== 'none') {
+          const newScale = computeFitScale();
+          if (newScale !== null && Math.abs(newScale - zoomRef.current) >= 0.01) {
+            setZoom(newScale, true);
+          }
+        }
+      });
+    });
+
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [computeFitScale, setZoom]);
+
+  // When fitMode, active document or viewMode changes, adjust scale immediately
+  useEffect(() => {
+    if (fitMode !== 'none') {
+      const newScale = computeFitScale();
+      if (newScale !== null && Math.abs(newScale - zoom) >= 0.01) {
+        setZoom(newScale, true);
+      }
+    }
+  }, [fitMode, currentDocument?.id, viewMode, computeFitScale, setZoom]);
 
   // On Tab switch / document change: scroll container to this tab's own active page/scroll position
   useEffect(() => {

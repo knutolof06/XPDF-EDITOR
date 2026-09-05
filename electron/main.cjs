@@ -120,10 +120,81 @@ function openPdfInRenderer(filePath) {
   }
 }
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
+function getWindowStatePath() {
+  try {
+    return path.join(app.getPath('userData'), 'window-state.json');
+  } catch {
+    return null;
+  }
+}
+
+function loadWindowState() {
+  const defaultState = {
     width: 1380,
     height: 900,
+    isMaximized: false,
+  };
+  try {
+    const filePath = getWindowStatePath();
+    if (filePath && fs.existsSync(filePath)) {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+        const { screen } = require('electron');
+        const displays = screen.getAllDisplays();
+        const isVisible = displays.some((display) => {
+          const { x, y, width, height } = display.bounds;
+          return (
+            parsed.x >= x - 50 &&
+            parsed.x < x + width - 100 &&
+            parsed.y >= y - 50 &&
+            parsed.y < y + height - 100
+          );
+        });
+        if (!isVisible) {
+          delete parsed.x;
+          delete parsed.y;
+        }
+      }
+      return { ...defaultState, ...parsed };
+    }
+  } catch (err) {
+    console.warn('[WindowState] Failed to load:', err);
+  }
+  return defaultState;
+}
+
+let saveWindowStateTimer = null;
+function saveWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const filePath = getWindowStatePath();
+    if (!filePath) return;
+    const isMaximized = mainWindow.isMaximized();
+    let bounds = {};
+    if (!isMaximized) {
+      bounds = mainWindow.getBounds();
+    }
+    const state = {
+      isMaximized,
+      ...bounds,
+    };
+    fs.writeFileSync(filePath, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[WindowState] Failed to save:', err);
+  }
+}
+
+function debouncedSaveWindowState() {
+  if (saveWindowStateTimer) clearTimeout(saveWindowStateTimer);
+  saveWindowStateTimer = setTimeout(saveWindowState, 300);
+}
+
+function createWindow() {
+  const windowState = loadWindowState();
+
+  const windowOptions = {
+    width: windowState.width || 1380,
+    height: windowState.height || 900,
     minWidth: 900,
     minHeight: 600,
     title: 'XPDF Editor',
@@ -137,7 +208,24 @@ function createWindow() {
       webSecurity: false,
       plugins: true,
     },
-  });
+  };
+
+  if (typeof windowState.x === 'number' && typeof windowState.y === 'number') {
+    windowOptions.x = windowState.x;
+    windowOptions.y = windowState.y;
+  }
+
+  mainWindow = new BrowserWindow(windowOptions);
+
+  if (windowState.isMaximized) {
+    mainWindow.maximize();
+  }
+
+  mainWindow.on('resize', debouncedSaveWindowState);
+  mainWindow.on('move', debouncedSaveWindowState);
+  mainWindow.on('maximize', debouncedSaveWindowState);
+  mainWindow.on('unmaximize', debouncedSaveWindowState);
+  mainWindow.on('close', saveWindowState);
 
   // Open external links in user's default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -608,5 +696,6 @@ ipcMain.on('start-drag-page', (event, data) => {
   } catch (err) {
     console.error('startDrag error:', err);
   }
+app.on('before-quit', () => {
+  saveWindowState();
 });
-

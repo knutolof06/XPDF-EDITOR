@@ -9,11 +9,13 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
+  FoldHorizontal,
 } from 'lucide-react';
+import { cn } from '@/utils/cn';
 
 export const BottomBar: React.FC = () => {
   const { currentDocument, setActivePageIndex } = useDocumentStore();
-  const { zoom, setZoom, zoomIn, zoomOut } = useViewerStore();
+  const { zoom, setZoom, zoomIn, zoomOut, fitMode, setFitMode } = useViewerStore();
 
   if (!currentDocument) return null;
 
@@ -126,6 +128,19 @@ export const BottomBar: React.FC = () => {
             title="Yakınlaştır"
           >
             <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => setFitMode(fitMode === 'width' ? 'none' : 'width')}
+            className={cn(
+              'p-1 rounded transition-colors ml-0.5',
+              fitMode === 'width'
+                ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold'
+                : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400'
+            )}
+            title="Genişliğe Sığdır (Pencere değiştikçe otomatik ayarla)"
+          >
+            <FoldHorizontal className="w-3.5 h-3.5" />
           </button>
         </div>
 
