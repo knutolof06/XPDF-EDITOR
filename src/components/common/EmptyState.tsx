@@ -3,6 +3,7 @@ import { useDocumentStore } from '@/store/document-store';
 import { useTabStore } from '@/store/tab-store';
 import { useUIStore } from '@/store/ui-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
+import { openRecentDocument } from '@/utils/recent-document-opener';
 import {
   Upload,
   FilePlus2,
@@ -11,6 +12,8 @@ import {
   Layers,
   Zap,
   ShieldCheck,
+  FileText,
+  Trash2,
 } from 'lucide-react';
 
 export const EmptyState: React.FC = () => {
@@ -22,6 +25,8 @@ export const EmptyState: React.FC = () => {
     setError,
     recentDocuments,
     addRecentDocument,
+    removeRecentDocument,
+    clearRecentDocuments,
   } = useDocumentStore();
 
   const { addTab } = useTabStore();
@@ -32,7 +37,11 @@ export const EmptyState: React.FC = () => {
       setLoading(true);
       addToast(`"${file.name}" yükleniyor...`, 'info');
       const arrayBuffer = await file.arrayBuffer();
-      const { model, pdfDoc } = await PdfLoader.loadDocument(file.name, arrayBuffer);
+      const { model, pdfDoc } = await PdfLoader.loadDocument(
+        file.name,
+        arrayBuffer,
+        (file as any).path || undefined
+      );
       setDocument(model, pdfDoc);
       addTab(model, pdfDoc);
       addRecentDocument({
@@ -41,6 +50,7 @@ export const EmptyState: React.FC = () => {
         fileSize: model.fileSize,
         pageCount: model.totalPages,
         lastOpened: Date.now(),
+        filePath: (file as any).path || undefined,
       });
       addToast(`"${file.name}" başarıyla açıldı.`, 'success');
     } catch (err: any) {
@@ -164,18 +174,67 @@ export const EmptyState: React.FC = () => {
         {/* Recent Documents */}
         {recentDocuments.length > 0 && (
           <div className="w-full max-w-md text-left">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 px-1">
-              <Clock className="w-3.5 h-3.5" />
-              <span>Son Açılan Belgeler</span>
+            <div className="flex items-center justify-between text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 px-1">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5" />
+                <span>Son Açılan Belgeler</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => clearRecentDocuments()}
+                className="text-[11px] text-slate-400 hover:text-red-500 transition-colors"
+                title="Son açılan belgeler listesini temizle"
+              >
+                Temizle
+              </button>
             </div>
             <div className="space-y-1.5">
-              {recentDocuments.slice(0, 3).map((doc) => (
+              {recentDocuments.slice(0, 5).map((doc) => (
                 <div
                   key={doc.id}
-                  className="flex items-center justify-between p-2.5 rounded-xl bg-white dark:bg-slate-900/50 hover:bg-slate-50 dark:hover:bg-slate-800/80 border border-slate-200 dark:border-slate-800/80 text-xs transition-colors"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openRecentDocument(doc)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      openRecentDocument(doc);
+                    }
+                  }}
+                  className="group flex items-center justify-between p-2.5 rounded-xl bg-white dark:bg-slate-900/60 hover:bg-sky-50/70 dark:hover:bg-slate-800/90 border border-slate-200 dark:border-slate-800/80 hover:border-sky-300 dark:hover:border-sky-500/40 text-xs transition-all cursor-pointer shadow-sm hover:shadow active:scale-[0.99]"
                 >
-                  <span className="font-medium text-slate-800 dark:text-slate-300 truncate max-w-xs">{doc.name}</span>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-500">{doc.pageCount} sayfa</span>
+                  <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                    <div className="w-7 h-7 rounded-lg bg-sky-500/10 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                      <FileText className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-800 dark:text-slate-200 truncate" title={doc.filePath || doc.name}>
+                        {doc.name}
+                      </p>
+                      {doc.filePath && (
+                        <p className="text-[10px] text-slate-400 truncate max-w-[220px]" title={doc.filePath}>
+                          {doc.filePath}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md font-medium">
+                      {doc.pageCount} sayfa
+                    </span>
+                    <button
+                      type="button"
+                      title="Listeden Kaldır"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeRecentDocument(doc.id);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

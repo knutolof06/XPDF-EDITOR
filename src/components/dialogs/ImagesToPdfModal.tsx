@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { useDocumentStore } from '@/store/document-store';
 import { useTabStore } from '@/store/tab-store';
 import { useUIStore } from '@/store/ui-store';
 import { useViewerStore } from '@/store/viewer-store';
@@ -9,6 +10,7 @@ import { cn } from '@/utils/cn';
 
 export const ImagesToPdfModal: React.FC = () => {
   const { isImagesToPdfModalOpen, setImagesToPdfModalOpen, addToast } = useUIStore();
+  const { setDocument, addRecentDocument } = useDocumentStore();
   const { addTab } = useTabStore();
   const theme = useViewerStore((s) => s.theme);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -103,14 +105,22 @@ export const ImagesToPdfModal: React.FC = () => {
 
       const docName = `Gorsellerden_Olusturulan_${Date.now().toString().slice(-4)}.pdf`;
       const loaded = await PdfLoader.loadDocument(docName, pdfBuffer);
+      setDocument(loaded.model, loaded.pdfDoc);
       addTab(loaded.model, loaded.pdfDoc);
+      addRecentDocument({
+        id: loaded.model.id,
+        name: loaded.model.name,
+        fileSize: loaded.model.fileSize,
+        pageCount: loaded.model.totalPages,
+        lastOpened: Date.now(),
+      });
 
       // Clean up object URLs
       images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       setImages([]);
       setImagesToPdfModalOpen(false);
 
-      addToast(`${images.length} görselden yeni PDF dökümanı başarıyla oluşturuldu!`, 'success');
+      addToast(`${images.length} görselden yeni PDF dökümanı başarıyla oluşturuldu ve açıldı!`, 'success');
     } catch (err: any) {
       console.error('Images to PDF conversion error:', err);
       addToast('Görseller PDF\'e dönüştürülürken hata oluştu.', 'error');

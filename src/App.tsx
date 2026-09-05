@@ -110,6 +110,7 @@ export const App: React.FC = () => {
             addRecentDocument({
               id: model.id,
               name: model.name,
+              filePath: fileData.path || undefined,
               fileSize: model.fileSize,
               pageCount: model.totalPages,
               lastOpened: Date.now(),

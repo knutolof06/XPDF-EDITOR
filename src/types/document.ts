@@ -62,6 +62,7 @@ export interface PdfDocumentModel {
 export interface RecentDocumentItem {
   id: string;
   name: string;
+  filePath?: string;
   fileSize: number;
   pageCount: number;
   lastOpened: number;

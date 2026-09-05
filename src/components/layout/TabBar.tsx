@@ -8,7 +8,7 @@ import { cn } from '@/utils/cn';
 
 export const TabBar: React.FC = () => {
   const { tabs, activeTabId, setActiveTab, closeTab, addTab, updateActiveTabState } = useTabStore();
-  const { currentDocument, setDocument } = useDocumentStore();
+  const { currentDocument, setDocument, addRecentDocument } = useDocumentStore();
   const { addToast } = useUIStore();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -64,9 +64,18 @@ export const TabBar: React.FC = () => {
     try {
       addToast(`"${file.name}" yeni sekmede açılıyor...`, 'info');
       const arrayBuffer = await file.arrayBuffer();
-      const { model, pdfDoc } = await PdfLoader.loadDocument(file.name, arrayBuffer);
+      const filePath = (file as any).path || undefined;
+      const { model, pdfDoc } = await PdfLoader.loadDocument(file.name, arrayBuffer, filePath);
       setDocument(model, pdfDoc);
       addTab(model, pdfDoc);
+      addRecentDocument({
+        id: model.id,
+        name: model.name,
+        filePath,
+        fileSize: model.fileSize,
+        pageCount: model.totalPages,
+        lastOpened: Date.now(),
+      });
       addToast(`"${file.name}" açıldı.`, 'success');
     } catch (err: any) {
       console.error(err);

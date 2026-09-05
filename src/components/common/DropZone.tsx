@@ -52,13 +52,15 @@ export const DropZone: React.FC<DropZoneProps> = ({ children }) => {
       addToast(`"${pdfFile.name}" yükleniyor...`, 'info');
 
       const arrayBuffer = await pdfFile.arrayBuffer();
-      const { model, pdfDoc } = await PdfLoader.loadDocument(pdfFile.name, arrayBuffer);
+      const filePath = (pdfFile as any).path || undefined;
+      const { model, pdfDoc } = await PdfLoader.loadDocument(pdfFile.name, arrayBuffer, filePath);
 
       setDocument(model, pdfDoc);
       addTab(model, pdfDoc);
       addRecentDocument({
         id: model.id,
         name: model.name,
+        filePath,
         fileSize: model.fileSize,
         pageCount: model.totalPages,
         lastOpened: Date.now(),

@@ -75,12 +75,14 @@ export const TopToolbar: React.FC = () => {
       setLoading(true);
       addToast(`"${file.name}" yükleniyor...`, 'info');
       const arrayBuffer = await file.arrayBuffer();
-      const { model, pdfDoc } = await PdfLoader.loadDocument(file.name, arrayBuffer);
+      const filePath = (file as any).path || undefined;
+      const { model, pdfDoc } = await PdfLoader.loadDocument(file.name, arrayBuffer, filePath);
       setDocument(model, pdfDoc);
       addTab(model, pdfDoc);
       addRecentDocument({
         id: model.id,
         name: model.name,
+        filePath,
         fileSize: model.fileSize,
         pageCount: model.totalPages,
         lastOpened: Date.now(),

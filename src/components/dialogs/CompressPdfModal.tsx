@@ -18,7 +18,7 @@ function formatBytes(bytes: number): string {
 
 export const CompressPdfModal: React.FC = () => {
   const { isCompressModalOpen, setCompressModalOpen, addToast } = useUIStore();
-  const { currentDocument, pdfDocProxy } = useDocumentStore();
+  const { currentDocument, pdfDocProxy, setDocument, addRecentDocument } = useDocumentStore();
   const { addTab } = useTabStore();
   const theme = useViewerStore((s) => s.theme);
 
@@ -73,7 +73,15 @@ export const CompressPdfModal: React.FC = () => {
     try {
       const newName = currentDocument.name.replace(/\.pdf$/i, '') + ' (Sıkıştırılmış).pdf';
       const loaded = await PdfLoader.loadDocument(newName, result.compressedBuffer);
+      setDocument(loaded.model, loaded.pdfDoc);
       addTab(loaded.model, loaded.pdfDoc);
+      addRecentDocument({
+        id: loaded.model.id,
+        name: loaded.model.name,
+        fileSize: loaded.model.fileSize,
+        pageCount: loaded.model.totalPages,
+        lastOpened: Date.now(),
+      });
       setCompressModalOpen(false);
       addToast('Sıkıştırılmış PDF yeni sekmede açıldı.', 'success');
     } catch (err) {

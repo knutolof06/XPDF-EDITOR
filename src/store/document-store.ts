@@ -29,6 +29,8 @@ interface DocumentState {
   setLoading: (isLoading: boolean, progress?: number) => void;
   setError: (error: string | null) => void;
   addRecentDocument: (item: RecentDocumentItem) => void;
+  removeRecentDocument: (id: string) => void;
+  clearRecentDocuments: () => void;
 }
 
 const loadRecentDocuments = (): RecentDocumentItem[] => {
@@ -233,12 +235,37 @@ export const useDocumentStore = create<DocumentState>()(
 
     addRecentDocument: (item) =>
       set((state) => {
-        const filtered = state.recentDocuments.filter((d) => d.name !== item.name);
-        const updated = [item, ...filtered].slice(0, 10);
+        const filtered = state.recentDocuments.filter((d) => d.name !== item.name && d.id !== item.id);
+        const updated = [item, ...filtered].slice(0, 15);
         state.recentDocuments = updated;
         if (typeof window !== 'undefined' && window.localStorage) {
           try {
             localStorage.setItem('xpdf_recent_documents', JSON.stringify(updated));
+          } catch {
+            // ignore
+          }
+        }
+      }),
+
+    removeRecentDocument: (id) =>
+      set((state) => {
+        const updated = state.recentDocuments.filter((d) => d.id !== id);
+        state.recentDocuments = updated;
+        if (typeof window !== 'undefined' && window.localStorage) {
+          try {
+            localStorage.setItem('xpdf_recent_documents', JSON.stringify(updated));
+          } catch {
+            // ignore
+          }
+        }
+      }),
+
+    clearRecentDocuments: () =>
+      set((state) => {
+        state.recentDocuments = [];
+        if (typeof window !== 'undefined' && window.localStorage) {
+          try {
+            localStorage.removeItem('xpdf_recent_documents');
           } catch {
             // ignore
           }
