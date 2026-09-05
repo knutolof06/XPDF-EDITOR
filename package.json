@@ -1,6 +1,6 @@
 {
   "name": "xpdf-editor",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "XPDF - Profesyonel Windows PDF Düzenleyici & Yöneticisi",
   "private": true,
   "type": "module",

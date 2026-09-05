@@ -696,6 +696,9 @@ ipcMain.on('start-drag-page', (event, data) => {
   } catch (err) {
     console.error('startDrag error:', err);
   }
+});
+
 app.on('before-quit', () => {
   saveWindowState();
 });
+
