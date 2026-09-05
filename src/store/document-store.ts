@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { PdfDocumentModel, RecentDocumentItem } from '@/types/document';
 import * as pdfjsLib from 'pdfjs-dist';
+import { clearDocumentCaches } from '@/core/cache/render-cache';
+import { cancelActivePreload } from '@/core/cache/page-preloader';
 
 interface DocumentState {
   currentDocument: PdfDocumentModel | null;
@@ -59,6 +61,10 @@ export const useDocumentStore = create<DocumentState>()(
 
     closeDocument: () =>
       set((state) => {
+        if (state.currentDocument) {
+          clearDocumentCaches(state.currentDocument.id);
+        }
+        cancelActivePreload();
         state.currentDocument = null;
         state.pdfDocProxy = null;
         state.loadingError = null;

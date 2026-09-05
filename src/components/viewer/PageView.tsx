@@ -9,6 +9,14 @@ import { useUIStore } from '@/store/ui-store';
 import { AnnotationLayer } from './AnnotationLayer';
 import { RulerGuideOverlay } from './RulerGuideOverlay';
 import { enqueuePageRender } from '@/core/cache/thumbnail-queue';
+import {
+  pageBitmapCache,
+  pageMetadataCache,
+  makePageBitmapKey,
+  makePageMetaKey,
+  normalizeScale,
+} from '@/core/cache/render-cache';
+import { preloadAdjacentPages, cancelActivePreload } from '@/core/cache/page-preloader';
 import { useFormStore, FormWidgetModel } from '@/store/form-store';
 import { Copy } from 'lucide-react';
 import { cn } from '@/utils/cn';
@@ -28,6 +36,71 @@ interface PdfLinkItem {
   height: number;
   url?: string;
   dest?: any;
+}
+
+async function renderTextLayerContent(
+  container: HTMLDivElement,
+  textContent: any,
+  cssViewport: any,
+  renderScale: number
+) {
+  if (!container || !textContent) return;
+  container.innerHTML = '';
+  container.style.width = `${Math.floor(cssViewport.width)}px`;
+  container.style.height = `${Math.floor(cssViewport.height)}px`;
+  container.style.setProperty('--scale-factor', `${renderScale}`);
+  container.style.setProperty('--main-color', 'transparent');
+
+  let renderedWithOfficial = false;
+  try {
+    if (typeof TextLayer === 'function') {
+      const textLayer = new TextLayer({
+        textContentSource: textContent,
+        container,
+        viewport: cssViewport,
+      });
+      await textLayer.render();
+      renderedWithOfficial = true;
+    }
+  } catch (tErr) {
+    console.warn('TextLayer render error:', tErr);
+  }
+
+  if (!renderedWithOfficial) {
+    container.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    textContent.items.forEach((item: any) => {
+      if (!item.str) return;
+      const span = document.createElement('span');
+      span.textContent = item.str;
+
+      const tx = pdfjsLib.Util.transform(cssViewport.transform, item.transform);
+      const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+      const itemWidth = (item.width || 0) * renderScale;
+      span.style.fontSize = `${fontHeight}px`;
+      span.style.fontFamily = item.fontName || 'sans-serif';
+      span.style.left = `${tx[4]}px`;
+      span.style.top = `${tx[5] - fontHeight}px`;
+      if (itemWidth > 0) {
+        span.style.width = `${itemWidth}px`;
+      }
+      span.style.height = `${fontHeight}px`;
+      span.style.lineHeight = `${fontHeight}px`;
+
+      fragment.appendChild(span);
+
+      if (item.hasEOL) {
+        const br = document.createElement('br');
+        fragment.appendChild(br);
+      }
+    });
+
+    const endOfContent = document.createElement('div');
+    endOfContent.className = 'endOfContent';
+    fragment.appendChild(endOfContent);
+
+    container.appendChild(fragment);
+  }
 }
 
 export const PageView: React.FC<PageViewProps> = ({
@@ -82,7 +155,7 @@ export const PageView: React.FC<PageViewProps> = ({
         }
       },
       {
-        rootMargin: '200px 0px 200px 0px',
+        rootMargin: '600px 0px 600px 0px',
         threshold: 0.01,
       }
     );
@@ -91,19 +164,111 @@ export const PageView: React.FC<PageViewProps> = ({
     return () => observer.disconnect();
   }, []);
 
-  // Main Page Render Effect
+  // Main Page Render Effect (with Synchronous Cache Hit & Progressive Zoom)
   useEffect(() => {
     let isCancelled = false;
     let cancelQueue: (() => void) | null = null;
 
     if (!isVisible) return;
+    if (!pdfDocProxy || !canvasRef.current) return;
 
+    const normScale = normalizeScale(renderScale);
+    const cacheKey = makePageBitmapKey(
+      docId,
+      page.id,
+      page.sourcePageIndex,
+      page.rotation,
+      normScale
+    );
+    const metaKey = makePageMetaKey(
+      docId,
+      page.id,
+      page.sourcePageIndex,
+      page.rotation
+    );
+
+    // 1. FAST PATH: Synchronous cache hit (<0.1ms) - Instant display, zero spinner!
+    const cachedEntry = pageBitmapCache.get(cacheKey);
+    if (cachedEntry && canvasRef.current) {
+      const canvas = canvasRef.current;
+      canvas.width = cachedEntry.width;
+      canvas.height = cachedEntry.height;
+
+      const cssWidth = (page.width || 595.28) * renderScale;
+      const cssHeight = (page.height || 841.89) * renderScale;
+      canvas.style.width = `${Math.floor(cssWidth)}px`;
+      canvas.style.height = `${Math.floor(cssHeight)}px`;
+
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (ctx) {
+        ctx.drawImage(cachedEntry.bitmap, 0, 0);
+        setIsRendered(true);
+
+        const cachedMeta = pageMetadataCache.get(metaKey);
+        if (cachedMeta) {
+          setPageLinks(cachedMeta.links || []);
+          setPageFormWidgets(cachedMeta.widgets || []);
+          if (textLayerRef.current && cachedMeta.textContent && pdfDocProxy) {
+            pdfDocProxy
+              .getPage(page.sourcePageIndex + 1)
+              .then((p) => {
+                if (isCancelled || !textLayerRef.current) return;
+                const cssViewport = p.getViewport({
+                  scale: renderScale,
+                  rotation: page.rotation,
+                });
+                renderTextLayerContent(
+                  textLayerRef.current,
+                  cachedMeta.textContent,
+                  cssViewport,
+                  renderScale
+                );
+              })
+              .catch(() => {});
+          }
+        }
+
+        // Trigger background preloader for adjacent pages
+        preloadAdjacentPages(pdfDocProxy, currentDocument, index, renderScale);
+        return;
+      }
+    }
+
+    // 2. SLOW PATH: First render or scale changed
     async function renderPage() {
-      if (!pdfDocProxy || !canvasRef.current) return;
+      if (!pdfDocProxy || !canvasRef.current || isCancelled) return;
 
       if (renderTaskRef.current) {
-        try { renderTaskRef.current.cancel(); } catch { /* ignore */ }
+        try {
+          renderTaskRef.current.cancel();
+        } catch {
+          /* ignore */
+        }
       }
+
+      // Progressive Zoom Smoothing: If an older scale bitmap exists for this page,
+      // draw it temporarily stretched so the page never flashes blank/white during zoom.
+      const canvas = canvasRef.current;
+      if (canvas) {
+        for (const [, entry] of pageBitmapCache.entries()) {
+          if (
+            entry.docId === docId &&
+            entry.pageIndex === index &&
+            entry.rotation === page.rotation
+          ) {
+            const ctx = canvas.getContext('2d', { alpha: false });
+            if (ctx) {
+              canvas.width = entry.width;
+              canvas.height = entry.height;
+              ctx.drawImage(entry.bitmap, 0, 0);
+              break;
+            }
+          }
+        }
+      }
+
+      // Active visible page has priority; yield any unstarted background preloading
+      cancelActivePreload();
 
       try {
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
@@ -120,15 +285,15 @@ export const PageView: React.FC<PageViewProps> = ({
           rotation: page.rotation,
         });
 
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!canvasRef.current || isCancelled) return;
+        const currentCanvas = canvasRef.current;
+        const ctx = currentCanvas.getContext('2d', { alpha: false });
         if (!ctx) return;
 
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        canvas.style.width = `${Math.floor(cssViewport.width)}px`;
-        canvas.style.height = `${Math.floor(cssViewport.height)}px`;
+        currentCanvas.width = Math.floor(viewport.width);
+        currentCanvas.height = Math.floor(viewport.height);
+        currentCanvas.style.width = `${Math.floor(cssViewport.width)}px`;
+        currentCanvas.style.height = `${Math.floor(cssViewport.height)}px`;
 
         const task = pdfPage.render({ canvasContext: ctx, viewport });
         renderTaskRef.current = task;
@@ -138,132 +303,93 @@ export const PageView: React.FC<PageViewProps> = ({
 
         setIsRendered(true);
 
-        // Precise Text Layer Rendering (Exact glyph mapping & font scaling)
-        if (textLayerRef.current) {
-          const container = textLayerRef.current;
-          container.innerHTML = '';
-          container.style.width = `${Math.floor(cssViewport.width)}px`;
-          container.style.height = `${Math.floor(cssViewport.height)}px`;
-          container.style.setProperty('--scale-factor', `${renderScale}`);
-          container.style.setProperty('--main-color', 'transparent');
-
-          const textContent = await pdfPage.getTextContent();
-          if (isCancelled || !textLayerRef.current) return;
-
-          let renderedWithOfficial = false;
-          try {
-            if (typeof TextLayer === 'function') {
-              const textLayer = new TextLayer({
-                textContentSource: textContent,
-                container,
-                viewport: cssViewport,
+        // Store into hardware-accelerated ImageBitmap LRU cache
+        if (typeof createImageBitmap === 'function') {
+          createImageBitmap(currentCanvas)
+            .then((bmp) => {
+              pageBitmapCache.set(cacheKey, {
+                bitmap: bmp,
+                width: currentCanvas.width,
+                height: currentCanvas.height,
+                scale: normScale,
+                rotation: page.rotation,
+                docId,
+                pageIndex: index,
               });
-              await textLayer.render();
-              renderedWithOfficial = true;
-            }
-          } catch (tErr) {
-            console.warn('TextLayer render error:', tErr);
-          }
+            })
+            .catch(() => {});
+        }
 
-          // Fallback if official TextLayer is unavailable: precise manual glyph transforms
-          if (!renderedWithOfficial && textLayerRef.current) {
-            container.innerHTML = '';
-            const fragment = document.createDocumentFragment();
-            textContent.items.forEach((item: any) => {
-              if (!item.str) return;
-              const span = document.createElement('span');
-              span.textContent = item.str;
+        // Fetch text content & links concurrently
+        const [textContent, annotations] = await Promise.all([
+          pdfPage.getTextContent().catch(() => null),
+          pdfPage.getAnnotations({ intent: 'display' }).catch(() => []),
+        ]);
 
-              const tx = pdfjsLib.Util.transform(
-                cssViewport.transform,
-                item.transform
-              );
+        if (isCancelled) return;
 
-              const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-              const itemWidth = (item.width || 0) * renderScale;
-              span.style.fontSize = `${fontHeight}px`;
-              span.style.fontFamily = item.fontName || 'sans-serif';
-              span.style.left = `${tx[4]}px`;
-              span.style.top = `${tx[5] - fontHeight}px`;
-              if (itemWidth > 0) {
-                span.style.width = `${itemWidth}px`;
-              }
-              span.style.height = `${fontHeight}px`;
-              span.style.lineHeight = `${fontHeight}px`;
+        if (textLayerRef.current && textContent) {
+          renderTextLayerContent(
+            textLayerRef.current,
+            textContent,
+            cssViewport,
+            renderScale
+          );
+        }
 
-              fragment.appendChild(span);
+        const links: PdfLinkItem[] = [];
+        const widgets: FormWidgetModel[] = [];
 
-              if (item.hasEOL) {
-                const br = document.createElement('br');
-                fragment.appendChild(br);
-              }
+        for (const ann of annotations || []) {
+          if (ann.subtype === 'Link' && ann.rect) {
+            const rect = cssViewport.convertToViewportRectangle(ann.rect);
+            links.push({
+              id:
+                ann.id ||
+                `link_${page.id}_${Math.random().toString(36).substring(2, 7)}`,
+              left: Math.min(rect[0], rect[2]),
+              top: Math.min(rect[1], rect[3]),
+              width: Math.abs(rect[2] - rect[0]),
+              height: Math.abs(rect[3] - rect[1]),
+              url: ann.url || undefined,
+              dest: ann.dest || undefined,
             });
-
-            const endOfContent = document.createElement('div');
-            endOfContent.className = 'endOfContent';
-            fragment.appendChild(endOfContent);
-
-            container.appendChild(fragment);
+          } else if (ann.subtype === 'Widget' && ann.rect) {
+            const rect = cssViewport.convertToViewportRectangle(ann.rect);
+            widgets.push({
+              id:
+                ann.id ||
+                `widget_${page.id}_${Math.random().toString(36).substring(2, 7)}`,
+              pageIndex: index,
+              fieldName: ann.fieldName || `field_${ann.id}`,
+              fieldType: ann.fieldType,
+              fieldValue: ann.fieldValue ?? '',
+              defaultFieldValue: ann.defaultFieldValue ?? '',
+              checkBox: Boolean(ann.checkBox),
+              radioButton: Boolean(ann.radioButton),
+              buttonValue: ann.buttonValue,
+              options: ann.options,
+              readOnly: Boolean(ann.readOnly),
+              multiline: Boolean(ann.multiline),
+              left: Math.min(rect[0], rect[2]),
+              top: Math.min(rect[1], rect[3]),
+              width: Math.abs(rect[2] - rect[0]),
+              height: Math.abs(rect[3] - rect[1]),
+            });
           }
         }
 
-        // Extract native PDF Links (Hyperlinks and Internal Page Navigation)
-        try {
-          const annotations = await pdfPage.getAnnotations({ intent: 'display' });
-          if (!isCancelled) {
-            const links: PdfLinkItem[] = [];
-            const widgets: FormWidgetModel[] = [];
+        setPageLinks(links);
+        setPageFormWidgets(widgets);
 
-            for (const ann of annotations) {
-              if (ann.subtype === 'Link' && ann.rect) {
-                const rect = cssViewport.convertToViewportRectangle(ann.rect);
-                const left = Math.min(rect[0], rect[2]);
-                const top = Math.min(rect[1], rect[3]);
-                const width = Math.abs(rect[2] - rect[0]);
-                const height = Math.abs(rect[3] - rect[1]);
+        pageMetadataCache.set(metaKey, {
+          textContent,
+          links,
+          widgets,
+        });
 
-                links.push({
-                  id: ann.id || `link_${page.id}_${Math.random().toString(36).substring(2, 7)}`,
-                  left,
-                  top,
-                  width,
-                  height,
-                  url: ann.url || undefined,
-                  dest: ann.dest || undefined,
-                });
-              } else if (ann.subtype === 'Widget' && ann.rect) {
-                const rect = cssViewport.convertToViewportRectangle(ann.rect);
-                const left = Math.min(rect[0], rect[2]);
-                const top = Math.min(rect[1], rect[3]);
-                const width = Math.abs(rect[2] - rect[0]);
-                const height = Math.abs(rect[3] - rect[1]);
-
-                widgets.push({
-                  id: ann.id || `widget_${page.id}_${Math.random().toString(36).substring(2, 7)}`,
-                  pageIndex: index,
-                  fieldName: ann.fieldName || `field_${ann.id}`,
-                  fieldType: ann.fieldType,
-                  fieldValue: ann.fieldValue ?? '',
-                  defaultFieldValue: ann.defaultFieldValue ?? '',
-                  checkBox: Boolean(ann.checkBox),
-                  radioButton: Boolean(ann.radioButton),
-                  buttonValue: ann.buttonValue,
-                  options: ann.options,
-                  readOnly: Boolean(ann.readOnly),
-                  multiline: Boolean(ann.multiline),
-                  left,
-                  top,
-                  width,
-                  height,
-                });
-              }
-            }
-            setPageLinks(links);
-            setPageFormWidgets(widgets);
-          }
-        } catch (linkErr) {
-          console.warn('Link extraction error:', linkErr);
-        }
+        // Smart Adjacent Preload (N+1 & N-1 during idle time)
+        preloadAdjacentPages(pdfDocProxy, currentDocument, index, renderScale);
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') {
           console.error(`Page ${index + 1} render error:`, err);
@@ -271,17 +397,30 @@ export const PageView: React.FC<PageViewProps> = ({
       }
     }
 
-    // Auto-prioritized: currently visible page gets highest priority immediately (LIFO)
     cancelQueue = enqueuePageRender(renderPage);
 
     return () => {
       isCancelled = true;
       cancelQueue?.();
       if (renderTaskRef.current) {
-        try { renderTaskRef.current.cancel(); } catch { /* ignore */ }
+        try {
+          renderTaskRef.current.cancel();
+        } catch {
+          /* ignore */
+        }
       }
     };
-  }, [isVisible, pdfDocProxy, page.sourcePageIndex, page.rotation, renderScale]);
+  }, [
+    isVisible,
+    pdfDocProxy,
+    page.sourcePageIndex,
+    page.rotation,
+    renderScale,
+    docId,
+    index,
+    page.width,
+    page.height,
+  ]);
 
   // Native Text Selection on Search: select the exact text without any custom overlays/boxes
   useEffect(() => {

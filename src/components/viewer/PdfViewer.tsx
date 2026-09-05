@@ -4,6 +4,8 @@ import { useViewerStore } from '@/store/viewer-store';
 import { useTabStore } from '@/store/tab-store';
 import { PageView } from './PageView';
 import { SearchOverlay } from './SearchOverlay';
+import { updateDynamicBitmapCapacity } from '@/core/cache/render-cache';
+import { cancelActivePreload } from '@/core/cache/page-preloader';
 import { cn } from '@/utils/cn';
 
 export const PdfViewer: React.FC = () => {
@@ -70,6 +72,9 @@ export const PdfViewer: React.FC = () => {
 
       containerRef.current.scrollTo({ top: targetTop, behavior });
     }
+
+    // Cancel any outdated background preloads when user explicitly navigates to a new page
+    cancelActivePreload();
   }, [currentDocument?.activePageIndex]);
 
   // FIX: When zoom changes, suppress scroll-handler and restore scroll to the active page
@@ -156,6 +161,11 @@ export const PdfViewer: React.FC = () => {
     const startIdx = Math.floor(currentDocument.activePageIndex / 4) * 4;
     renderedPages = pages.slice(startIdx, startIdx + 4);
   }
+
+  // Dynamically update bitmap cache capacity to prevent thrashing in multi-page view modes
+  useEffect(() => {
+    updateDynamicBitmapCapacity(renderedPages.length);
+  }, [renderedPages.length]);
 
   const gridClass = {
     continuous: 'flex flex-col items-center gap-6 py-8',

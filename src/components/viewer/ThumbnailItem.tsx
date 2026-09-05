@@ -90,26 +90,26 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
     if (!pdfDocProxy || !canvasRef.current) return;
 
+    // SYNCHRONOUS CACHE HIT CHECK:
+    // If cached in ImageBitmap LRU, paint immediately (<0.1ms) without entering the async queue!
+    const cachedBitmap = thumbnailCache.get(cacheKey);
+    if (cachedBitmap && canvasRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        canvas.width = cachedBitmap.width;
+        canvas.height = cachedBitmap.height;
+        ctx.drawImage(cachedBitmap, 0, 0);
+        renderedKeyRef.current = cacheKey;
+        setIsRendered(true);
+        return;
+      }
+    }
+
     let isCancelled = false;
 
     async function renderThumbnail() {
       if (!pdfDocProxy || !canvasRef.current || isCancelled) return;
-
-      const cachedBitmap = thumbnailCache.get(cacheKey);
-
-      // Instant hardware-accelerated draw from ImageBitmap cache (<1ms)
-      if (cachedBitmap && canvasRef.current) {
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          canvas.width = cachedBitmap.width;
-          canvas.height = cachedBitmap.height;
-          ctx.drawImage(cachedBitmap, 0, 0);
-          renderedKeyRef.current = cacheKey;
-          setIsRendered(true);
-          return;
-        }
-      }
 
       try {
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
