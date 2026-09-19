@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useDocumentStore } from '@/store/document-store';
-import { useViewerStore, ReadingTheme } from '@/store/viewer-store';
+import { useViewerStore, ReadingTheme, ZOOM_STEPS } from '@/store/viewer-store';
 import { useUIStore } from '@/store/ui-store';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
@@ -32,6 +32,10 @@ import {
   Minimize2,
   BookOpen,
   Check,
+  Scan,
+  Maximize2,
+  FileText,
+  ChevronDown,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -52,12 +56,15 @@ export const TopToolbar: React.FC = () => {
 
   const {
     zoom,
+    setZoom,
     fitMode,
     setFitMode,
     readingTheme,
     setReadingTheme,
     zoomIn,
     zoomOut,
+    activeTool,
+    setActiveTool,
     viewMode,
     setViewMode,
     theme,
@@ -68,19 +75,37 @@ export const TopToolbar: React.FC = () => {
   const [isReadingThemeOpen, setIsReadingThemeOpen] = useState(false);
   const readingThemeRef = useRef<HTMLDivElement>(null);
 
+  const [isZoomPopoverOpen, setIsZoomPopoverOpen] = useState(false);
+  const [customZoomInput, setCustomZoomInput] = useState('');
+  const zoomPopoverRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (readingThemeRef.current && !readingThemeRef.current.contains(e.target as Node)) {
         setIsReadingThemeOpen(false);
       }
+      if (zoomPopoverRef.current && !zoomPopoverRef.current.contains(e.target as Node)) {
+        setIsZoomPopoverOpen(false);
+      }
     };
-    if (isReadingThemeOpen) {
+    if (isReadingThemeOpen || isZoomPopoverOpen) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isReadingThemeOpen]);
+  }, [isReadingThemeOpen, isZoomPopoverOpen]);
+
+  const handleCustomZoomSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseFloat(customZoomInput);
+    if (!isNaN(val) && val >= 20 && val <= 500) {
+      setFitMode('none');
+      setZoom(val / 100);
+      setIsZoomPopoverOpen(false);
+      setCustomZoomInput('');
+    }
+  };
 
   const {
     setPropertiesModalOpen,
@@ -394,22 +419,145 @@ export const TopToolbar: React.FC = () => {
             >
               <ZoomOut className="w-4 h-4" />
             </button>
-            <button
-              onClick={() => setFitMode(fitMode === 'width' ? 'none' : 'width')}
-              className={cn(
-                'px-2 py-1 text-xs font-semibold rounded min-w-[52px] text-center transition-colors',
-                fitMode === 'width'
-                  ? 'text-sky-600 dark:text-sky-400 bg-sky-500/15'
-                  : 'text-slate-800 dark:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
+
+            {/* Zoom Popover Trigger */}
+            <div className="relative" ref={zoomPopoverRef}>
+              <button
+                onClick={() => setIsZoomPopoverOpen(!isZoomPopoverOpen)}
+                className={cn(
+                  'px-2 py-1 text-xs font-semibold rounded min-w-[56px] flex items-center justify-center gap-1 transition-colors',
+                  fitMode !== 'none'
+                    ? 'text-sky-600 dark:text-sky-400 bg-sky-500/15'
+                    : 'text-slate-800 dark:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
+                )}
+                title="Yakınlaştırma Seçenekleri & Hazır Adımlar"
+              >
+                <span>{Math.round(zoom * 100)}%</span>
+                <ChevronDown className="w-3 h-3 opacity-60" />
+              </button>
+
+              {isZoomPopoverOpen && (
+                <div className="absolute left-1/2 -translate-x-1/2 mt-2 w-56 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl p-2.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs">
+                  {/* Custom % Input */}
+                  <form onSubmit={handleCustomZoomSubmit} className="flex items-center gap-1.5 mb-2 pb-2 border-b border-slate-200 dark:border-slate-700">
+                    <span className="text-slate-400 font-semibold">%</span>
+                    <input
+                      type="number"
+                      min={20}
+                      max={500}
+                      placeholder={String(Math.round(zoom * 100))}
+                      value={customZoomInput}
+                      onChange={(e) => setCustomZoomInput(e.target.value)}
+                      className="w-full bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-2 py-1 text-xs font-semibold text-slate-900 dark:text-white outline-none focus:border-sky-500"
+                      autoFocus
+                    />
+                    <button
+                      type="submit"
+                      className="px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded text-[11px] font-semibold transition-colors"
+                    >
+                      Uygula
+                    </button>
+                  </form>
+
+                  {/* Quick Fit Actions */}
+                  <div className="space-y-0.5 mb-2 pb-2 border-b border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFitMode('width');
+                        setIsZoomPopoverOpen(false);
+                      }}
+                      className={cn(
+                        'w-full px-2 py-1.5 rounded-lg flex items-center justify-between text-left hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors',
+                        fitMode === 'width' && 'text-sky-600 dark:text-sky-400 font-bold bg-sky-500/10'
+                      )}
+                    >
+                      <span className="flex items-center gap-2">
+                        <FoldHorizontal className="w-3.5 h-3.5" />
+                        Genişliğe Sığdır
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-normal">Ctrl+2</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFitMode('page');
+                        setIsZoomPopoverOpen(false);
+                      }}
+                      className={cn(
+                        'w-full px-2 py-1.5 rounded-lg flex items-center justify-between text-left hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors',
+                        fitMode === 'page' && 'text-sky-600 dark:text-sky-400 font-bold bg-sky-500/10'
+                      )}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Minimize2 className="w-3.5 h-3.5" />
+                        Sayfaya Sığdır
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-normal">Ctrl+0</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFitMode('content');
+                        setIsZoomPopoverOpen(false);
+                      }}
+                      className={cn(
+                        'w-full px-2 py-1.5 rounded-lg flex items-center justify-between text-left hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors',
+                        fitMode === 'content' && 'text-sky-600 dark:text-sky-400 font-bold bg-sky-500/10'
+                      )}
+                    >
+                      <span className="flex items-center gap-2">
+                        <FileText className="w-3.5 h-3.5" />
+                        İçeriğe Sığdır (Metin)
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-normal">Ctrl+3</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFitMode('none');
+                        setZoom(1.0);
+                        setIsZoomPopoverOpen(false);
+                      }}
+                      className={cn(
+                        'w-full px-2 py-1.5 rounded-lg flex items-center justify-between text-left hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors',
+                        Math.abs(zoom - 1.0) < 0.01 && fitMode === 'none' && 'text-sky-600 dark:text-sky-400 font-bold bg-sky-500/10'
+                      )}
+                    >
+                      <span>Gerçek Boyut (%100)</span>
+                      <span className="text-[10px] text-slate-400 font-normal">Ctrl+1</span>
+                    </button>
+                  </div>
+
+                  {/* Standard Zoom Percentages Grid */}
+                  <div className="grid grid-cols-3 gap-1">
+                    {ZOOM_STEPS.slice(0, 9).map((step) => (
+                      <button
+                        key={step}
+                        type="button"
+                        onClick={() => {
+                          setFitMode('none');
+                          setZoom(step);
+                          setIsZoomPopoverOpen(false);
+                        }}
+                        className={cn(
+                          'py-1 rounded text-center text-xs hover:bg-slate-100 dark:hover:bg-slate-700/80 transition-colors',
+                          Math.abs(zoom - step) < 0.02 && fitMode === 'none'
+                            ? 'bg-sky-500 text-white font-bold'
+                            : 'text-slate-700 dark:text-slate-300'
+                        )}
+                      >
+                        {Math.round(step * 100)}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
-              title={
-                fitMode === 'width'
-                  ? 'Genişliğe Sığdırıldı (Tıklayınca serbest bırakır)'
-                  : 'Genişliğe Sığdır (Pencere değiştikçe otomatik ayarlar)'
-              }
-            >
-              {Math.round(zoom * 100)}%
-            </button>
+            </div>
+
             <button
               onClick={zoomIn}
               className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-slate-700 dark:text-slate-300 transition-colors"
@@ -428,7 +576,7 @@ export const TopToolbar: React.FC = () => {
                   ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-xs'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
-              title="Genişliğe Sığdır (Pencere boyutlandıkça sayfayı otomatik sığdırır)"
+              title="Genişliğe Sığdır (Pencere boyutlandıkça sayfayı otomatik sığdırır) - Ctrl+2"
             >
               <FoldHorizontal className="w-4 h-4" />
             </button>
@@ -441,9 +589,35 @@ export const TopToolbar: React.FC = () => {
                   ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-xs'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
-              title="Sayfaya Sığdır (Tüm sayfayı ekrana sığdırır)"
+              title="Sayfaya Sığdır (Tüm sayfayı ekrana sığdırır) - Ctrl+0"
             >
               <Minimize2 className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={() => setActiveTool(activeTool === 'marquee-zoom' ? 'select' : 'marquee-zoom')}
+              className={cn(
+                'p-1.5 rounded-md transition-colors',
+                activeTool === 'marquee-zoom'
+                  ? 'bg-sky-500 text-white font-semibold shadow-xs'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              )}
+              title="Alan Yakınlaştırma (Kutu içine aldığınız alanı tam ekrana sığdırır) - Z / Shift+Sürükle"
+            >
+              <Scan className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={() => {
+                useUIStore.getState().setFullscreenPresentation(true);
+                if (!document.fullscreenElement) {
+                  document.documentElement.requestFullscreen().catch(() => {});
+                }
+              }}
+              className="p-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition-colors"
+              title="Tam Ekran Sunum Modu (F11 / Ctrl + L)"
+            >
+              <Maximize2 className="w-4 h-4" />
             </button>
           </div>
 

@@ -40,6 +40,7 @@ import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { PdfExporter } from '@/core/engine/pdf-exporter';
 import { ToastContainer } from './components/ui/ToastContainer';
+import { FullscreenHUD } from './components/viewer/FullscreenHUD';
 
 export const App: React.FC = () => {
   const { currentDocument, setActivePageIndex, selectAllPages, setDocument, addRecentDocument } = useDocumentStore();
@@ -47,6 +48,8 @@ export const App: React.FC = () => {
   const {
     zoomIn,
     zoomOut,
+    setZoom,
+    setFitMode,
     openSearch,
     isPageManagerOpen,
     setPageManagerOpen,
@@ -83,6 +86,9 @@ export const App: React.FC = () => {
     setCloseConfirmModalOpen,
     isFindReplaceModalOpen,
     setFindReplaceModalOpen,
+    isFullscreenPresentation,
+    setFullscreenPresentation,
+    toggleFullscreenPresentation,
     addToast,
   } = useUIStore();
 
@@ -289,6 +295,66 @@ export const App: React.FC = () => {
         return;
       }
 
+      // Fullscreen Presentation: F11 or Ctrl + L
+      if (e.key === 'F11' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l')) {
+        e.preventDefault();
+        const next = !isFullscreenPresentation;
+        toggleFullscreenPresentation();
+        if (next) {
+          if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(() => {});
+          }
+          addToast('Tam Ekran Sunum Modu (Çıkmak için Esc veya F11)', 'info', 2000);
+        } else {
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+          }
+        }
+        return;
+      }
+
+      // Escape to exit fullscreen presentation
+      if (e.key === 'Escape' && isFullscreenPresentation) {
+        setFullscreenPresentation(false);
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        }
+        return;
+      }
+
+      // Ctrl + 0: Sayfaya Sığdır (Fit to Page)
+      if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        e.preventDefault();
+        setFitMode('page');
+        addToast('Sayfaya Sığdırıldı (Ctrl + 0)', 'info', 1000);
+        return;
+      }
+
+      // Ctrl + 1: Gerçek Boyut %100 (Actual Size)
+      if ((e.ctrlKey || e.metaKey) && e.key === '1') {
+        e.preventDefault();
+        setFitMode('none');
+        setZoom(1.0);
+        addToast('Gerçek Boyut (%100)', 'info', 1000);
+        return;
+      }
+
+      // Ctrl + 2: Genişliğe Sığdır (Fit to Width)
+      if ((e.ctrlKey || e.metaKey) && e.key === '2') {
+        e.preventDefault();
+        setFitMode('width');
+        addToast('Genişliğe Sığdırıldı (Ctrl + 2)', 'info', 1000);
+        return;
+      }
+
+      // Ctrl + 3: Görünür İçeriğe Sığdır (Fit Visible Content)
+      if ((e.ctrlKey || e.metaKey) && e.key === '3') {
+        e.preventDefault();
+        setFitMode('content');
+        addToast('İçeriğe Sığdırıldı (Metin Odaklı)', 'info', 1000);
+        return;
+      }
+
       // Ctrl + Plus / Minus for zoom
       if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
         e.preventDefault();
@@ -308,7 +374,8 @@ export const App: React.FC = () => {
         if (e.key.toLowerCase() === 'v') setActiveTool('select');
         else if (e.key.toLowerCase() === 't') setActiveTool('text-add');
         else if (e.key.toLowerCase() === 'p') setActiveTool('draw');
-        else if (e.key.toLowerCase() === 'h') setActiveTool('highlight');
+        else if (e.key.toLowerCase() === 'h') setActiveTool('hand');
+        else if (e.key.toLowerCase() === 'z') setActiveTool('marquee-zoom');
       }
 
       // PageUp / PageDown / ArrowLeft / ArrowRight / Home / End
@@ -362,27 +429,32 @@ export const App: React.FC = () => {
     setPageNumberModalOpen,
     isFindReplaceModalOpen,
     setFindReplaceModalOpen,
+    isFullscreenPresentation,
+    setFullscreenPresentation,
+    toggleFullscreenPresentation,
+    setFitMode,
+    setZoom,
     addToast,
   ]);
 
   return (
     <div className="w-screen h-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans overflow-hidden transition-colors duration-200">
       {/* Top Header Toolbar */}
-      <TopToolbar />
+      {!isFullscreenPresentation && <TopToolbar />}
 
       {/* V3 Secondary Editor Toolbar (if document is open) */}
-      {currentDocument && <EditorToolbar />}
+      {!isFullscreenPresentation && currentDocument && <EditorToolbar />}
 
       {/* Multi-Document Tab Bar */}
-      <TabBar />
+      {!isFullscreenPresentation && <TabBar />}
 
       {/* Main Workspace Area */}
       <DropZone>
         {currentDocument ? (
           <div className="flex-1 flex overflow-hidden">
-            <LeftSidebar />
+            {!isFullscreenPresentation && <LeftSidebar />}
             <PdfViewer />
-            <RightToolsSidebar />
+            {!isFullscreenPresentation && <RightToolsSidebar />}
           </div>
         ) : (
           <EmptyState />
@@ -390,7 +462,10 @@ export const App: React.FC = () => {
       </DropZone>
 
       {/* Bottom Status / Zoom / Page navigation Bar */}
-      <BottomBar />
+      {!isFullscreenPresentation && <BottomBar />}
+
+      {/* Floating Fullscreen Presentation HUD */}
+      <FullscreenHUD />
 
       {/* Modals & Overlays */}
       <PageManagerModal />

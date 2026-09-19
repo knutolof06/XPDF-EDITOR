@@ -194,10 +194,8 @@ export const PageView: React.FC<PageViewProps> = ({
       canvas.width = cachedEntry.width;
       canvas.height = cachedEntry.height;
 
-      const cssWidth = (page.width || 595.28) * renderScale;
-      const cssHeight = (page.height || 841.89) * renderScale;
-      canvas.style.width = `${Math.floor(cssWidth)}px`;
-      canvas.style.height = `${Math.floor(cssHeight)}px`;
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
 
       const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
       if (ctx) {
@@ -305,8 +303,8 @@ export const PageView: React.FC<PageViewProps> = ({
 
         currentCanvas.width = Math.floor(viewport.width);
         currentCanvas.height = Math.floor(viewport.height);
-        currentCanvas.style.width = `${Math.floor(cssViewport.width)}px`;
-        currentCanvas.style.height = `${Math.floor(cssViewport.height)}px`;
+        currentCanvas.style.width = '100%';
+        currentCanvas.style.height = '100%';
 
         const task = pdfPage.render({ canvasContext: ctx, viewport });
         renderTaskRef.current = task;
@@ -694,7 +692,7 @@ export const PageView: React.FC<PageViewProps> = ({
           <canvas
             ref={canvasRef}
             className={cn(
-              'absolute left-0 top-0 block select-none pointer-events-none transition-opacity duration-150',
+              'absolute left-0 top-0 w-full h-full block select-none pointer-events-none transition-opacity duration-150',
               isRendered ? 'opacity-100' : 'opacity-0'
             )}
           />

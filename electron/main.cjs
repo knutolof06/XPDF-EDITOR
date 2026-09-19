@@ -105,10 +105,10 @@ if (!gotTheLock) {
   });
 }
 
-function openPdfInRenderer(filePath) {
+async function openPdfInRenderer(filePath) {
   if (!mainWindow || !filePath) return;
   try {
-    const buffer = fs.readFileSync(filePath);
+    const buffer = await fs.promises.readFile(filePath);
     const fileName = path.basename(filePath);
     mainWindow.webContents.send('open-file', {
       name: fileName,

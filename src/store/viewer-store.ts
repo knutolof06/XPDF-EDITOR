@@ -3,7 +3,7 @@ import { immer } from 'zustand/middleware/immer';
 import { ViewMode, PageTransitionType } from '@/types/document';
 import { ActiveTool, SearchState, SidebarTab } from '@/types/viewer';
 
-export type FitMode = 'none' | 'width' | 'page';
+export type FitMode = 'none' | 'width' | 'page' | 'content';
 export type ReadingTheme = 'default' | 'dark' | 'sepia' | 'high-contrast';
 
 interface ViewerState {
@@ -52,7 +52,7 @@ interface ViewerState {
   setSearching: (searching: boolean) => void;
 }
 
-const ZOOM_STEPS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
+export const ZOOM_STEPS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0];
 
 // Load persisted settings from localStorage
 interface SavedSettings {

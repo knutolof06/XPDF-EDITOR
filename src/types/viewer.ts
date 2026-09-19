@@ -18,7 +18,9 @@ export type ActiveTool =
   | 'stamp'
   | 'image'
   | 'whiteout'
-  | 'crop';
+  | 'crop'
+  | 'marquee-zoom'
+  | 'laser';
 
 export interface SearchMatch {
   pageIndex: number;

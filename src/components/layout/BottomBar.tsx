@@ -1,6 +1,7 @@
 import React from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore } from '@/store/viewer-store';
+import { useUIStore } from '@/store/ui-store';
 import {
   ChevronLeft,
   ChevronRight,
@@ -10,6 +11,7 @@ import {
   ZoomOut,
   Maximize2,
   FoldHorizontal,
+  Minimize2,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -29,10 +31,9 @@ export const BottomBar: React.FC = () => {
   };
 
   const toggleFullScreen = () => {
+    useUIStore.getState().setFullscreenPresentation(true);
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
-    } else {
-      document.exitFullscreen().catch(() => {});
     }
   };
 
@@ -114,8 +115,8 @@ export const BottomBar: React.FC = () => {
 
           <input
             type="range"
-            min={0.25}
-            max={4.0}
+            min={0.2}
+            max={5.0}
             step={0.05}
             value={zoom}
             onChange={(e) => setZoom(parseFloat(e.target.value))}
@@ -125,7 +126,7 @@ export const BottomBar: React.FC = () => {
           <button
             onClick={zoomIn}
             className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            title="Yakınlaştır"
+            title="Yakınlaştır (Ctrl + +)"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
@@ -138,9 +139,22 @@ export const BottomBar: React.FC = () => {
                 ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold'
                 : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400'
             )}
-            title="Genişliğe Sığdır (Pencere değiştikçe otomatik ayarla)"
+            title="Genişliğe Sığdır (Ctrl + 2)"
           >
             <FoldHorizontal className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => setFitMode(fitMode === 'page' ? 'none' : 'page')}
+            className={cn(
+              'p-1 rounded transition-colors ml-0.5',
+              fitMode === 'page'
+                ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold'
+                : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400'
+            )}
+            title="Sayfaya Sığdır (Ctrl + 0)"
+          >
+            <Minimize2 className="w-3.5 h-3.5" />
           </button>
         </div>
 

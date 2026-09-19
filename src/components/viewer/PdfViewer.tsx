@@ -17,13 +17,29 @@ export const PdfViewer: React.FC = () => {
   const zoomEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { currentDocument, setActivePageIndex } = useDocumentStore();
-  const { zoom, setZoom, fitMode, viewMode, readingTheme } = useViewerStore();
+  const { zoom, setZoom, fitMode, viewMode, readingTheme, activeTool, setActiveTool } = useViewerStore();
   const { updateActiveTabState, tabs } = useTabStore();
 
   const fitModeRef = useRef(fitMode);
   fitModeRef.current = fitMode;
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+
+  const zoomAnchorRef = useRef<{
+    contentX: number;
+    contentY: number;
+    viewportX: number;
+    viewportY: number;
+    oldZoom: number;
+  } | null>(null);
+
+  const [marqueeRect, setMarqueeRect] = useState<{
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
+  const [laserPos, setLaserPos] = useState<{ x: number; y: number } | null>(null);
 
   // Calculate ideal scale for fit-to-width or fit-to-page
   const computeFitScale = useCallback(() => {
@@ -58,12 +74,17 @@ export const PdfViewer: React.FC = () => {
     const currentFit = fitModeRef.current;
     if (currentFit === 'width') {
       const scale = availableWidth / targetWidth;
-      return Math.max(0.2, Math.min(4.0, parseFloat(scale.toFixed(2))));
+      return Math.max(0.2, Math.min(5.0, parseFloat(scale.toFixed(2))));
+    } else if (currentFit === 'content') {
+      // Smart crop margins (~14% left/right => 72% effective width) to enlarge text body
+      const contentWidth = targetWidth * 0.72;
+      const scale = availableWidth / contentWidth;
+      return Math.max(0.2, Math.min(5.0, parseFloat(scale.toFixed(2))));
     } else if (currentFit === 'page') {
       const scaleW = availableWidth / targetWidth;
       const scaleH = availableHeight / targetHeight;
       const scale = Math.min(scaleW, scaleH);
-      return Math.max(0.2, Math.min(4.0, parseFloat(scale.toFixed(2))));
+      return Math.max(0.2, Math.min(5.0, parseFloat(scale.toFixed(2))));
     }
 
     return null;
@@ -161,17 +182,34 @@ export const PdfViewer: React.FC = () => {
     cancelActivePreload();
   }, [currentDocument?.activePageIndex]);
 
-  // FIX: When zoom changes, suppress scroll-handler and restore scroll to the active page
-  // This prevents the page-jump bug where growing/shrinking page heights shift the visible page
+  // Sub-pixel focal-point zoom adjustment: keeps the mouse cursor (or center) stationary on screen
   useEffect(() => {
     if (!currentDocument || !containerRef.current) return;
+    const container = containerRef.current;
 
-    // Mark as zooming so handleScroll won't reassign activePageIndex mid-resize
     isZoomingRef.current = true;
     if (zoomEndTimerRef.current) clearTimeout(zoomEndTimerRef.current);
 
-    // Two rAFs: first lets React commit new page sizes, second lets browser re-layout
-    requestAnimationFrame(() => {
+    if (zoomAnchorRef.current) {
+      const { contentX, contentY, viewportX, viewportY, oldZoom } = zoomAnchorRef.current;
+      zoomAnchorRef.current = null;
+
+      if (oldZoom > 0) {
+        const scaleRatio = zoom / oldZoom;
+        const newContentX = contentX * scaleRatio;
+        const newContentY = contentY * scaleRatio;
+
+        const targetScrollLeft = Math.max(0, newContentX - viewportX);
+        const targetScrollTop = Math.max(0, newContentY - viewportY);
+
+        container.scrollTo({
+          left: targetScrollLeft,
+          top: targetScrollTop,
+          behavior: 'auto',
+        });
+      }
+    } else if (fitModeRef.current !== 'none') {
+      // Zoom changed from window resize or fit toggle: align active page top
       requestAnimationFrame(() => {
         const pageEl = document.getElementById(`page-container-${currentDocument.activePageIndex}`);
         if (pageEl && containerRef.current) {
@@ -180,12 +218,12 @@ export const PdfViewer: React.FC = () => {
             behavior: 'auto',
           });
         }
-        // Keep suppression briefly to absorb the scroll event fired by scrollTo above
-        zoomEndTimerRef.current = setTimeout(() => {
-          isZoomingRef.current = false;
-        }, 120);
       });
-    });
+    }
+
+    zoomEndTimerRef.current = setTimeout(() => {
+      isZoomingRef.current = false;
+    }, 140);
   }, [zoom]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [scrollState, setScrollState] = useState({ scrollTop: 0, clientHeight: 1000 });
@@ -212,12 +250,29 @@ export const PdfViewer: React.FC = () => {
     (e: React.WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
-        const delta = -e.deltaY * 0.002;
-        setZoom((prev) => Math.max(0.2, Math.min(4.0, prev + delta)));
+        if (!containerRef.current) return;
+        const container = containerRef.current;
+        const rect = container.getBoundingClientRect();
+        const viewportX = e.clientX - rect.left;
+        const viewportY = e.clientY - rect.top;
+
+        const contentX = container.scrollLeft + viewportX;
+        const contentY = container.scrollTop + viewportY;
+
+        zoomAnchorRef.current = {
+          contentX,
+          contentY,
+          viewportX,
+          viewportY,
+          oldZoom: zoomRef.current,
+        };
+
+        const delta = -e.deltaY * 0.0025;
+        setZoom((prev) => Math.max(0.2, Math.min(5.0, prev + delta)));
         return;
       }
 
-      // In single-page mode, mouse wheel navigates between pages smoothly
+      // In single-page mode or fit-page mode, mouse wheel navigates between pages smoothly
       if (
         (viewMode === 'single' || viewMode === 'fit-page') &&
         currentDocument
@@ -240,6 +295,68 @@ export const PdfViewer: React.FC = () => {
     },
     [setZoom, viewMode, currentDocument, setActivePageIndex]
   );
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (activeTool === 'marquee-zoom' || e.shiftKey) {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      setMarqueeRect({ startX: x, startY: y, currentX: x, currentY: y });
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (activeTool === 'laser') {
+      setLaserPos({ x, y });
+    }
+
+    if (marqueeRect) {
+      setMarqueeRect((prev) => (prev ? { ...prev, currentX: x, currentY: y } : null));
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (marqueeRect && containerRef.current) {
+      const container = containerRef.current;
+      const boxW = Math.abs(marqueeRect.currentX - marqueeRect.startX);
+      const boxH = Math.abs(marqueeRect.currentY - marqueeRect.startY);
+
+      if (boxW > 20 && boxH > 20) {
+        const usableW = container.clientWidth - 48;
+        const usableH = container.clientHeight - 48;
+        const scaleMultiplier = Math.min(usableW / boxW, usableH / boxH);
+        const targetZoom = Math.max(
+          0.2,
+          Math.min(5.0, parseFloat((zoomRef.current * scaleMultiplier * 0.95).toFixed(2)))
+        );
+
+        const boxCenterContentX =
+          container.scrollLeft + Math.min(marqueeRect.startX, marqueeRect.currentX) + boxW / 2;
+        const boxCenterContentY =
+          container.scrollTop + Math.min(marqueeRect.startY, marqueeRect.currentY) + boxH / 2;
+
+        zoomAnchorRef.current = {
+          contentX: boxCenterContentX,
+          contentY: boxCenterContentY,
+          viewportX: container.clientWidth / 2,
+          viewportY: container.clientHeight / 2,
+          oldZoom: zoomRef.current,
+        };
+
+        setZoom(targetZoom);
+        if (activeTool === 'marquee-zoom') {
+          setActiveTool('select');
+        }
+      }
+      setMarqueeRect(null);
+    }
+  };
 
   if (!currentDocument) return null;
 
@@ -323,10 +440,48 @@ export const PdfViewer: React.FC = () => {
       ref={containerRef}
       onWheel={handleWheel}
       onScroll={handleScroll}
-      className="relative flex-1 overflow-auto bg-slate-900/50 dark:bg-slate-950/70 p-4 transition-colors flex justify-center"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      className={cn(
+        'relative flex-1 overflow-auto bg-slate-900/50 dark:bg-slate-950/70 p-4 transition-colors flex justify-center select-none',
+        activeTool === 'marquee-zoom'
+          ? 'cursor-crosshair'
+          : activeTool === 'laser'
+          ? 'cursor-none'
+          : activeTool === 'hand'
+          ? 'cursor-grab'
+          : 'cursor-default'
+      )}
       tabIndex={0}
     >
       <SearchOverlay />
+
+      {/* Marquee Zoom Selection Box */}
+      {marqueeRect && (
+        <div
+          className="absolute pointer-events-none border-2 border-sky-400 bg-sky-500/20 rounded shadow-lg z-50 border-dashed animate-in fade-in duration-75"
+          style={{
+            left: Math.min(marqueeRect.startX, marqueeRect.currentX),
+            top: Math.min(marqueeRect.startY, marqueeRect.currentY),
+            width: Math.abs(marqueeRect.currentX - marqueeRect.startX),
+            height: Math.abs(marqueeRect.currentY - marqueeRect.startY),
+          }}
+        />
+      )}
+
+      {/* Presentation Laser Pointer Overlay */}
+      {laserPos && activeTool === 'laser' && (
+        <div
+          className="absolute pointer-events-none z-50 transition-transform duration-75"
+          style={{
+            left: laserPos.x - 7,
+            top: laserPos.y - 7,
+          }}
+        >
+          <div className="w-3.5 h-3.5 rounded-full bg-red-500 shadow-[0_0_14px_4px_rgba(239,68,68,0.9)] animate-pulse" />
+        </div>
+      )}
 
       <div
         className={cn('w-full max-w-full transition-[filter] duration-200', gridClass)}
