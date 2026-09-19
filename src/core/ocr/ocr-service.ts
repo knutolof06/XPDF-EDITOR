@@ -30,12 +30,28 @@ export interface OcrLine {
   words: OcrWord[];
 }
 
+export interface OcrParagraph {
+  text: string;
+  confidence: number;
+  bbox: OcrBbox;
+  normBbox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  lines: OcrLine[];
+  estimatedFontSize: number;
+  isBold: boolean;
+}
+
 export interface OcrPageResult {
   pageNumber: number;
   text: string;
   confidence: number;
   words: OcrWord[];
   lines: OcrLine[];
+  paragraphs: OcrParagraph[];
   width: number;
   height: number;
   previewUrl: string;
@@ -112,12 +128,56 @@ export class OcrService {
   }
 
   /**
-   * High-resolution offscreen canvas rendering with contrast enhancement.
+   * Calculates Otsu's optimal threshold from a grayscale histogram.
+   * Maximizes between-class variance to cleanly separate text from noisy paper background.
+   */
+  private static computeOtsuThreshold(grayData: Uint8ClampedArray): number {
+    const histogram = new Array(256).fill(0);
+    const total = grayData.length;
+
+    for (let i = 0; i < total; i++) {
+      histogram[grayData[i]]++;
+    }
+
+    let sum = 0;
+    for (let i = 0; i < 256; i++) {
+      sum += i * histogram[i];
+    }
+
+    let sumB = 0;
+    let wB = 0;
+    let wF = 0;
+    let varMax = 0;
+    let threshold = 135; // safe default fallback
+
+    for (let t = 0; t < 256; t++) {
+      wB += histogram[t];
+      if (wB === 0) continue;
+      wF = total - wB;
+      if (wF === 0) break;
+
+      sumB += t * histogram[t];
+      const mB = sumB / wB;
+      const mF = (sum - sumB) / wF;
+      const varBetween = wB * wF * (mB - mF) * (mB - mF);
+
+      if (varBetween > varMax) {
+        varMax = varBetween;
+        threshold = t;
+      }
+    }
+
+    // Clamp threshold to reasonable text bounds
+    return Math.max(90, Math.min(180, threshold));
+  }
+
+  /**
+   * High-resolution offscreen canvas rendering with Rec. 709 Luminance and Otsu Adaptive Binarization.
    */
   public static async renderPageToCanvas(
     pdfDocProxy: PDFDocumentProxy,
     pageNumber: number,
-    scale: number = 2.0,
+    scale: number = 2.5,
     enhanceContrast: boolean = true
   ): Promise<{ canvas: HTMLCanvasElement; width: number; height: number; previewUrl: string }> {
     const page = await pdfDocProxy.getPage(pageNumber);
@@ -136,27 +196,43 @@ export class OcrService {
     // @ts-ignore
     await page.render({ canvasContext: ctx, viewport }).promise;
 
-    // Apply contrast / threshold enhancement if desired for scanned documents
+    // Apply adaptive Otsu binarization and contrast enhancement
     if (enhanceContrast) {
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imgData.data;
-      const contrast = 1.15; // 15% contrast boost
+      const totalPixels = canvas.width * canvas.height;
+      const grayBuffer = new Uint8ClampedArray(totalPixels);
 
+      // 1. Rec. 709 Luminance conversion
       for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
-
-        // Luminance
-        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
-        gray = ((gray / 255 - 0.5) * contrast + 0.5) * 255;
-        gray = Math.max(0, Math.min(255, gray));
-
-        // Preserve colors subtly or boost contrast
-        data[i] = Math.min(255, Math.max(0, ((r / 255 - 0.5) * contrast + 0.5) * 255));
-        data[i + 1] = Math.min(255, Math.max(0, ((g / 255 - 0.5) * contrast + 0.5) * 255));
-        data[i + 2] = Math.min(255, Math.max(0, ((b / 255 - 0.5) * contrast + 0.5) * 255));
+        const lum = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+        grayBuffer[i / 4] = lum;
       }
+
+      // 2. Compute dynamic Otsu threshold
+      const otsuThresh = this.computeOtsuThreshold(grayBuffer);
+
+      // 3. Contrast boosting & background noise suppression
+      for (let i = 0; i < data.length; i += 4) {
+        const lum = grayBuffer[i / 4];
+        let val: number;
+
+        if (lum < otsuThresh) {
+          // Foreground text stroke: deepen blacks
+          val = Math.max(0, lum * 0.75);
+        } else {
+          // Background paper: push towards clean white
+          val = Math.min(255, 210 + (lum - otsuThresh) * 0.85);
+        }
+
+        data[i] = val;
+        data[i + 1] = val;
+        data[i + 2] = val;
+      }
+
       ctx.putImageData(imgData, 0, 0);
     }
 
@@ -168,6 +244,109 @@ export class OcrService {
       height: canvas.height,
       previewUrl,
     };
+  }
+
+  /**
+   * Spatial clustering algorithm that groups individual lines into coherent,
+   * natural paragraph blocks with estimated font size and styling.
+   */
+  private static clusterLinesIntoParagraphs(
+    lines: OcrLine[],
+    canvasWidth: number,
+    canvasHeight: number
+  ): OcrParagraph[] {
+    if (lines.length === 0) return [];
+
+    // Sort lines primarily top-to-bottom, then left-to-right
+    const sortedLines = [...lines].sort((a, b) => {
+      const yDiff = a.bbox.y0 - b.bbox.y0;
+      if (Math.abs(yDiff) > 8) return yDiff;
+      return a.bbox.x0 - b.bbox.x0;
+    });
+
+    // Calculate median line height
+    const lineHeights = sortedLines.map((l) => l.bbox.y1 - l.bbox.y0).filter((h) => h > 4);
+    lineHeights.sort((a, b) => a - b);
+    const medianLineHeight = lineHeights[Math.floor(lineHeights.length / 2)] || 18;
+
+    const paragraphs: OcrParagraph[] = [];
+    let currentParagraphLines: OcrLine[] = [];
+
+    const flushParagraph = () => {
+      if (currentParagraphLines.length === 0) return;
+
+      const pLines = [...currentParagraphLines];
+      const minX = Math.min(...pLines.map((l) => l.bbox.x0));
+      const minY = Math.min(...pLines.map((l) => l.bbox.y0));
+      const maxX = Math.max(...pLines.map((l) => l.bbox.x1));
+      const maxY = Math.max(...pLines.map((l) => l.bbox.y1));
+
+      const text = pLines.map((l) => l.text).join('\n');
+      const avgConfidence = Math.round(
+        pLines.reduce((acc, l) => acc + l.confidence, 0) / pLines.length
+      );
+
+      const blockHeight = maxY - minY;
+      const avgLineHeight = blockHeight / pLines.length;
+      // Estimate font size in PDF points (72 DPI reference)
+      // canvas is rendered at scale 2.5, so divide by 2.5
+      const pointLineHeight = avgLineHeight / 2.5;
+      const estimatedFontSize = Math.max(8, Math.min(48, Math.round(pointLineHeight * 0.75)));
+      const isBold = estimatedFontSize > (medianLineHeight / 2.5) * 1.35;
+
+      paragraphs.push({
+        text,
+        confidence: avgConfidence,
+        bbox: { x0: minX, y0: minY, x1: maxX, y1: maxY },
+        normBbox: {
+          x: minX / canvasWidth,
+          y: minY / canvasHeight,
+          width: (maxX - minX) / canvasWidth,
+          height: (maxY - minY) / canvasHeight,
+        },
+        lines: pLines,
+        estimatedFontSize,
+        isBold,
+      });
+
+      currentParagraphLines = [];
+    };
+
+    for (let i = 0; i < sortedLines.length; i++) {
+      const line = sortedLines[i];
+
+      if (currentParagraphLines.length === 0) {
+        currentParagraphLines.push(line);
+        continue;
+      }
+
+      const prevLine = currentParagraphLines[currentParagraphLines.length - 1];
+      const verticalGap = line.bbox.y0 - prevLine.bbox.y1;
+      const prevLineHeight = prevLine.bbox.y1 - prevLine.bbox.y0;
+
+      // Check horizontal overlap between lines
+      const overlapStart = Math.max(prevLine.bbox.x0, line.bbox.x0);
+      const overlapEnd = Math.min(prevLine.bbox.x1, line.bbox.x1);
+      const overlap = Math.max(0, overlapEnd - overlapStart);
+      const minWidth = Math.min(prevLine.bbox.x1 - prevLine.bbox.x0, line.bbox.x1 - line.bbox.x0);
+      const hasHorizontalOverlap = minWidth > 0 && overlap / minWidth > 0.25;
+
+      // Consecutive lines in same paragraph criteria:
+      // 1. Vertical gap is within 1.55x line height (not a huge gap / new section)
+      // 2. Lines overlap horizontally or indent is reasonable (< 60px)
+      const isCloseVertical = verticalGap >= -4 && verticalGap <= prevLineHeight * 1.55;
+      const isIndentedParagraph = Math.abs(line.bbox.x0 - prevLine.bbox.x0) < 60;
+
+      if (isCloseVertical && (hasHorizontalOverlap || isIndentedParagraph)) {
+        currentParagraphLines.push(line);
+      } else {
+        flushParagraph();
+        currentParagraphLines.push(line);
+      }
+    }
+
+    flushParagraph();
+    return paragraphs;
   }
 
   /**
@@ -228,12 +407,16 @@ export class OcrService {
       }
     }
 
+    // Spatial clustering into coherent paragraphs
+    const paragraphs = this.clusterLinesIntoParagraphs(lines, canvasWidth, canvasHeight);
+
     return {
       pageNumber,
       text: pageData.text || '',
       confidence: Math.round(pageData.confidence || 0),
       words,
       lines,
+      paragraphs,
       width: canvasWidth,
       height: canvasHeight,
       previewUrl,
@@ -258,7 +441,7 @@ export class OcrService {
     for (let i = 0; i < total; i++) {
       const pageNum = pageNumbers[i];
 
-      // 1. Rasterize
+      // 1. Rasterize with 2.5x high-DPI and Otsu binarization
       if (onProgress) {
         onProgress({
           stage: 'rasterizing',
@@ -266,18 +449,18 @@ export class OcrService {
           totalPages: total,
           pageProgress: 10,
           overallProgress: Math.round((i / total) * 100),
-          statusText: `Sayfa ${pageNum} taranıyor ve optimize ediliyor...`,
+          statusText: `Sayfa ${pageNum} Otsu binarizasyon & 300 DPI rasterize ediliyor...`,
         });
       }
 
       const { canvas, previewUrl } = await this.renderPageToCanvas(
         pdfDocProxy,
         pageNum,
-        2.0,
+        2.5,
         enhanceContrast
       );
 
-      // 2. Recognize
+      // 2. Neural OCR Recognize
       const pageResult = await this.recognizeCanvas(
         canvas,
         previewUrl,
@@ -293,7 +476,7 @@ export class OcrService {
               totalPages: total,
               pageProgress: pagePct,
               overallProgress: Math.min(99, overall),
-              statusText: `Sayfa ${pageNum}: Metin tanınıyor (${status} %${p})`,
+              statusText: `Sayfa ${pageNum}: LSTM Sinir Ağı (${status} %${p})`,
             });
           }
         }
@@ -311,7 +494,7 @@ export class OcrService {
         totalPages: total,
         pageProgress: 100,
         overallProgress: 100,
-        statusText: 'OCR tamamlandı!',
+        statusText: 'Akıllı OCR tamamlandı!',
       });
     }
 

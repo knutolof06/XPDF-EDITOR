@@ -1,4 +1,5 @@
 import { PdfPageModel, PdfDocumentModel } from '@/types/document';
+import { AnyAnnotation } from '@/types/annotations';
 import { useDocumentStore } from '@/store/document-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 
@@ -285,6 +286,60 @@ export class ReplaceTextCommand implements ICommand {
     } catch (err) {
       console.error('[ReplaceTextCommand] undo error:', err);
     }
+  }
+}
+
+export class TransferOcrTextCommand implements ICommand {
+  public description: string;
+  private pageTransfers: {
+    pageId: string;
+    newAnnotations: AnyAnnotation[];
+    previousAnnotations: AnyAnnotation[];
+  }[];
+
+  constructor(
+    pageTransfers: {
+      pageId: string;
+      newAnnotations: AnyAnnotation[];
+      previousAnnotations: AnyAnnotation[];
+    }[],
+    description?: string
+  ) {
+    this.pageTransfers = pageTransfers;
+    const totalCount = pageTransfers.reduce((sum, pt) => sum + pt.newAnnotations.length, 0);
+    this.description = description || `${totalCount} OCR metin bloğu sayfaya aktarıldı`;
+  }
+
+  public execute(): void {
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+
+    useDocumentStore.setState((state) => {
+      if (!state.currentDocument) return;
+      for (const pt of this.pageTransfers) {
+        const page = state.currentDocument.pages.find((p) => p.id === pt.pageId);
+        if (page) {
+          page.annotations = [...pt.previousAnnotations, ...pt.newAnnotations];
+        }
+      }
+      state.currentDocument.isModified = true;
+    });
+  }
+
+  public undo(): void {
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+
+    useDocumentStore.setState((state) => {
+      if (!state.currentDocument) return;
+      for (const pt of this.pageTransfers) {
+        const page = state.currentDocument.pages.find((p) => p.id === pt.pageId);
+        if (page) {
+          page.annotations = [...pt.previousAnnotations];
+        }
+      }
+      state.currentDocument.isModified = true;
+    });
   }
 }
 

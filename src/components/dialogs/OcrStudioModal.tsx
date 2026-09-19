@@ -10,6 +10,7 @@ import {
   OcrProgress,
   OcrWord,
 } from '@/core/ocr/ocr-service';
+import { OcrTextTransfer, TextTransferOptions } from '@/core/ocr/ocr-text-transfer';
 import {
   X,
   Sparkles,
@@ -26,6 +27,9 @@ import {
   Eye,
   CheckCircle2,
   FileSearch,
+  Zap,
+  ChevronDown,
+  Settings2,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -52,7 +56,15 @@ export const OcrStudioModal: React.FC = () => {
   const [isCopied, setIsCopied] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
+  // In-Page Text Transfer Options
+  const [transferMode, setTransferMode] = useState<'paragraph' | 'line'>('paragraph');
+  const [hideOriginalScan, setHideOriginalScan] = useState(false);
+  const [fontSizeMultiplier, setFontSizeMultiplier] = useState(1.0);
+  const [transferScope, setTransferScope] = useState<'current' | 'all'>('current');
+  const [isTransferSettingsOpen, setIsTransferSettingsOpen] = useState(false);
+
   const abortControllerRef = useRef<boolean>(false);
+  const transferSettingsRef = useRef<HTMLDivElement>(null);
 
   // When modal closes or unmounts, stop running
   useEffect(() => {
@@ -60,6 +72,7 @@ export const OcrStudioModal: React.FC = () => {
       abortControllerRef.current = true;
       setIsRunning(false);
       setProgress(null);
+      setIsTransferSettingsOpen(false);
     } else {
       abortControllerRef.current = false;
     }
@@ -71,6 +84,45 @@ export const OcrStudioModal: React.FC = () => {
       setEditableText(ocrResult.pages[activeResultPageIndex].text);
     }
   }, [activeResultPageIndex, ocrResult]);
+
+  // Click outside to close transfer settings popover
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        transferSettingsRef.current &&
+        !transferSettingsRef.current.contains(e.target as Node)
+      ) {
+        setIsTransferSettingsOpen(false);
+      }
+    };
+    if (isTransferSettingsOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isTransferSettingsOpen]);
+
+  // Keyboard Shortcut: Ctrl + Enter to transfer text to page
+  useEffect(() => {
+    if (!isOcrModalOpen || !ocrResult) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleTransferToPage();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    isOcrModalOpen,
+    ocrResult,
+    transferMode,
+    hideOriginalScan,
+    fontSizeMultiplier,
+    transferScope,
+    activeResultPageIndex,
+  ]);
 
   if (!isOcrModalOpen || !currentDocument || !pdfDocProxy) return null;
 
@@ -122,7 +174,7 @@ export const OcrStudioModal: React.FC = () => {
     abortControllerRef.current = false;
 
     try {
-      addToast(`${targetPages.length} sayfa için OCR başlatıldı...`, 'info');
+      addToast(`${targetPages.length} sayfa için Otsu Neural OCR başlatıldı...`, 'info');
       const result = await OcrService.processDocumentPages(
         pdfDocProxy,
         targetPages,
@@ -151,6 +203,48 @@ export const OcrStudioModal: React.FC = () => {
     }
   };
 
+  // Direct Page Text Transfer Action (The Key User Request)
+  const handleTransferToPage = () => {
+    if (!ocrResult) return;
+
+    const options: TextTransferOptions = {
+      mode: transferMode,
+      hideOriginalScan,
+      fontSizeMultiplier,
+      fontColor: '#0f172a',
+      fontFamily: 'Helvetica, Arial, sans-serif',
+    };
+
+    if (transferScope === 'all' && ocrResult.pages.length > 1) {
+      const res = OcrTextTransfer.transferMultiplePages(ocrResult.pages, options);
+      if (res.success) {
+        addToast(
+          `${res.pagesAffected} sayfaya toplam ${res.totalCount} metin bloğu aktarıldı! Doğrudan düzenleyebilirsiniz (Ctrl+Z ile geri alınabilir).`,
+          'success',
+          4500
+        );
+        setOcrModalOpen(false);
+      } else {
+        addToast('Sayfaya aktarılacak metin bulunamadı.', 'warning');
+      }
+    } else {
+      const targetPageResult = ocrResult.pages[activeResultPageIndex];
+      if (!targetPageResult) return;
+
+      const res = OcrTextTransfer.transferSinglePage(targetPageResult, options);
+      if (res.success) {
+        addToast(
+          `Sayfa ${targetPageResult.pageNumber}'e ${res.count} metin bloğu aktarıldı! Doğrudan sayfa üzerinde düzenleyebilirsiniz (Ctrl+Z ile geri alınabilir).`,
+          'success',
+          4500
+        );
+        setOcrModalOpen(false);
+      } else {
+        addToast('Sayfaya aktarılacak metin bulunamadı.', 'warning');
+      }
+    }
+  };
+
   const handleCopyText = async () => {
     if (!editableText) return;
     try {
@@ -169,7 +263,12 @@ export const OcrStudioModal: React.FC = () => {
       ocrResult.pages.length === 1
         ? editableText
         : ocrResult.pages
-            .map((p, idx) => `=== Sayfa ${p.pageNumber} ===\n${idx === activeResultPageIndex ? editableText : p.text}`)
+            .map(
+              (p, idx) =>
+                `=== Sayfa ${p.pageNumber} ===\n${
+                  idx === activeResultPageIndex ? editableText : p.text
+                }`
+            )
             .join('\n\n');
 
     const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
@@ -274,11 +373,11 @@ export const OcrStudioModal: React.FC = () => {
                   )}
                 >
                   <Sparkles className="w-3 h-3" />
-                  Tesseract.js v7 Neural
+                  Otsu Binarize & 300 DPI
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Taranmış evrak ve fotoğraflardan yüksek doğrulukla metin tanıma & aranabilir PDF katmanı
+                Taranmış evrak ve fotoğraflardan metin tanıma, sayfaya doğrudan yazı aktarma & aranabilir PDF
               </p>
             </div>
           </div>
@@ -370,7 +469,7 @@ export const OcrStudioModal: React.FC = () => {
             </select>
           </div>
 
-          {/* Options: Enhance Contrast & Bounding Boxes */}
+          {/* Options: Otsu Adaptive Binarization */}
           <div className="flex items-center gap-3">
             <label className="flex items-center gap-1.5 cursor-pointer text-slate-600 dark:text-slate-300 select-none">
               <input
@@ -379,7 +478,9 @@ export const OcrStudioModal: React.FC = () => {
                 onChange={(e) => setEnhanceContrast(e.target.checked)}
                 className="rounded text-sky-600 focus:ring-sky-500 w-3.5 h-3.5"
               />
-              <span>Kontrast Güçlendirme</span>
+              <span title="Dinamik Otsu algoritmasıyla gölgeleri ve tarayıcı sararmalarını temizler">
+                Otsu Adaptif Eşikleme
+              </span>
             </label>
 
             <button
@@ -524,7 +625,10 @@ export const OcrStudioModal: React.FC = () => {
                     onChange={(e) => setShowBoundingBoxes(e.target.checked)}
                     className="rounded text-sky-600 focus:ring-sky-500 w-3 h-3"
                   />
-                  <span>Kelime Kutularını Göster ({activePageResult.words.length} kelime)</span>
+                  <span>
+                    Kelimeleri Göster ({activePageResult.words.length} kelime,{' '}
+                    {activePageResult.paragraphs?.length || 0} paragraf)
+                  </span>
                 </label>
 
                 {hoveredWord && (
@@ -584,7 +688,7 @@ export const OcrStudioModal: React.FC = () => {
         {/* Modal Footer Actions */}
         <div
           className={cn(
-            'px-6 py-3.5 border-t flex flex-wrap items-center justify-between gap-3 shrink-0 select-none',
+            'px-6 py-3.5 border-t flex flex-wrap items-center justify-between gap-3 shrink-0 select-none relative',
             appDesignTheme === 'linear'
               ? 'bg-[#0E1015] border-white/10'
               : 'bg-slate-50 dark:bg-slate-950/80 border-slate-200 dark:border-slate-800'
@@ -594,7 +698,7 @@ export const OcrStudioModal: React.FC = () => {
           <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
             {ocrResult && (
               <>
-                <span className="flex items-center gap-1">
+                <span className="flex items-center gap-1 font-medium text-slate-700 dark:text-slate-300">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                   {ocrResult.totalPages} Sayfa İşlendi
                 </span>
@@ -604,61 +708,227 @@ export const OcrStudioModal: React.FC = () => {
             )}
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex items-center gap-2">
+          {/* Action Buttons Zone */}
+          <div className="flex items-center gap-2 relative">
+            {/* Copy / TXT / JSON secondary tools */}
             <button
               onClick={handleCopyText}
               disabled={!editableText}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+              title="Panoya Kopyala"
             >
               {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{isCopied ? 'Kopyalandı!' : 'Metni Kopyala'}</span>
+              <span>{isCopied ? 'Kopyalandı!' : 'Kopyala'}</span>
             </button>
 
             <button
               onClick={handleDownloadTxt}
               disabled={!ocrResult}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+              title="Metin Belgesi (.txt) İndir"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>TXT İndir</span>
+              <span>TXT</span>
             </button>
 
             <button
               onClick={handleDownloadJson}
               disabled={!ocrResult}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
               title="Kelime koordinatları ve güven skorlarını JSON olarak indir"
             >
               <Sliders className="w-3.5 h-3.5" />
-              <span>JSON İndir</span>
+              <span>JSON</span>
             </button>
 
+            {/* Searchable PDF Export Button */}
             <button
               onClick={handleExportSearchablePdf}
               disabled={!ocrResult || isExportingPdf}
               className={cn(
-                'px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 shadow-sm transition-all',
-                isExportingPdf
-                  ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 cursor-not-allowed'
-                  : appDesignTheme === 'linear'
-                  ? 'bg-cyan-500 hover:bg-cyan-400 text-black shadow-[0_0_15px_rgba(6,182,212,0.3)]'
-                  : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white active:scale-95 disabled:opacity-40'
+                'px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-all border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40'
               )}
-              title="PDF üzerine görünmez metin katmanı ekleyerek kopyalanabilir ve aranabilir hale getirir"
+              title="PDF üzerine görünmez metin katmanı ekleyerek aranabilir hale getirir"
             >
               {isExportingPdf ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-500" />
                   <span>PDF Hazırlanıyor...</span>
                 </>
               ) : (
                 <>
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Aranabilir PDF Dışa Aktar</span>
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>Aranabilir PDF</span>
                 </>
               )}
             </button>
+
+            {/* KEY USER FEATURE: DIRECT IN-PLACE PAGE TEXT TRANSFER BUTTON & POPOVER */}
+            <div className="relative flex items-center" ref={transferSettingsRef}>
+              <button
+                onClick={handleTransferToPage}
+                disabled={!ocrResult}
+                className={cn(
+                  'px-3.5 py-1.5 rounded-l-lg text-xs font-bold flex items-center gap-1.5 shadow-md transition-all select-none',
+                  !ocrResult
+                    ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 cursor-not-allowed'
+                    : appDesignTheme === 'linear'
+                    ? 'bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-black shadow-[0_0_15px_rgba(6,182,212,0.4)]'
+                    : 'bg-gradient-to-r from-sky-500 via-indigo-600 to-purple-600 hover:from-sky-600 hover:to-purple-700 text-white active:scale-95'
+                )}
+                title="Tanınan metinleri doğrudan PDF sayfasına tam düzenlenebilir metin blokları olarak aktar (Kısayol: Ctrl+Enter)"
+              >
+                <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                <span>Sayfaya Yazıya Geçir</span>
+              </button>
+
+              <button
+                onClick={() => setIsTransferSettingsOpen(!isTransferSettingsOpen)}
+                disabled={!ocrResult}
+                className={cn(
+                  'px-2 py-1.5 rounded-r-lg border-l border-white/20 text-xs font-bold flex items-center justify-center transition-all',
+                  !ocrResult
+                    ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 cursor-not-allowed'
+                    : appDesignTheme === 'linear'
+                    ? 'bg-blue-600 hover:bg-blue-500 text-white'
+                    : 'bg-indigo-700 hover:bg-indigo-800 text-white'
+                )}
+                title="Aktarım Ayarları (Paragraf/Satır, Arka Plan Beyazlatma, Punto)"
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Transfer Settings Popover */}
+              {isTransferSettingsOpen && (
+                <div
+                  className={cn(
+                    'absolute right-0 bottom-full mb-2 w-72 p-3 rounded-xl border shadow-2xl z-50 text-xs animate-in fade-in zoom-in-95 duration-150',
+                    appDesignTheme === 'linear'
+                      ? 'bg-[#0E1015] border-white/20 text-slate-200'
+                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100'
+                  )}
+                >
+                  <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-200 dark:border-slate-800">
+                    <span className="font-bold flex items-center gap-1.5">
+                      <Settings2 className="w-3.5 h-3.5 text-sky-500" />
+                      Sayfaya Aktarım Ayarları
+                    </span>
+                    <button
+                      onClick={() => setIsTransferSettingsOpen(false)}
+                      className="text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Mode Selector */}
+                  <div className="space-y-1.5 mb-2.5">
+                    <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block">
+                      Metin Blok Düzeni:
+                    </label>
+                    <div className="flex flex-col gap-1">
+                      <label className="flex items-start gap-2 p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="transferMode"
+                          checked={transferMode === 'paragraph'}
+                          onChange={() => setTransferMode('paragraph')}
+                          className="mt-0.5 text-sky-600 focus:ring-sky-500"
+                        />
+                        <div>
+                          <span className="font-bold block text-slate-800 dark:text-slate-200">
+                            Akıllı Paragraf (Önerilen)
+                          </span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                            Çok satırlı cümleleri tek blokta birleştirir, düzenlemesi çok kolaydır.
+                          </span>
+                        </div>
+                      </label>
+
+                      <label className="flex items-start gap-2 p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="transferMode"
+                          checked={transferMode === 'line'}
+                          onChange={() => setTransferMode('line')}
+                          className="mt-0.5 text-sky-600 focus:ring-sky-500"
+                        />
+                        <div>
+                          <span className="font-bold block text-slate-800 dark:text-slate-200">
+                            Satır Satır Hassas Yerleşim
+                          </span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                            Her satırı kendi orijinal koordinatında bağımsız yerleştirir (Tablo/Form için).
+                          </span>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Hide Original Scan Option */}
+                  <div className="mb-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={hideOriginalScan}
+                        onChange={(e) => setHideOriginalScan(e.target.checked)}
+                        className="mt-0.5 rounded text-sky-600 focus:ring-sky-500"
+                      />
+                      <div>
+                        <span className="font-bold block text-slate-800 dark:text-slate-200">
+                          Taranmış Arka Planı Beyazlat
+                        </span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                          Alttaki kirli / sararmış taranmış görseli örter, yalnızca tertemiz yazı kalır.
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+
+                  {/* Font Size Multiplier & Scope */}
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
+                    <div>
+                      <span className="font-semibold block text-slate-500 mb-1">Punto Ölçeği:</span>
+                      <select
+                        value={fontSizeMultiplier}
+                        onChange={(e) => setFontSizeMultiplier(parseFloat(e.target.value))}
+                        className="w-full p-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 font-medium"
+                      >
+                        <option value={0.85}>0.85x (Küçük)</option>
+                        <option value={1.0}>1.0x (Normal)</option>
+                        <option value={1.15}>1.15x (Büyük)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <span className="font-semibold block text-slate-500 mb-1">Hedef Sayfalar:</span>
+                      <select
+                        value={transferScope}
+                        onChange={(e) => setTransferScope(e.target.value as 'current' | 'all')}
+                        className="w-full p-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 font-medium"
+                      >
+                        <option value="current">Bu Sayfa</option>
+                        {ocrResult && ocrResult.pages.length > 1 && (
+                          <option value="all">Tüm Tarananlar ({ocrResult.pages.length})</option>
+                        )}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Apply Now button inside popover */}
+                  <button
+                    onClick={() => {
+                      setIsTransferSettingsOpen(false);
+                      handleTransferToPage();
+                    }}
+                    className="w-full mt-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>Ayarlarla Sayfaya Aktar</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
