@@ -146,13 +146,13 @@ export const RightToolsSidebar: React.FC = () => {
 
     // 2. Dönüştür & Akıllı OCR Studio
     {
-      id: 'ocr_studio',
-      title: 'Akıllı OCR Studio',
+      id: 'ocr',
+      title: 'Metin Tanıma (OCR)',
       category: 'convert',
       icon: FileSearch,
       color: 'text-indigo-500 bg-indigo-500/10',
-      description: 'Taranmış evrak ve görsellerden Türkçe/İngilizce metin tanıma & aranabilir PDF üretme',
-      badge: 'Tesseract v7',
+      description: 'Taranmış belgeleri seçilebilir, aranabilir (Ctrl+F) ve düzenlenebilir hale getirin',
+      badge: 'PDF24 / Acrobat',
       action: () => setOcrModalOpen(true),
     },
     {
