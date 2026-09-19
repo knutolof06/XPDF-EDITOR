@@ -9,6 +9,8 @@ import {
   OcrDocumentResult,
   OcrProgress,
   OcrWord,
+  OcrEnhanceMode,
+  OcrPageSegMode,
 } from '@/core/ocr/ocr-service';
 import { OcrTextTransfer, TextTransferOptions } from '@/core/ocr/ocr-text-transfer';
 import {
@@ -30,6 +32,7 @@ import {
   Zap,
   ChevronDown,
   Settings2,
+  Layers,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -42,8 +45,9 @@ export const OcrStudioModal: React.FC = () => {
   // Config State
   const [pageScope, setPageScope] = useState<'current' | 'all' | 'custom'>('current');
   const [customRange, setCustomRange] = useState('');
-  const [selectedLang, setSelectedLang] = useState<OcrLanguage>('tur');
-  const [enhanceContrast, setEnhanceContrast] = useState(true);
+  const [selectedLang, setSelectedLang] = useState<OcrLanguage>('tur+eng');
+  const [enhanceMode, setEnhanceMode] = useState<OcrEnhanceMode>('smart');
+  const [psm, setPsm] = useState<OcrPageSegMode>('3');
   const [showBoundingBoxes, setShowBoundingBoxes] = useState(true);
 
   // Execution State
@@ -174,12 +178,13 @@ export const OcrStudioModal: React.FC = () => {
     abortControllerRef.current = false;
 
     try {
-      addToast(`${targetPages.length} sayfa için Otsu Neural OCR başlatıldı...`, 'info');
+      addToast(`${targetPages.length} sayfa için Akıllı 300 DPI Neural OCR başlatıldı...`, 'info');
       const result = await OcrService.processDocumentPages(
         pdfDocProxy,
         targetPages,
         selectedLang,
-        enhanceContrast,
+        enhanceMode,
+        psm,
         (prog) => {
           if (!abortControllerRef.current) {
             setProgress(prog);
@@ -231,7 +236,7 @@ export const OcrStudioModal: React.FC = () => {
       const targetPageResult = ocrResult.pages[activeResultPageIndex];
       if (!targetPageResult) return;
 
-      const res = OcrTextTransfer.transferSinglePage(targetPageResult, options);
+      const res = OcrTextTransfer.transferSinglePage(targetPageResult, options, editableText);
       if (res.success) {
         addToast(
           `Sayfa ${targetPageResult.pageNumber}'e ${res.count} metin bloğu aktarıldı! Doğrudan sayfa üzerinde düzenleyebilirsiniz (Ctrl+Z ile geri alınabilir).`,
@@ -373,7 +378,7 @@ export const OcrStudioModal: React.FC = () => {
                   )}
                 >
                   <Sparkles className="w-3 h-3" />
-                  Otsu Binarize & 300 DPI
+                  300 DPI Adaptif Neural OCR
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -459,30 +464,51 @@ export const OcrStudioModal: React.FC = () => {
             <select
               value={selectedLang}
               onChange={(e) => setSelectedLang(e.target.value as OcrLanguage)}
-              className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-sky-500 font-medium cursor-pointer"
+              className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-sky-500 font-medium cursor-pointer text-xs"
             >
-              <option value="tur">🇹🇷 Türkçe (tur)</option>
-              <option value="eng">🇬🇧 English (eng)</option>
-              <option value="tur+eng">🇹🇷 + 🇬🇧 Türkçe & İngilizce</option>
+              <option value="tur+eng">🇹🇷 + 🇬🇧 Türkçe & İngilizce (Önerilen)</option>
+              <option value="tur">🇹🇷 Yalnızca Türkçe (tur)</option>
+              <option value="eng">🇬🇧 Only English (eng)</option>
               <option value="deu">🇩🇪 Deutsch (deu)</option>
               <option value="fra">🇫🇷 Français (fra)</option>
             </select>
           </div>
 
-          {/* Options: Otsu Adaptive Binarization */}
-          <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1.5 cursor-pointer text-slate-600 dark:text-slate-300 select-none">
-              <input
-                type="checkbox"
-                checked={enhanceContrast}
-                onChange={(e) => setEnhanceContrast(e.target.checked)}
-                className="rounded text-sky-600 focus:ring-sky-500 w-3.5 h-3.5"
-              />
-              <span title="Dinamik Otsu algoritmasıyla gölgeleri ve tarayıcı sararmalarını temizler">
-                Otsu Adaptif Eşikleme
-              </span>
-            </label>
+          {/* Preprocessing Filter Mode */}
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5 text-emerald-500" /> Filtre:
+            </span>
+            <select
+              value={enhanceMode}
+              onChange={(e) => setEnhanceMode(e.target.value as OcrEnhanceMode)}
+              className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-sky-500 font-medium cursor-pointer text-xs"
+            >
+              <option value="smart">✨ Akıllı Otomatik (Önerilen)</option>
+              <option value="enhanced">⚡ Yüksek Kontrast (Soluk Kağıt)</option>
+              <option value="raw">📄 Orijinal / Net (Filtresiz)</option>
+              <option value="otsu">⚫ Binarize (Siyah-Beyaz Eşikleme)</option>
+            </select>
+          </div>
 
+          {/* Page Segmentation Mode (PSM) */}
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-amber-500" /> Düzen:
+            </span>
+            <select
+              value={psm}
+              onChange={(e) => setPsm(e.target.value as OcrPageSegMode)}
+              className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-sky-500 font-medium cursor-pointer text-xs"
+            >
+              <option value="3">📑 Otomatik Sayfa (Standart)</option>
+              <option value="6">📄 Tek Metin Bloğu (Rapor/Sözleşme)</option>
+              <option value="11">🧾 Dağınık Metin (Fatura/Fiş/Form)</option>
+            </select>
+          </div>
+
+          {/* Action Button */}
+          <div className="flex items-center gap-3">
             <button
               onClick={handleStartOcr}
               disabled={isRunning}
