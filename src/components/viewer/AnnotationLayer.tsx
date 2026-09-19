@@ -358,7 +358,7 @@ export const AnnotationLayer: React.FC<AnnotationLayerProps> = ({ page, scale })
     });
   };
 
-  const isSelectionTool = activeTool === 'select';
+  const isSelectionTool = activeTool === 'select' || activeTool === 'text-select';
 
   // Helper to render Bounding Box & 8 Resize Handles on active selected annotation
   const renderSelectionFrame = (ann: AnyAnnotation) => {

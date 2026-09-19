@@ -3,6 +3,8 @@ import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
 import { useViewerStore } from '@/store/viewer-store';
 import { useTabStore } from '@/store/tab-store';
+import { useAnnotationStore } from '@/store/annotation-store';
+import { clearDocumentCaches } from '@/core/cache/render-cache';
 import { binaryStore } from '@/core/storage/binary-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import {
@@ -40,7 +42,8 @@ export type OcrWorkflowMode = 'searchable' | 'editable' | 'extract';
 export const OcrRecognizeModal: React.FC = () => {
   const { isOcrModalOpen, setOcrModalOpen, addToast } = useUIStore();
   const { currentDocument, pdfDocProxy, setDocument } = useDocumentStore();
-  const { addTab } = useTabStore();
+  const { addTab, replaceActiveTab } = useTabStore();
+  const setOcrHighlightPulse = useViewerStore((s) => s.setOcrHighlightPulse);
   const currentPageIndex = currentDocument?.activePageIndex || 0;
   const appDesignTheme = useViewerStore((s) => s.appDesignTheme) || 'fluent';
 
@@ -53,6 +56,7 @@ export const OcrRecognizeModal: React.FC = () => {
   const [selectedLang, setSelectedLang] = useState<OcrLanguage>('tur+eng');
   const [cleanPaper, setCleanPaper] = useState(true);
   const [hideScanUnderneath, setHideScanUnderneath] = useState(true);
+  const [autoApply, setAutoApply] = useState(true);
 
   // Runtime State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -157,7 +161,14 @@ export const OcrRecognizeModal: React.FC = () => {
           );
           if (!abortRef.current) {
             setSearchablePdfBytes(searchableBytes);
-            addToast('Aranabilir PDF katmanı hazırlandı!', 'success');
+
+            // Auto-apply directly to active document if enabled (Zero-Click experience)
+            if (autoApply) {
+              await applySearchablePdfToDocument(searchableBytes, result);
+              return;
+            } else {
+              addToast('Aranabilir PDF katmanı hazırlandı!', 'success');
+            }
           }
         } else {
           addToast('Orijinal belge bellekte bulunamadı.', 'error');
@@ -209,25 +220,94 @@ export const OcrRecognizeModal: React.FC = () => {
     }
   };
 
-  // Action: Apply Searchable PDF Directly into the Viewer (In-Place Update)
-  const handleApplyToCurrentDocument = async () => {
-    if (!searchablePdfBytes) return;
+  // Action: Apply Searchable PDF Directly into the Active Viewer (In-Place Update)
+  const applySearchablePdfToDocument = async (bytes: Uint8Array, result: OcrDocumentResult) => {
     setIsApplying(true);
     try {
+      const pageIdx = currentDocument.activePageIndex || 0;
+      const oldDocId = currentDocument.id;
+
+      // Invalidate render and metadata caches for old document
+      clearDocumentCaches(oldDocId);
+
       const loaded = await PdfLoader.loadDocument(
         currentDocument.name,
-        searchablePdfBytes.buffer,
+        bytes,
         currentDocument.filePath
       );
+
+      // Preserve active page index
+      loaded.model.activePageIndex = pageIdx;
+
+      // Clean old binary and replace in active tab
+      binaryStore.delete(oldDocId);
       setDocument(loaded.model, loaded.pdfDoc);
-      addTab(loaded.model, loaded.pdfDoc);
-      addToast('✓ Belge güncellendi! Artık metinleri seçebilir, kopyalayabilir ve arama (Ctrl+F) yapabilirsiniz.', 'success', 5000);
+      replaceActiveTab(loaded.model, loaded.pdfDoc);
+
+      // Switch active tool to select immediately
+      useAnnotationStore.getState().setActiveTool('select');
+      useViewerStore.getState().setActiveTool('select');
+
+      // Trigger instant Visual Highlight Pulse for the active page
+      const activePageRes =
+        result.pages.find((p) => p.pageNumber === pageIdx + 1) || result.pages[0];
+      if (activePageRes) {
+        setOcrHighlightPulse({
+          pageIndex: pageIdx,
+          words: (activePageRes.words || []).map((w) => ({ normBbox: w.normBbox, text: w.text })),
+          wordCount: result.totalWords,
+          timestamp: Date.now(),
+          lastOcrPageResult: activePageRes,
+        });
+      }
+
+      addToast(
+        `✓ ${result.totalWords} kelime başarıyla tanındı! Metinler artık seçilebilir ve Ctrl+F ile aranabilir.`,
+        'success',
+        5000
+      );
       setOcrModalOpen(false);
     } catch (err) {
-      console.error(err);
-      addToast('Belge güncellenirken hata oluştu.', 'error');
+      console.error('Error applying searchable PDF:', err);
+      addToast('Aranabilir belge uygulanırken hata oluştu.', 'error');
     } finally {
       setIsApplying(false);
+    }
+  };
+
+  const handleApplyToCurrentDocument = async () => {
+    if (!searchablePdfBytes || !ocrResult) return;
+    await applySearchablePdfToDocument(searchablePdfBytes, ocrResult);
+  };
+
+  // Action: Convert to Editable In-Place Text (Acrobat Pro Mode)
+  const handleConvertToEditableDirectly = () => {
+    if (!ocrResult) return;
+    const options: TextTransferOptions = {
+      mode: 'paragraph',
+      hideOriginalScan: true,
+      fontSizeMultiplier: 1.0,
+      fontColor: '#0f172a',
+      fontFamily: 'Helvetica, Arial, sans-serif',
+    };
+    if (ocrResult.pages.length === 1) {
+      const res = OcrTextTransfer.transferSinglePage(ocrResult.pages[0], options);
+      if (res.success) {
+        addToast(
+          `Sayfa ${ocrResult.pages[0].pageNumber}'e ${res.count} düzenlenebilir metin kutusu aktarıldı!`,
+          'success'
+        );
+        setOcrModalOpen(false);
+      }
+    } else {
+      const res = OcrTextTransfer.transferMultiplePages(ocrResult.pages, options);
+      if (res.success) {
+        addToast(
+          `${res.pagesAffected} sayfaya toplam ${res.totalCount} düzenlenebilir metin aktarıldı!`,
+          'success'
+        );
+        setOcrModalOpen(false);
+      }
     }
   };
 
@@ -236,9 +316,11 @@ export const OcrRecognizeModal: React.FC = () => {
     if (!searchablePdfBytes) return;
     try {
       const newName = currentDocument.name.replace(/\.pdf$/i, '') + ' (Aranabilir).pdf';
-      const loaded = await PdfLoader.loadDocument(newName, searchablePdfBytes.buffer);
+      const loaded = await PdfLoader.loadDocument(newName, searchablePdfBytes);
       setDocument(loaded.model, loaded.pdfDoc);
       addTab(loaded.model, loaded.pdfDoc);
+      useAnnotationStore.getState().setActiveTool('select');
+      useViewerStore.getState().setActiveTool('select');
       addToast('Aranabilir PDF yeni sekmede açıldı.', 'success');
       setOcrModalOpen(false);
     } catch (err) {
@@ -369,7 +451,7 @@ export const OcrRecognizeModal: React.FC = () => {
                       <Search className="w-4 h-4" />
                     </div>
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300">
-                      Önerilen
+                      PDF24 Standardı
                     </span>
                   </div>
                   <div>
@@ -377,7 +459,7 @@ export const OcrRecognizeModal: React.FC = () => {
                       Aranabilir PDF Katmanı
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                      Orijinal kağıt kalitesini bozmadan seçilebilir, kopyalanabilir ve Ctrl+F ile aranabilir yapar (PDF24 / Acrobat Standart).
+                      Orijinal kağıt görüntüsünü bozmadan metinleri seçilebilir, kopyalanabilir ve Ctrl+F ile aranabilir yapar (Görünmez katman).
                     </p>
                   </div>
                 </button>
@@ -393,15 +475,20 @@ export const OcrRecognizeModal: React.FC = () => {
                       : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-800/40'
                   )}
                 >
-                  <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
-                    <Type className="w-4 h-4" />
+                  <div className="flex items-start justify-between w-full">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
+                      <Type className="w-4 h-4" />
+                    </div>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300">
+                      Acrobat Pro
+                    </span>
                   </div>
                   <div>
                     <h3 className="font-bold text-slate-900 dark:text-white text-xs mb-1">
                       Düzenlenebilir Metin
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                      Yazıları sayfa üzerinde doğrudan tıklanıp düzenlenebilir metin kutularına çevirir (Acrobat Pro Modu).
+                      Sayfadaki yazıları doğrudan tıklayıp değiştirebileceğiniz ve silebileceğiniz düzenlenebilir metin kutularına dönüştürür.
                     </p>
                   </div>
                 </button>
@@ -520,6 +607,20 @@ export const OcrRecognizeModal: React.FC = () => {
 
               {/* Toggles (PDF24 style Deskew & Clean Paper) */}
               <div className="space-y-2 pt-2">
+                {workflowMode === 'searchable' && (
+                  <label className="flex items-center gap-2.5 cursor-pointer text-xs text-slate-700 dark:text-slate-300 select-none bg-sky-50/60 dark:bg-sky-950/20 p-2.5 rounded-xl border border-sky-200/60 dark:border-sky-800/40">
+                    <input
+                      type="checkbox"
+                      checked={autoApply}
+                      onChange={(e) => setAutoApply(e.target.checked)}
+                      className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300 dark:border-slate-700 cursor-pointer"
+                    />
+                    <span>
+                      <strong className="text-sky-700 dark:text-sky-300">Otomatik Belgeye Uygula (Önerilen):</strong> OCR bitince aranabilir katmanı doğrudan mevcut belgeye uygula ve seçime hazırla
+                    </span>
+                  </label>
+                )}
+
                 <label className="flex items-center gap-2.5 cursor-pointer text-xs text-slate-700 dark:text-slate-300 select-none">
                   <input
                     type="checkbox"
@@ -626,7 +727,7 @@ export const OcrRecognizeModal: React.FC = () => {
                       type="button"
                       onClick={handleApplyToCurrentDocument}
                       disabled={isApplying}
-                      className="px-4 py-3 rounded-xl font-bold bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white shadow-md flex items-center justify-center gap-2 active:scale-98 transition-all"
+                      className="px-4 py-3 rounded-xl font-bold bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white shadow-md flex items-center justify-center gap-2 active:scale-98 transition-all cursor-pointer"
                     >
                       {isApplying ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -638,28 +739,39 @@ export const OcrRecognizeModal: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={handleOpenInNewTab}
-                      className="px-4 py-3 rounded-xl font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 flex items-center justify-center gap-2 transition-all"
+                      onClick={handleConvertToEditableDirectly}
+                      className="px-4 py-3 rounded-xl font-semibold border border-indigo-200 dark:border-indigo-800/60 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 flex items-center justify-center gap-2 transition-all cursor-pointer"
                     >
-                      <ExternalLink className="w-4 h-4" />
-                      <span>Yeni Sekmede Aç</span>
+                      <Type className="w-4 h-4 text-indigo-500" />
+                      <span>Düzenlenebilir Metne Çevir (Acrobat Pro)</span>
                     </button>
                   </div>
 
                   <div className="flex items-center justify-between pt-2">
-                    <button
-                      type="button"
-                      onClick={handleDownloadPdf}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5 transition-all"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Aranabilir PDF İndir</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleOpenInNewTab}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Yeni Sekmede Aç</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleDownloadPdf}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Aranabilir PDF İndir</span>
+                      </button>
+                    </div>
 
                     <button
                       type="button"
                       onClick={handleCopyText}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5 transition-all"
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5 transition-all cursor-pointer"
                     >
                       {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
                       <span>{isCopied ? 'Kopyalandı' : 'Metni Kopyala'}</span>

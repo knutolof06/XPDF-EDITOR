@@ -19,6 +19,7 @@ interface TabState {
   clipboardPages: PdfPageModel[]; // For Ctrl+C / Ctrl+V across documents
 
   addTab: (model: PdfDocumentModel, pdfDocProxy: pdfjsLib.PDFDocumentProxy) => void;
+  replaceActiveTab: (model: PdfDocumentModel, pdfDocProxy: pdfjsLib.PDFDocumentProxy) => void;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateActiveTabState: (activePageIndex: number, scrollTop?: number, zoom?: number) => void;
@@ -47,6 +48,28 @@ export const useTabStore = create<TabState>()(
 
         if (existingIdx !== -1) {
           state.tabs[existingIdx] = item as any;
+        } else {
+          state.tabs.push(item as any);
+        }
+        state.activeTabId = model.id;
+      }),
+
+    replaceActiveTab: (model, pdfDocProxy) =>
+      set((state) => {
+        const idx = state.tabs.findIndex((t) => t.id === state.activeTabId);
+        const currentTab = idx !== -1 ? state.tabs[idx] : null;
+        const item: TabItem = {
+          id: model.id,
+          name: model.name,
+          model,
+          pdfDocProxy: pdfDocProxy as any,
+          activePageIndex: model.activePageIndex ?? currentTab?.activePageIndex ?? 0,
+          scrollTop: currentTab?.scrollTop || 0,
+          zoom: currentTab?.zoom || 1.0,
+        };
+
+        if (idx !== -1) {
+          state.tabs[idx] = item as any;
         } else {
           state.tabs.push(item as any);
         }

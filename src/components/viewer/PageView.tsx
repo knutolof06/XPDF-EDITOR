@@ -18,7 +18,8 @@ import {
 } from '@/core/cache/render-cache';
 import { preloadAdjacentPages, cancelActivePreload } from '@/core/cache/page-preloader';
 import { useFormStore, FormWidgetModel } from '@/store/form-store';
-import { Copy } from 'lucide-react';
+import { Copy, Sparkles, Type, X } from 'lucide-react';
+import { OcrTextTransfer } from '@/core/ocr/ocr-text-transfer';
 import { cn } from '@/utils/cn';
 
 interface PageViewProps {
@@ -124,6 +125,36 @@ export const PageView: React.FC<PageViewProps> = ({
   const pdfDocProxy = customPdfDocProxy || globalPdfDocProxy;
   const pageTransition = useViewerStore((s) => s.pageTransition);
   const searchState = useViewerStore((s) => s.searchState);
+  const ocrHighlightPulse = useViewerStore((s) => s.ocrHighlightPulse);
+  const setOcrHighlightPulse = useViewerStore((s) => s.setOcrHighlightPulse);
+
+  // Auto-dismiss OCR visual highlight pulse after 7 seconds
+  useEffect(() => {
+    if (ocrHighlightPulse && ocrHighlightPulse.pageIndex === index) {
+      const timer = setTimeout(() => {
+        setOcrHighlightPulse(null);
+      }, 7000);
+      return () => clearTimeout(timer);
+    }
+  }, [ocrHighlightPulse, index, setOcrHighlightPulse]);
+
+  const handleConvertToEditable = (pageResult: any) => {
+    if (!pageResult) return;
+    const res = OcrTextTransfer.transferSinglePage(pageResult, {
+      mode: 'paragraph',
+      hideOriginalScan: true,
+      fontSizeMultiplier: 1.0,
+      fontColor: '#0f172a',
+      fontFamily: 'Helvetica, Arial, sans-serif',
+    });
+    setOcrHighlightPulse(null);
+    if (res.success) {
+      useUIStore.getState().addToast(
+        `Sayfa ${pageResult.pageNumber}'deki ${res.count} metin bloğu düzenlenebilir metne dönüştürüldü!`,
+        'success'
+      );
+    }
+  };
 
   const docId = currentDocument?.id || '';
   const formValues = useFormStore((s) => s.valuesByDoc[docId]) || {};
@@ -868,6 +899,53 @@ export const PageView: React.FC<PageViewProps> = ({
             heightPt={page.height}
             scale={scale}
           />
+
+          {/* Visual Highlight Pulse for OCR Recognized Words */}
+          {ocrHighlightPulse && ocrHighlightPulse.pageIndex === index && (
+            <div className="absolute inset-0 pointer-events-none z-[25] animate-in fade-in duration-300">
+              {ocrHighlightPulse.words.map((w, wIdx) => (
+                <div
+                  key={wIdx}
+                  style={{
+                    left: `${w.normBbox.x * 100}%`,
+                    top: `${w.normBbox.y * 100}%`,
+                    width: `${w.normBbox.width * 100}%`,
+                    height: `${w.normBbox.height * 100}%`,
+                  }}
+                  className="absolute bg-sky-400/20 border border-sky-400/60 rounded-[2px] shadow-[0_0_8px_rgba(56,189,248,0.4)] animate-pulse"
+                />
+              ))}
+
+              {/* Floating Pill Badge: Instant visual proof & action */}
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-auto bg-slate-900/95 backdrop-blur-md text-white px-4 py-2 rounded-2xl shadow-2xl border border-sky-500/40 flex items-center gap-3 animate-in slide-in-from-top-4 duration-300 select-none">
+                <div className="w-6 h-6 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
+                  <Sparkles className="w-3.5 h-3.5" />
+                </div>
+                <div className="text-xs">
+                  <span className="font-bold text-sky-300">OCR Başarılı:</span>{' '}
+                  <span>{ocrHighlightPulse.wordCount} kelime aranabilir & seçilebilir yapıldı!</span>
+                </div>
+
+                {ocrHighlightPulse.lastOcrPageResult && (
+                  <button
+                    onClick={() => handleConvertToEditable(ocrHighlightPulse.lastOcrPageResult)}
+                    className="ml-1 px-2.5 py-1 bg-gradient-to-r from-indigo-500 to-sky-500 hover:from-indigo-600 hover:to-sky-600 text-white rounded-lg text-xs font-semibold shadow-sm transition-all flex items-center gap-1 active:scale-95 cursor-pointer"
+                  >
+                    <Type className="w-3 h-3" />
+                    <span>Düzenlenebilir Metne Çevir</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setOcrHighlightPulse(null)}
+                  className="p-1 text-slate-400 hover:text-white rounded-md transition-colors cursor-pointer"
+                  title="Kapat"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Acrobat-Style Floating Text Markup Toolbar */}
           {floatingMenu && (

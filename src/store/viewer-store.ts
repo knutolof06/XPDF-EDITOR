@@ -6,6 +6,19 @@ import { ActiveTool, SearchState, SidebarTab, AppDesignTheme, AccentColor, UIDen
 export type FitMode = 'none' | 'width' | 'page' | 'content';
 export type ReadingTheme = 'default' | 'dark' | 'sepia' | 'high-contrast';
 
+export interface OcrWordHighlight {
+  normBbox: { x: number; y: number; width: number; height: number };
+  text: string;
+}
+
+export interface OcrHighlightPulseState {
+  pageIndex: number;
+  words: OcrWordHighlight[];
+  wordCount: number;
+  timestamp: number;
+  lastOcrPageResult?: any;
+}
+
 interface ViewerState {
   zoom: number;
   fitMode: FitMode;
@@ -23,10 +36,14 @@ interface ViewerState {
   activeSidebarTab: SidebarTab;
   thumbnailColumns: number; // 1, 2, 3, or 4
 
+  // OCR visual highlight pulse
+  ocrHighlightPulse: OcrHighlightPulseState | null;
+
   // Search
   searchState: SearchState;
 
   // Actions
+  setOcrHighlightPulse: (pulse: OcrHighlightPulseState | null) => void;
   setZoom: (zoom: number | ((prev: number) => number), keepFitMode?: boolean) => void;
   setFitMode: (mode: FitMode) => void;
   setReadingTheme: (theme: ReadingTheme) => void;
@@ -117,6 +134,7 @@ export const useViewerStore = create<ViewerState>()(
     sidebarWidth: saved.sidebarWidth || 320,
     activeSidebarTab: saved.activeSidebarTab || 'pages',
     thumbnailColumns: Math.min(4, Math.max(1, saved.thumbnailColumns || 2)), // Default 2 (S)
+    ocrHighlightPulse: null,
 
     searchState: {
       isOpen: false,
@@ -126,6 +144,11 @@ export const useViewerStore = create<ViewerState>()(
       currentIndex: 0,
       isSearching: false,
     },
+
+    setOcrHighlightPulse: (pulse) =>
+      set((state) => {
+        state.ocrHighlightPulse = pulse as any;
+      }),
 
     setZoom: (zoomOrFn, keepFitMode = false) =>
       set((state) => {

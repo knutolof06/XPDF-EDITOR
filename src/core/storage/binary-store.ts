@@ -22,6 +22,10 @@ class BinaryStore {
     this.buffers.delete(id);
   }
 
+  public delete(id: string): boolean {
+    return this.buffers.delete(id);
+  }
+
   public clear(): void {
     this.buffers.clear();
   }
