@@ -8,7 +8,6 @@ import {
   Search,
   Move,
   LayoutGrid,
-  Sparkles,
   Ruler,
   Minimize2,
   Image as ImageIcon,
@@ -19,7 +18,6 @@ import {
   PenTool,
   Stamp,
   Hash,
-  FileText,
   Grid,
   Magnet,
   Trash2,
@@ -32,13 +30,14 @@ import {
   ShieldCheck,
   FilePlus,
   Replace,
+  FileSearch,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
 interface ToolItem {
   id: string;
   title: string;
-  category: 'edit' | 'convert' | 'forms' | 'rulers' | 'protect';
+  category: 'edit' | 'convert' | 'forms' | 'protect';
   icon: any;
   color: string;
   description: string;
@@ -48,7 +47,7 @@ interface ToolItem {
 }
 
 export const RightToolsSidebar: React.FC = () => {
-  const { theme, appDesignTheme } = useViewerStore();
+  const { theme, appDesignTheme = 'fluent' } = useViewerStore();
   const isDark = theme === 'dark';
 
   const {
@@ -57,7 +56,6 @@ export const RightToolsSidebar: React.FC = () => {
     setObjectEditorOpen,
     setMergeModalOpen,
     setSplitModalOpen,
-    setPageLayoutModalOpen,
     setPageEqualizeModalOpen,
     setCompressModalOpen,
     setExportImageModalOpen,
@@ -65,21 +63,19 @@ export const RightToolsSidebar: React.FC = () => {
     setWatermarkModalOpen,
     setSignatureModalOpen,
     setStampModalOpen,
-    setPageNumberModalOpen,
     setHeaderFooterModalOpen,
     setPropertiesModalOpen,
-    setExtractTextModalOpen,
     setSecurityModalOpen,
     setSignatureVerifyModalOpen,
     setInsertBlankPageModalOpen,
     setFindReplaceModalOpen,
+    setOcrModalOpen,
+    setFormsModalOpen,
+    setCompareModalOpen,
     addToast,
   } = useUIStore();
 
-  const {
-    isPageManagerOpen,
-    setPageManagerOpen,
-  } = useViewerStore();
+  const { isPageManagerOpen, setPageManagerOpen } = useViewerStore();
 
   const {
     showRulers,
@@ -97,14 +93,24 @@ export const RightToolsSidebar: React.FC = () => {
   const [activeCategory, setActiveCategory] = useState<string>('all');
 
   const tools: ToolItem[] = [
-    // 1. PDF Edit
+    // 1. Sayfa & Döküman Düzenleme
+    {
+      id: 'page_manager',
+      title: 'Sayfa Yöneticisi',
+      category: 'edit',
+      icon: LayoutGrid,
+      color: 'text-sky-500 bg-sky-500/10',
+      description: 'Görsel grid üzerinde sayfaları taşıyın, sıralayın, döndürün veya silin',
+      active: isPageManagerOpen,
+      action: () => setPageManagerOpen(!isPageManagerOpen),
+    },
     {
       id: 'find_replace',
       title: 'Bul ve Değiştir',
       category: 'edit',
       icon: Replace,
       color: 'text-indigo-500 bg-indigo-500/10',
-      description: 'Dökümandaki metinleri akıllıca arayın ve doğrudan değiştirin (Ctrl+H)',
+      description: 'Dökümandaki metinleri arayın ve doğrudan değiştirin (Ctrl+H)',
       badge: 'Akıllı',
       action: () => setFindReplaceModalOpen(true),
     },
@@ -114,37 +120,19 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'edit',
       icon: Move,
       color: 'text-sky-500 bg-sky-500/10',
-      description: 'PDF içindeki metin, görsel ve QR kodları taşıyın veya silin',
-      badge: 'Gelişmiş',
+      description: 'PDF içindeki gömülü metin, görsel ve vektör nesnelerini taşıyın veya silin',
+      badge: 'Vektör',
       action: () => setObjectEditorOpen(true),
     },
     {
-      id: 'page_manager',
-      title: 'Sayfa Yöneticisi',
-      category: 'edit',
-      icon: LayoutGrid,
-      color: 'text-sky-500 bg-sky-500/10',
-      description: 'Sayfaları sıralayın, döndürün veya silin',
-      active: isPageManagerOpen,
-      action: () => setPageManagerOpen(!isPageManagerOpen),
-    },
-    {
-      id: 'equalize',
-      title: 'Boyutları Eşitle',
+      id: 'geometry_layout',
+      title: 'Sayfa Geometrisi & Mizanpaj',
       category: 'edit',
       icon: Ruler,
       color: 'text-orange-500 bg-orange-500/10',
-      description: 'Farklı boyutlardaki sayfaları A4 standardına eşitleyin',
+      description: 'A4 standart boyut eşitleme ve 2-up / 4-up çoklu sayfa baskı mizanpajı',
+      badge: 'Mizanpaj',
       action: () => setPageEqualizeModalOpen(true),
-    },
-    {
-      id: 'nup',
-      title: 'N-up Sayfa Düzeni',
-      category: 'edit',
-      icon: Sparkles,
-      color: 'text-purple-500 bg-purple-500/10',
-      description: 'Birden fazla sayfayı tek sayfada birleştirin (2-up, 4-up)',
-      action: () => setPageLayoutModalOpen(true),
     },
     {
       id: 'blank_page',
@@ -156,7 +144,17 @@ export const RightToolsSidebar: React.FC = () => {
       action: () => setInsertBlankPageModalOpen(true),
     },
 
-    // 2. Convert & Compress
+    // 2. Dönüştür & Akıllı OCR Studio
+    {
+      id: 'ocr_studio',
+      title: 'Akıllı OCR Studio',
+      category: 'convert',
+      icon: FileSearch,
+      color: 'text-indigo-500 bg-indigo-500/10',
+      description: 'Taranmış evrak ve görsellerden Türkçe/İngilizce metin tanıma & aranabilir PDF üretme',
+      badge: 'Tesseract v7',
+      action: () => setOcrModalOpen(true),
+    },
     {
       id: 'compress',
       title: 'PDF Sıkıştır',
@@ -173,7 +171,7 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'convert',
       icon: ImageIcon,
       color: 'text-emerald-500 bg-emerald-500/10',
-      description: 'Sayfaları PNG, JPG veya WebP olarak toplu indirin',
+      description: 'Sayfaları PNG, JPG veya WebP olarak yüksek kalitede indirin',
       action: () => setExportImageModalOpen(true),
     },
     {
@@ -191,7 +189,7 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'convert',
       icon: Layers,
       color: 'text-blue-500 bg-blue-500/10',
-      description: 'Birden fazla PDF dosyasını tek bir dökümanda toplayın',
+      description: 'Birden fazla PDF dosyasını tek bir dökümanda birleştirin',
       action: () => setMergeModalOpen(true),
     },
     {
@@ -200,34 +198,20 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'convert',
       icon: Scissors,
       color: 'text-rose-500 bg-rose-500/10',
-      description: 'Sayfa aralıklarına göre dökümanı parçalara ayırın',
+      description: 'Sayfa aralıklarına veya tekil sayfalara göre dökümanı ayırın',
       action: () => setSplitModalOpen(true),
     },
-    {
-      id: 'extract_text',
-      title: 'Metin Çıkar (TXT/JSON)',
-      category: 'convert',
-      icon: FileText,
-      color: 'text-amber-500 bg-amber-500/10',
-      description: 'PDF metinlerini kopyalayın veya TXT/JSON formatında indirin',
-      badge: 'TXT/JSON',
-      action: () => setExtractTextModalOpen(true),
-    },
 
-    // 3. Forms & Signatures
+    // 3. Form, İmza & Resmi Onay
     {
       id: 'forms',
       title: 'Form Yöneticisi',
       category: 'forms',
       icon: CheckSquare,
       color: 'text-emerald-500 bg-emerald-500/10',
-      description: 'Form alanlarını doldurun, JSON içe/dışa aktarın veya kilitleyin',
+      description: 'PDF form alanlarını doldurun, içe/dışa aktarın veya kilitleyin',
       badge: 'AcroForm',
-      action: () => {
-        // Trigger FormFieldsModal through global state
-        const btn = document.getElementById('btn-open-forms-modal');
-        if (btn) btn.click();
-      },
+      action: () => setFormsModalOpen(true),
     },
     {
       id: 'signature',
@@ -235,7 +219,7 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'forms',
       icon: PenTool,
       color: 'text-indigo-500 bg-indigo-500/10',
-      description: 'Çizim veya görsel yükleyerek resmi imza ekleyin',
+      description: 'Çizim veya görsel yükleyerek resmi e-imza ekleyin',
       action: () => setSignatureModalOpen(true),
     },
     {
@@ -248,21 +232,12 @@ export const RightToolsSidebar: React.FC = () => {
       action: () => setStampModalOpen(true),
     },
     {
-      id: 'page_numbers',
-      title: 'Sayfa Numaraları',
+      id: 'page_numbers_header_footer',
+      title: 'Sayfa No & Üst/Alt Bilgi',
       category: 'forms',
       icon: Hash,
       color: 'text-sky-500 bg-sky-500/10',
-      description: 'Sayfaların altına/üstüne otomatik numaralandırma ekleyin',
-      action: () => setPageNumberModalOpen(true),
-    },
-    {
-      id: 'header_footer',
-      title: 'Üst ve Alt Bilgi',
-      category: 'forms',
-      icon: FileText,
-      color: 'text-slate-500 bg-slate-500/10',
-      description: 'Döküman genelinde başlık ve dipnot metinleri ekleyin',
+      description: 'Dinamik sayfa numaraları, tarih, kurumsal başlık ve dipnot ekleyin',
       action: () => setHeaderFooterModalOpen(true),
     },
     {
@@ -276,59 +251,14 @@ export const RightToolsSidebar: React.FC = () => {
       action: () => setSignatureVerifyModalOpen(true),
     },
 
-    // 4. Rulers & Guides (FAZ 5)
-    {
-      id: 'rulers',
-      title: showRulers ? 'Cetvelleri Gizle' : 'Cetvelleri Göster',
-      category: 'rulers',
-      icon: Ruler,
-      color: showRulers ? 'text-sky-600 bg-sky-500/20' : 'text-slate-500 bg-slate-500/10',
-      description: 'Sayfa kenarlarında hassas ölçüm cetvelleri (Ctrl+R)',
-      badge: showRulers ? 'Açık' : 'Kapalı',
-      active: showRulers,
-      action: toggleRulers,
-    },
-    {
-      id: 'grid',
-      title: showGrid ? 'Izgarayı Gizle' : 'Izgarayı Göster',
-      category: 'rulers',
-      icon: Grid,
-      color: showGrid ? 'text-sky-600 bg-sky-500/20' : 'text-slate-500 bg-slate-500/10',
-      description: 'Sayfa üzerinde milimetrik kareli ızgara çizgileri',
-      badge: showGrid ? 'Açık' : 'Kapalı',
-      active: showGrid,
-      action: toggleGrid,
-    },
-    {
-      id: 'snap',
-      title: snapToGuides ? 'Manyetik Yapışma: Açık' : 'Manyetik Yapışma: Kapalı',
-      category: 'rulers',
-      icon: Magnet,
-      color: snapToGuides ? 'text-emerald-600 bg-emerald-500/20' : 'text-slate-500 bg-slate-500/10',
-      description: 'Nesneleri ve kılavuzları sayfa ortasına otomatik hizalar',
-      action: () => setSnapToGuides(!snapToGuides),
-    },
-    {
-      id: 'clear_guides',
-      title: 'Kılavuzları Temizle',
-      category: 'rulers',
-      icon: Trash2,
-      color: 'text-rose-500 bg-rose-500/10',
-      description: 'Çekilmiş tüm dikey ve yatay kılavuz çizgilerini siler',
-      action: () => {
-        clearGuides();
-        addToast('Tüm kılavuz çizgileri temizlendi.', 'info');
-      },
-    },
-
-    // 5. Protect & Security
+    // 4. Güvenlik, Koruma & Denetim
     {
       id: 'security',
       title: 'Şifrele ve İzinler',
       category: 'protect',
       icon: Lock,
       color: 'text-amber-500 bg-amber-500/10',
-      description: 'Belgeye parola koyun, izinleri kısıtlayın veya şifreyi kaldırın',
+      description: 'Belgeye parola koyun, yazdırma ve kopyalamayı kısıtlayın',
       badge: 'AES-128',
       action: () => setSecurityModalOpen(true),
     },
@@ -338,7 +268,7 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'protect',
       icon: Droplet,
       color: 'text-blue-500 bg-blue-500/10',
-      description: 'GİZLİDİR, TASLAK veya özel metin filigranı basın',
+      description: 'GİZLİDİR, TASLAK veya özel kurumsal filigran basın',
       action: () => setWatermarkModalOpen(true),
     },
     {
@@ -347,11 +277,9 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'protect',
       icon: Columns,
       color: 'text-sky-500 bg-sky-500/10',
-      description: 'İki PDF belgesini yan yana açıp farkları inceleyin',
-      action: () => {
-        const btn = document.getElementById('btn-open-compare-modal');
-        if (btn) btn.click();
-      },
+      description: 'İki PDF belgesini yan yana açıp görsel ve metinsel farkları inceleyin',
+      badge: 'Diff',
+      action: () => setCompareModalOpen(true),
     },
     {
       id: 'properties',
@@ -359,7 +287,7 @@ export const RightToolsSidebar: React.FC = () => {
       category: 'protect',
       icon: Info,
       color: 'text-slate-500 bg-slate-500/10',
-      description: 'Sayfa sayısı, şifreleme ve meta verilerini görüntüleyin',
+      description: 'Sayfa sayısı, şifreleme ve döküman meta verilerini görüntüleyin',
       action: () => setPropertiesModalOpen(true),
     },
   ];
@@ -374,16 +302,19 @@ export const RightToolsSidebar: React.FC = () => {
     return matchesSearch && matchesCategory;
   });
 
-  // If collapsed: show Acrobat style slim vertical icon strip
+  // Collapsed Mode: Slim icon strip
   if (!isRightToolsSidebarOpen) {
     return (
       <div
         className={cn(
           'w-12 border-l flex flex-col items-center py-2 shrink-0 select-none z-30 transition-all',
-          appDesignTheme === 'cupertino' && 'cupertino-glass border-l border-black/5 dark:border-white/10',
+          appDesignTheme === 'cupertino' &&
+            'cupertino-glass border-l border-black/5 dark:border-white/10',
           appDesignTheme === 'linear' && 'bg-[#08090a] border-l border-white/10 shadow-none',
-          appDesignTheme === 'fluent' && (isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white border-slate-200'),
-          appDesignTheme === 'ribbon' && (isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-300')
+          appDesignTheme === 'fluent' &&
+            (isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white border-slate-200'),
+          appDesignTheme === 'ribbon' &&
+            (isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-300')
         )}
       >
         <button
@@ -399,9 +330,9 @@ export const RightToolsSidebar: React.FC = () => {
 
         <div className="w-6 h-[1px] bg-slate-200 dark:bg-slate-800 mb-2" />
 
-        {/* Quick Icon Access */}
-        <div className="flex flex-col gap-1 w-full items-center">
-          {tools.slice(0, 8).map((tool) => {
+        {/* Quick Icon Strip */}
+        <div className="flex flex-col gap-1.5 w-full items-center">
+          {tools.slice(0, 9).map((tool) => {
             const Icon = tool.icon;
             return (
               <button
@@ -410,7 +341,7 @@ export const RightToolsSidebar: React.FC = () => {
                 className={cn(
                   'w-8 h-8 rounded-lg flex items-center justify-center transition-all group relative',
                   tool.active
-                    ? 'bg-sky-500 text-white'
+                    ? 'bg-sky-500 text-white shadow-xs'
                     : isDark
                     ? 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
                     : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'
@@ -426,22 +357,34 @@ export const RightToolsSidebar: React.FC = () => {
     );
   }
 
-  // Expanded Mode: Comprehensive Adobe Acrobat Tools Panel
+  // Expanded Mode: Full Professional Tools Panel
   return (
     <div
       className={cn(
         'w-64 sm:w-72 border-l flex flex-col shrink-0 select-none z-30 transition-all animate-in slide-in-from-right duration-200',
-        appDesignTheme === 'cupertino' && 'cupertino-glass border-l border-black/5 dark:border-white/10 text-slate-800 dark:text-slate-100',
-        appDesignTheme === 'linear' && 'bg-[#08090a] border-l border-white/10 text-slate-100 shadow-none',
-        appDesignTheme === 'fluent' && (isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-slate-50/80 border-slate-200 text-slate-800'),
-        appDesignTheme === 'ribbon' && (isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-slate-100 border-slate-300 text-slate-800')
+        appDesignTheme === 'cupertino' &&
+          'cupertino-glass border-l border-black/5 dark:border-white/10 text-slate-800 dark:text-slate-100',
+        appDesignTheme === 'linear' &&
+          'bg-[#08090a] border-l border-white/10 text-slate-100 shadow-none',
+        appDesignTheme === 'fluent' &&
+          (isDark
+            ? 'bg-slate-900 border-slate-800 text-slate-100'
+            : 'bg-slate-50/90 border-slate-200 text-slate-800'),
+        appDesignTheme === 'ribbon' &&
+          (isDark
+            ? 'bg-slate-900 border-slate-800 text-slate-100'
+            : 'bg-slate-100 border-slate-300 text-slate-800')
       )}
     >
       {/* Header */}
       <div
         className={cn(
           'p-3.5 border-b flex items-center justify-between shrink-0',
-          isDark ? 'border-slate-800 bg-slate-900/60' : 'border-slate-200/80 bg-white'
+          appDesignTheme === 'linear'
+            ? 'bg-[#0E1015] border-white/10'
+            : isDark
+            ? 'border-slate-800 bg-slate-900/60'
+            : 'border-slate-200/80 bg-white'
         )}
       >
         <div className="flex items-center gap-2">
@@ -468,8 +411,12 @@ export const RightToolsSidebar: React.FC = () => {
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Araçlarda ara..."
             className={cn(
-              'w-full text-xs pl-8 pr-7 py-1.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500 transition-all font-medium',
-              isDark ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500' : 'bg-white border-slate-200 text-slate-900'
+              'w-full text-xs pl-8 pr-7 py-1.5 rounded-xl border focus:outline-hidden transition-all font-medium',
+              appDesignTheme === 'linear'
+                ? 'bg-[#0E1015] border-white/10 text-white placeholder-slate-500 focus:border-cyan-500'
+                : isDark
+                ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500'
+                : 'bg-white border-slate-200 text-slate-900 focus:ring-2 focus:ring-sky-500'
             )}
           />
           {searchQuery && (
@@ -483,23 +430,110 @@ export const RightToolsSidebar: React.FC = () => {
         </div>
       </div>
 
+      {/* COMPACT ALIGNMENT TOOLBAR (Replaces 4 separate cards for rulers/grid/snap/clear) */}
+      <div
+        className={cn(
+          'mx-2.5 mb-2 px-2 py-1.5 rounded-xl border flex items-center justify-between text-xs shrink-0',
+          appDesignTheme === 'linear'
+            ? 'bg-[#0E1015] border-white/10'
+            : isDark
+            ? 'bg-slate-800/60 border-slate-700/60'
+            : 'bg-white border-slate-200 shadow-2xs'
+        )}
+      >
+        <div className="flex items-center gap-1">
+          <button
+            onClick={toggleRulers}
+            className={cn(
+              'p-1.5 rounded-lg transition-all',
+              showRulers
+                ? 'bg-sky-500 text-white shadow-xs'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
+            )}
+            title="Cetvelleri Aç / Kapat (Ctrl+R)"
+          >
+            <Ruler className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={toggleGrid}
+            className={cn(
+              'p-1.5 rounded-lg transition-all',
+              showGrid
+                ? 'bg-sky-500 text-white shadow-xs'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
+            )}
+            title="Kareli Izgarayı Aç / Kapat"
+          >
+            <Grid className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => setSnapToGuides(!snapToGuides)}
+            className={cn(
+              'p-1.5 rounded-lg transition-all',
+              snapToGuides
+                ? 'bg-emerald-500 text-white shadow-xs'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
+            )}
+            title={`Manyetik Yapışma: ${snapToGuides ? 'Açık' : 'Kapalı'}`}
+          >
+            <Magnet className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => {
+              clearGuides();
+              addToast('Tüm kılavuz çizgileri temizlendi.', 'info');
+            }}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+            title="Kılavuz Çizgilerini Temizle"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Unit Selector */}
+        {showRulers && (
+          <div className="flex items-center gap-0.5 border border-slate-200 dark:border-slate-700 rounded-md p-0.5 bg-slate-50 dark:bg-slate-900">
+            {(['mm', 'cm', 'pt'] as const).map((u) => (
+              <button
+                key={u}
+                onClick={() => setUnit(u)}
+                className={cn(
+                  'px-1 py-0.2 text-[9px] font-bold rounded uppercase transition-all',
+                  unit === u
+                    ? 'bg-sky-500 text-white'
+                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-300'
+                )}
+              >
+                {u}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Category Pills */}
       <div className="px-2.5 pb-2 flex gap-1 overflow-x-auto no-scrollbar shrink-0 text-[10px] font-semibold">
         {[
           { id: 'all', label: 'Tümü' },
           { id: 'edit', label: 'Düzenle' },
-          { id: 'convert', label: 'Dönüştür' },
-          { id: 'forms', label: 'Formlar' },
-          { id: 'rulers', label: 'Cetvel/Hizala' },
+          { id: 'convert', label: 'OCR / Dönüştür' },
+          { id: 'forms', label: 'İmza & Form' },
           { id: 'protect', label: 'Güvenlik' },
         ].map((cat) => (
           <button
             key={cat.id}
             onClick={() => setActiveCategory(cat.id)}
             className={cn(
-              'px-2 py-1 rounded-lg transition-colors shrink-0',
+              'px-2.5 py-1 rounded-lg transition-all shrink-0 font-medium',
               activeCategory === cat.id
-                ? 'bg-sky-500 text-white shadow-xs'
+                ? appDesignTheme === 'linear'
+                  ? 'bg-cyan-500 text-black font-semibold shadow-[0_0_10px_rgba(6,182,212,0.25)]'
+                  : 'bg-sky-500 text-white shadow-xs'
+                : appDesignTheme === 'linear'
+                ? 'bg-[#0E1015] border border-white/5 text-slate-400 hover:text-white'
                 : isDark
                 ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
                 : 'bg-white hover:bg-slate-200 border border-slate-200 text-slate-600'
@@ -509,29 +543,6 @@ export const RightToolsSidebar: React.FC = () => {
           </button>
         ))}
       </div>
-
-      {/* FAZ 5 Unit Selector if in rulers or all */}
-      {(activeCategory === 'all' || activeCategory === 'rulers') && showRulers && (
-        <div className="mx-2.5 mb-2 p-2 rounded-xl border bg-sky-500/5 border-sky-500/20 flex items-center justify-between text-xs">
-          <span className="font-semibold text-slate-600 dark:text-slate-300 text-[11px]">Cetvel Birimi:</span>
-          <div className="flex gap-1">
-            {(['mm', 'cm', 'pt', 'in'] as const).map((u) => (
-              <button
-                key={u}
-                onClick={() => setUnit(u)}
-                className={cn(
-                  'px-1.5 py-0.5 rounded text-[10px] font-bold transition-all uppercase',
-                  unit === u
-                    ? 'bg-sky-500 text-white'
-                    : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
-                )}
-              >
-                {u}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Tools List */}
       <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
@@ -548,12 +559,27 @@ export const RightToolsSidebar: React.FC = () => {
                 type="button"
                 onClick={tool.action}
                 className={cn(
-                  'w-full p-2.5 rounded-xl border flex items-start gap-2.5 text-left transition-all group',
-                  tool.active
-                    ? 'border-sky-500 bg-sky-500/10'
-                    : isDark
-                    ? 'bg-slate-800/40 border-slate-800 hover:border-slate-700 hover:bg-slate-800'
-                    : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 shadow-2xs'
+                  'w-full p-2.5 rounded-xl border flex items-start gap-2.5 text-left transition-all group select-none',
+                  appDesignTheme === 'linear' && [
+                    'bg-[#0E1015] border-white/10 rounded-lg hover:border-cyan-500/50 hover:bg-white/[0.03] text-slate-200',
+                    tool.active && 'border-cyan-500 bg-cyan-500/10 shadow-[0_0_12px_rgba(6,182,212,0.15)]',
+                  ],
+                  appDesignTheme === 'cupertino' && [
+                    'rounded-2xl border-white/10 dark:border-white/5 hover:bg-white/60 dark:hover:bg-slate-800/60 shadow-2xs hover:shadow-md',
+                    tool.active && 'bg-sky-500/15 border-sky-500/30',
+                  ],
+                  appDesignTheme === 'fluent' && [
+                    tool.active
+                      ? 'border-sky-500 bg-sky-500/10'
+                      : isDark
+                      ? 'bg-slate-800/40 border-slate-800 hover:border-slate-700 hover:bg-slate-800/80 shadow-2xs'
+                      : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 shadow-2xs',
+                  ],
+                  appDesignTheme === 'ribbon' && [
+                    tool.active
+                      ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30'
+                      : 'bg-white dark:bg-slate-850 border-slate-300 dark:border-slate-800 rounded-md hover:bg-slate-50',
+                  ]
                 )}
               >
                 <div
@@ -571,7 +597,14 @@ export const RightToolsSidebar: React.FC = () => {
                       {tool.title}
                     </span>
                     {tool.badge && (
-                      <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 shrink-0">
+                      <span
+                        className={cn(
+                          'text-[9px] font-bold px-1.5 py-0.2 rounded shrink-0',
+                          appDesignTheme === 'linear'
+                            ? 'bg-cyan-950/80 text-cyan-400 border border-cyan-800/40 font-mono'
+                            : 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
+                        )}
+                      >
                         {tool.badge}
                       </span>
                     )}
@@ -590,10 +623,14 @@ export const RightToolsSidebar: React.FC = () => {
       <div
         className={cn(
           'p-2.5 border-t text-center text-[10px] text-slate-400 shrink-0',
-          isDark ? 'border-slate-800 bg-slate-900/60' : 'border-slate-200 bg-white'
+          appDesignTheme === 'linear'
+            ? 'bg-[#0E1015] border-white/10 font-mono'
+            : isDark
+            ? 'border-slate-800 bg-slate-900/60'
+            : 'border-slate-200 bg-white'
         )}
       >
-        <span>XPDF Adobe Acrobat Araç Seti</span>
+        <span>XPDF Professional Studio Araç Seti</span>
       </div>
     </div>
   );

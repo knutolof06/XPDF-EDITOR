@@ -39,6 +39,9 @@ interface UIState {
   isFindReplaceModalOpen: boolean;
   isFullscreenPresentation: boolean;
   isSettingsModalOpen: boolean;
+  isOcrModalOpen: boolean;
+  isFormsModalOpen: boolean;
+  isCompareModalOpen: boolean;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
   removeToast: (id: string) => void;
@@ -69,11 +72,17 @@ interface UIState {
   setSignatureVerifyModalOpen: (open: boolean) => void;
   setFindReplaceModalOpen: (open: boolean) => void;
   setSettingsModalOpen: (open: boolean) => void;
+  setOcrModalOpen: (open: boolean) => void;
+  setFormsModalOpen: (open: boolean) => void;
+  setCompareModalOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   toasts: [],
   isSettingsModalOpen: false,
+  isOcrModalOpen: false,
+  isFormsModalOpen: false,
+  isCompareModalOpen: false,
   isPropertiesModalOpen: false,
   isShortcutsModalOpen: false,
   isMergeModalOpen: false,
@@ -154,6 +163,9 @@ export const useUIStore = create<UIState>((set) => ({
   setSignatureVerifyModalOpen: (open) => set({ isSignatureVerifyModalOpen: open }),
   setFindReplaceModalOpen: (open) => set({ isFindReplaceModalOpen: open }),
   setSettingsModalOpen: (open) => set({ isSettingsModalOpen: open }),
+  setOcrModalOpen: (open) => set({ isOcrModalOpen: open }),
+  setFormsModalOpen: (open) => set({ isFormsModalOpen: open }),
+  setCompareModalOpen: (open) => set({ isCompareModalOpen: open }),
   setFullscreenPresentation: (open) => set({ isFullscreenPresentation: open }),
   toggleFullscreenPresentation: () =>
     set((state) => ({ isFullscreenPresentation: !state.isFullscreenPresentation })),

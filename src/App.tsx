@@ -36,6 +36,9 @@ import { SecurityPermissionsModal } from './components/dialogs/SecurityPermissio
 import { SignatureVerifyModal } from './components/dialogs/SignatureVerifyModal';
 import { InsertBlankPageModal } from './components/dialogs/InsertBlankPageModal';
 import { FindReplaceModal } from './components/dialogs/FindReplaceModal';
+import { OcrStudioModal } from './components/dialogs/OcrStudioModal';
+import { FormFieldsModal } from './components/dialogs/FormFieldsModal';
+import { CompareModal } from './components/dialogs/CompareModal';
 import { SettingsModal } from './components/settings/SettingsModal';
 import { RibbonToolbar } from './components/toolbar/RibbonToolbar';
 import { useTabStore } from '@/store/tab-store';
@@ -93,6 +96,10 @@ export const App: React.FC = () => {
     setCloseConfirmModalOpen,
     isFindReplaceModalOpen,
     setFindReplaceModalOpen,
+    isFormsModalOpen,
+    setFormsModalOpen,
+    isCompareModalOpen,
+    setCompareModalOpen,
     isFullscreenPresentation,
     setFullscreenPresentation,
     toggleFullscreenPresentation,
@@ -520,6 +527,9 @@ export const App: React.FC = () => {
       <SignatureVerifyModal />
       <InsertBlankPageModal />
       <FindReplaceModal />
+      <OcrStudioModal />
+      <FormFieldsModal isOpen={isFormsModalOpen} onClose={() => setFormsModalOpen(false)} />
+      <CompareModal isOpen={isCompareModalOpen} onClose={() => setCompareModalOpen(false)} />
       <ToastContainer />
     </div>
   );

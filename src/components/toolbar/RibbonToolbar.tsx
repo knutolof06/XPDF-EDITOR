@@ -76,7 +76,7 @@ export const RibbonToolbar: React.FC = () => {
     setObjectEditorOpen,
     setCompressModalOpen,
     setExportImageModalOpen,
-    setExtractTextModalOpen,
+    setOcrModalOpen,
     setSecurityModalOpen,
     setSignatureVerifyModalOpen,
     setFindReplaceModalOpen,
@@ -598,12 +598,12 @@ export const RibbonToolbar: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setExtractTextModalOpen(true)}
+                  onClick={() => setOcrModalOpen(true)}
                   className="flex flex-col items-center justify-center p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-700 dark:text-slate-300 transition-colors w-16"
-                  title="Metin ve OCR Çıkar"
+                  title="Akıllı OCR Studio ve Metin Çıkarıcı"
                 >
                   <FileText className="w-5 h-5 text-indigo-500 mb-1" />
-                  <span className="text-[10px] leading-tight">OCR Metin</span>
+                  <span className="text-[10px] leading-tight font-medium">Akıllı OCR</span>
                 </button>
                 <button
                   type="button"

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { PdfPageModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
+import { useViewerStore } from '@/store/viewer-store';
 import { thumbnailCache } from '@/core/cache/render-cache';
 import { enqueueThumbnail } from '@/core/cache/thumbnail-queue';
 import {
@@ -44,6 +45,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   const [dragOverPosition, setDragOverPosition] = useState<'before' | 'after' | null>(null);
 
   const pdfDocProxy = useDocumentStore((s) => s.pdfDocProxy);
+  const appDesignTheme = useViewerStore((s) => s.appDesignTheme) || 'fluent';
 
   // Viewport IntersectionObserver: Only render thumbnails visibly on screen
   useEffect(() => {
@@ -439,14 +441,47 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         }
       }}
       className={cn(
-        'group relative flex flex-col items-center p-2 rounded-xl cursor-grab active:cursor-grabbing border-2 select-none min-h-[120px] transition-all duration-150',
-        dragOverPosition
-          ? 'ring-2 ring-sky-500 border-sky-400 bg-sky-500/5 shadow-md scale-[1.02]'
-          : isActive
-          ? 'bg-sky-500/10 border-sky-500 shadow-md shadow-sky-500/10'
-          : isSelected
-          ? 'bg-slate-200/80 dark:bg-slate-800/80 border-sky-500/70 shadow-sm'
-          : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-transparent hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/70'
+        'group relative flex flex-col items-center p-2 cursor-grab active:cursor-grabbing select-none min-h-[120px] transition-all duration-150',
+        appDesignTheme === 'linear' && [
+          'rounded-lg border bg-[#0E1015]',
+          dragOverPosition
+            ? 'ring-2 ring-cyan-400 border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.4)] scale-[1.02]'
+            : isActive
+            ? 'border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.25)] bg-cyan-950/20'
+            : isSelected
+            ? 'border-cyan-700/80 bg-cyan-950/40'
+            : 'border-white/10 hover:border-white/20 hover:bg-white/[0.03]',
+        ],
+        appDesignTheme === 'cupertino' && [
+          'rounded-2xl border transition-all duration-200',
+          dragOverPosition
+            ? 'ring-2 ring-sky-500 border-sky-400 shadow-xl scale-[1.02]'
+            : isActive
+            ? 'border-sky-500/80 bg-sky-500/10 shadow-lg'
+            : isSelected
+            ? 'border-sky-400/60 bg-sky-500/15'
+            : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-xs hover:shadow-md',
+        ],
+        appDesignTheme === 'fluent' && [
+          'rounded-xl border-2',
+          dragOverPosition
+            ? 'ring-2 ring-sky-500 border-sky-400 bg-sky-500/5 shadow-md scale-[1.02]'
+            : isActive
+            ? 'bg-sky-500/10 border-sky-500 shadow-md shadow-sky-500/10'
+            : isSelected
+            ? 'bg-slate-200/80 dark:bg-slate-800/80 border-sky-500/70 shadow-sm'
+            : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-transparent hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/70',
+        ],
+        appDesignTheme === 'ribbon' && [
+          'rounded-md border-2',
+          dragOverPosition
+            ? 'ring-2 ring-blue-600 border-blue-500 bg-blue-50/20 scale-[1.02]'
+            : isActive
+            ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-600 shadow-xs'
+            : isSelected
+            ? 'bg-slate-200 dark:bg-slate-800 border-blue-500'
+            : 'bg-white dark:bg-slate-800/60 border-slate-300 dark:border-slate-700 hover:border-slate-400',
+        ]
       )}
     >
       {/* Sleek Minimalist Insertion Indicator on the LEFT */}
@@ -538,10 +573,24 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         </div>
       </div>
 
-      {/* Page Number Label */}
-      <span className="mt-1.5 text-xs font-semibold text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200">
-        {page.displayPageNumber}
-      </span>
+      {/* Page Number Label / Badge */}
+      {appDesignTheme === 'cupertino' ? (
+        <span className="mt-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide bg-black/60 dark:bg-black/70 text-white backdrop-blur-md shadow-xs">
+          {page.displayPageNumber}
+        </span>
+      ) : appDesignTheme === 'linear' ? (
+        <span className="mt-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold tracking-wider bg-cyan-950/60 text-cyan-400 border border-cyan-800/50">
+          #{page.displayPageNumber < 10 ? `0${page.displayPageNumber}` : page.displayPageNumber}
+        </span>
+      ) : appDesignTheme === 'ribbon' ? (
+        <span className="mt-1.5 px-2 py-0.5 rounded text-xs font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+          {page.displayPageNumber}
+        </span>
+      ) : (
+        <span className="mt-1.5 text-xs font-semibold text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200">
+          {page.displayPageNumber}
+        </span>
+      )}
     </div>
   );
 });

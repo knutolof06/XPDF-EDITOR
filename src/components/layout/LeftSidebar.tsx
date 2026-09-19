@@ -95,15 +95,30 @@ export const LeftSidebar: React.FC = () => {
       )}
 
       {/* Sidebar Top Nav Tabs */}
-      <div className="h-12 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-2 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm overflow-x-auto">
+      <div
+        className={cn(
+          'h-12 border-b flex items-center justify-between px-2 overflow-x-auto transition-colors',
+          appDesignTheme === 'linear'
+            ? 'bg-[#0E1015] border-white/10'
+            : appDesignTheme === 'cupertino'
+            ? 'bg-white/40 dark:bg-slate-900/40 backdrop-blur-xl border-black/5 dark:border-white/10'
+            : appDesignTheme === 'ribbon'
+            ? 'bg-slate-200/80 dark:bg-slate-950 border-slate-300 dark:border-slate-800'
+            : 'bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border-slate-200 dark:border-slate-800'
+        )}
+      >
         {sidebarOpen ? (
           <div className="flex items-center gap-1">
             <button
               onClick={() => setActiveSidebarTab('pages')}
               className={cn(
-                'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors',
+                'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all',
                 activeSidebarTab === 'pages'
-                  ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/30'
+                  ? appDesignTheme === 'linear'
+                    ? 'bg-cyan-950/60 text-cyan-400 border border-cyan-800/50'
+                    : appDesignTheme === 'cupertino'
+                    ? 'bg-black/10 dark:bg-white/10 rounded-full px-3 text-slate-900 dark:text-white'
+                    : 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/30'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
               title="Sayfalar"
@@ -114,9 +129,13 @@ export const LeftSidebar: React.FC = () => {
             <button
               onClick={() => setActiveSidebarTab('bookmarks')}
               className={cn(
-                'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors',
+                'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all',
                 activeSidebarTab === 'bookmarks'
-                  ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/30'
+                  ? appDesignTheme === 'linear'
+                    ? 'bg-cyan-950/60 text-cyan-400 border border-cyan-800/50'
+                    : appDesignTheme === 'cupertino'
+                    ? 'bg-black/10 dark:bg-white/10 rounded-full px-3 text-slate-900 dark:text-white'
+                    : 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/30'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
               title="İçindekiler / Bookmarks"
@@ -127,7 +146,7 @@ export const LeftSidebar: React.FC = () => {
             <button
               onClick={() => setActiveSidebarTab('ai')}
               className={cn(
-                'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors',
+                'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all',
                 activeSidebarTab === 'ai'
                   ? 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/40'
                   : 'text-purple-600 dark:text-purple-400/80 hover:text-purple-900 dark:hover:text-purple-200'
@@ -182,7 +201,14 @@ export const LeftSidebar: React.FC = () => {
                 <span className="truncate">Önizleme ({currentDocument.totalPages} sayfa)</span>
                 
                 {/* 1 - 4 Columns Stepper / Selector */}
-                <div className="flex items-center gap-1 bg-slate-200/70 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-300/60 dark:border-slate-700/60 shrink-0">
+                <div
+                  className={cn(
+                    'flex items-center gap-1 p-0.5 rounded-lg border shrink-0',
+                    appDesignTheme === 'linear'
+                      ? 'bg-[#0E1015] border-white/10'
+                      : 'bg-slate-200/70 dark:bg-slate-800/80 border-slate-300/60 dark:border-slate-700/60'
+                  )}
+                >
                   <button
                     onClick={() => setThumbnailColumns(Math.max(1, cols - 1))}
                     disabled={cols <= 1}
@@ -199,7 +225,11 @@ export const LeftSidebar: React.FC = () => {
                       className={cn(
                         'w-5 h-5 rounded text-[11px] font-bold flex items-center justify-center transition-all',
                         cols === n
-                          ? 'bg-sky-500 text-white shadow-sm'
+                          ? appDesignTheme === 'linear'
+                            ? 'bg-cyan-500 text-black shadow-xs font-mono'
+                            : 'bg-sky-500 text-white shadow-xs'
+                          : appDesignTheme === 'linear'
+                          ? 'text-slate-400 hover:text-white font-mono'
                           : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-300/60 dark:hover:bg-slate-700/60'
                       )}
                       title={`${n} Sayfa Yan Yana`}

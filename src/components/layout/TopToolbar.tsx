@@ -6,8 +6,6 @@ import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { PdfExporter } from '@/core/engine/pdf-exporter';
 import { historyManager, RotatePageCommand } from '@/core/history/command-manager';
-import { FormFieldsModal } from '../dialogs/FormFieldsModal';
-import { CompareModal } from '../dialogs/CompareModal';
 import {
   FolderOpen,
   ZoomIn,
@@ -42,8 +40,6 @@ import { cn } from '@/utils/cn';
 
 export const TopToolbar: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isFormsModalOpen, setIsFormsModalOpen] = useState(false);
-  const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
 
   const {
     currentDocument,
@@ -295,10 +291,6 @@ export const TopToolbar: React.FC = () => {
         className="hidden"
       />
 
-      {/* Modals for Form and Compare */}
-      <FormFieldsModal isOpen={isFormsModalOpen} onClose={() => setIsFormsModalOpen(false)} />
-      <CompareModal isOpen={isCompareModalOpen} onClose={() => setIsCompareModalOpen(false)} />
-
       {/* Left Section: Logo, File Ops, Tools */}
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 mr-1">
@@ -389,18 +381,6 @@ export const TopToolbar: React.FC = () => {
             </button>
           </div>
         )}
-
-        {/* Hidden modal triggers for RightToolsSidebar */}
-        <button
-          id="btn-open-forms-modal"
-          onClick={() => setIsFormsModalOpen(true)}
-          className="hidden"
-        />
-        <button
-          id="btn-open-compare-modal"
-          onClick={() => setIsCompareModalOpen(true)}
-          className="hidden"
-        />
 
         {/* Adobe Acrobat Style "Tüm Araçlar" (Tools) Panel Toggle */}
         <button
