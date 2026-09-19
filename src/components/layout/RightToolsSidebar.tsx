@@ -48,7 +48,7 @@ interface ToolItem {
 }
 
 export const RightToolsSidebar: React.FC = () => {
-  const theme = useViewerStore((s) => s.theme);
+  const { theme, appDesignTheme } = useViewerStore();
   const isDark = theme === 'dark';
 
   const {
@@ -380,7 +380,10 @@ export const RightToolsSidebar: React.FC = () => {
       <div
         className={cn(
           'w-12 border-l flex flex-col items-center py-2 shrink-0 select-none z-30 transition-all',
-          isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white border-slate-200'
+          appDesignTheme === 'cupertino' && 'cupertino-glass border-l border-black/5 dark:border-white/10',
+          appDesignTheme === 'linear' && 'bg-[#08090a] border-l border-white/10 shadow-none',
+          appDesignTheme === 'fluent' && (isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white border-slate-200'),
+          appDesignTheme === 'ribbon' && (isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-300')
         )}
       >
         <button
@@ -428,7 +431,10 @@ export const RightToolsSidebar: React.FC = () => {
     <div
       className={cn(
         'w-64 sm:w-72 border-l flex flex-col shrink-0 select-none z-30 transition-all animate-in slide-in-from-right duration-200',
-        isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-slate-50/80 border-slate-200 text-slate-800'
+        appDesignTheme === 'cupertino' && 'cupertino-glass border-l border-black/5 dark:border-white/10 text-slate-800 dark:text-slate-100',
+        appDesignTheme === 'linear' && 'bg-[#08090a] border-l border-white/10 text-slate-100 shadow-none',
+        appDesignTheme === 'fluent' && (isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-slate-50/80 border-slate-200 text-slate-800'),
+        appDesignTheme === 'ribbon' && (isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-slate-100 border-slate-300 text-slate-800')
       )}
     >
       {/* Header */}

@@ -36,6 +36,7 @@ import {
   Maximize2,
   FileText,
   ChevronDown,
+  Settings,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -70,6 +71,7 @@ export const TopToolbar: React.FC = () => {
     theme,
     setTheme,
     openSearch,
+    appDesignTheme,
   } = useViewerStore();
 
   const [isReadingThemeOpen, setIsReadingThemeOpen] = useState(false);
@@ -110,6 +112,7 @@ export const TopToolbar: React.FC = () => {
   const {
     setPropertiesModalOpen,
     setShortcutsModalOpen,
+    setSettingsModalOpen,
     setImagesToPdfModalOpen,
     isRightToolsSidebarOpen,
     setRightToolsSidebarOpen,
@@ -275,7 +278,15 @@ export const TopToolbar: React.FC = () => {
   };
 
   return (
-    <header className="h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 flex items-center justify-between text-slate-700 dark:text-slate-200 select-none z-30 shrink-0 shadow-sm transition-colors duration-200">
+    <header
+      className={cn(
+        'flex items-center justify-between text-slate-700 dark:text-slate-200 select-none z-30 shrink-0 transition-all duration-200',
+        appDesignTheme === 'cupertino' && 'h-12 mx-3 my-1.5 rounded-2xl cupertino-glass px-4 shadow-md border',
+        appDesignTheme === 'linear' && 'h-10 bg-[#08090a] border-b border-white/10 px-3 text-xs shadow-none',
+        appDesignTheme === 'ribbon' && 'h-10 bg-slate-100 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 px-3 text-xs shadow-none',
+        appDesignTheme === 'fluent' && 'h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 shadow-sm'
+      )}
+    >
       <input
         type="file"
         ref={fileInputRef}
@@ -815,6 +826,15 @@ export const TopToolbar: React.FC = () => {
           title="Klavye Kısayolları"
         >
           <Keyboard className="w-4 h-4" />
+        </button>
+
+        {/* Settings Center */}
+        <button
+          onClick={() => setSettingsModalOpen(true)}
+          className="p-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 transition-colors border border-sky-500/30 shadow-xs group"
+          title="Ayarlar Merkezi & Tasarımlar (Ctrl + ,)"
+        >
+          <Settings className="w-4 h-4 group-hover:rotate-45 transition-transform duration-300" />
         </button>
       </div>
     </header>

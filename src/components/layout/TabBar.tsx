@@ -1,6 +1,7 @@
 import React from 'react';
 import { useTabStore } from '@/store/tab-store';
 import { useDocumentStore } from '@/store/document-store';
+import { useViewerStore } from '@/store/viewer-store';
 import { useUIStore } from '@/store/ui-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { FileText, X, Plus } from 'lucide-react';
@@ -9,6 +10,7 @@ import { cn } from '@/utils/cn';
 export const TabBar: React.FC = () => {
   const { tabs, activeTabId, setActiveTab, closeTab, addTab, updateActiveTabState } = useTabStore();
   const { currentDocument, setDocument, addRecentDocument } = useDocumentStore();
+  const appDesignTheme = useViewerStore((s) => s.appDesignTheme);
   const { addToast } = useUIStore();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -95,7 +97,15 @@ export const TabBar: React.FC = () => {
   };
 
   return (
-    <div className="h-10 bg-slate-200 dark:bg-slate-950 border-b border-slate-300 dark:border-slate-800/80 px-2 flex items-center gap-1.5 select-none overflow-x-auto z-25 shrink-0 transition-colors">
+    <div
+      className={cn(
+        'flex items-center gap-1.5 select-none overflow-x-auto z-25 shrink-0 transition-all duration-200',
+        appDesignTheme === 'cupertino' && 'h-9 px-4 py-1 cupertino-glass border-b border-black/5 dark:border-white/10 shadow-xs',
+        appDesignTheme === 'linear' && 'h-7.5 px-2 bg-[#08090a] border-b border-white/10 text-xs shadow-none',
+        appDesignTheme === 'ribbon' && 'h-8 px-2 bg-slate-200/80 dark:bg-slate-900 border-b border-slate-300 dark:border-slate-800 text-xs',
+        appDesignTheme === 'fluent' && 'h-10 bg-slate-200 dark:bg-slate-950 border-b border-slate-300 dark:border-slate-800/80 px-2'
+      )}
+    >
       <input
         type="file"
         ref={fileInputRef}
@@ -113,13 +123,30 @@ export const TabBar: React.FC = () => {
             onClick={() => handleTabClick(tab.id)}
             title={tab.name}
             className={cn(
-              'group h-8.5 px-3.5 rounded-t-lg flex items-center gap-2 text-xs font-medium cursor-pointer transition-all border-t border-x shrink-0 min-w-[160px] max-w-[420px]',
-              isActive
-                ? 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-800 text-sky-600 dark:text-sky-400 shadow-sm font-semibold'
-                : 'bg-slate-300/60 dark:bg-slate-900/40 border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-200'
+              'group flex items-center gap-2 text-xs font-medium cursor-pointer transition-all shrink-0 min-w-[140px] max-w-[360px]',
+              appDesignTheme === 'cupertino' && (
+                isActive
+                  ? 'h-7 px-3 rounded-full bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 font-bold shadow-xs border border-black/5 dark:border-white/10'
+                  : 'h-7 px-3 rounded-full hover:bg-white/50 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-400'
+              ),
+              appDesignTheme === 'linear' && (
+                isActive
+                  ? 'h-7 px-2.5 bg-[#141820] text-cyan-400 font-bold border-b-2 border-cyan-400 rounded-none'
+                  : 'h-7 px-2.5 text-slate-400 hover:text-slate-200 hover:bg-white/5 rounded-none'
+              ),
+              appDesignTheme === 'ribbon' && (
+                isActive
+                  ? 'h-7 px-3 bg-white dark:bg-slate-800 border-t-2 border-sky-500 text-sky-600 dark:text-sky-400 font-bold rounded-t shadow-xs'
+                  : 'h-7 px-3 text-slate-600 dark:text-slate-400 hover:bg-slate-300/50 dark:hover:bg-slate-800/50 rounded-t'
+              ),
+              appDesignTheme === 'fluent' && (
+                isActive
+                  ? 'h-8.5 px-3.5 rounded-t-lg bg-white dark:bg-slate-900 border-t border-x border-slate-300 dark:border-slate-800 text-sky-600 dark:text-sky-400 shadow-sm font-semibold'
+                  : 'h-8.5 px-3.5 rounded-t-lg bg-slate-300/60 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-slate-200'
+              )
             )}
           >
-            <FileText className="w-4 h-4 shrink-0 text-sky-500 dark:text-sky-400" />
+            <FileText className="w-3.5 h-3.5 shrink-0 text-sky-500 dark:text-sky-400" />
             <span className="truncate flex-1 font-medium select-none" title={tab.name}>
               {tab.name}
             </span>
@@ -139,10 +166,10 @@ export const TabBar: React.FC = () => {
       {/* Add New Tab Button */}
       <button
         onClick={() => fileInputRef.current?.click()}
-        className="p-1.5 rounded-md text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-300/80 dark:hover:bg-slate-800 transition-colors ml-1"
+        className="p-1 rounded-md text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-300/80 dark:hover:bg-slate-800 transition-colors ml-1"
         title="Yeni PDF Sekmesi Aç"
       >
-        <Plus className="w-4 h-4" />
+        <Plus className="w-3.5 h-3.5" />
       </button>
     </div>
   );

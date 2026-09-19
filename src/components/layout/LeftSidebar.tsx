@@ -26,6 +26,7 @@ export const LeftSidebar: React.FC = () => {
     setThumbnailColumns,
     sidebarWidth,
     setSidebarWidth,
+    appDesignTheme,
   } = useViewerStore();
 
   const isResizingRef = useRef(false);
@@ -72,7 +73,11 @@ export const LeftSidebar: React.FC = () => {
     <aside
       style={sidebarOpen ? { width: `${sidebarWidth}px` } : undefined}
       className={cn(
-        'relative bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col z-20 shrink-0 select-none shadow-sm',
+        'relative flex flex-col z-20 shrink-0 select-none shadow-sm transition-colors duration-200',
+        appDesignTheme === 'cupertino' && 'bg-white/60 dark:bg-slate-900/60 backdrop-blur-md border-r border-black/5 dark:border-white/10',
+        appDesignTheme === 'linear' && 'bg-[#08090a] border-r border-white/10 text-slate-300 shadow-none',
+        appDesignTheme === 'ribbon' && 'bg-slate-100 dark:bg-slate-900 border-r border-slate-300 dark:border-slate-800',
+        appDesignTheme === 'fluent' && 'bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800',
         !isResizing && 'transition-[width] duration-200',
         !sidebarOpen && 'w-12'
       )}

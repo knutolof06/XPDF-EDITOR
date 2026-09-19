@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { ViewMode, PageTransitionType } from '@/types/document';
-import { ActiveTool, SearchState, SidebarTab } from '@/types/viewer';
+import { ActiveTool, SearchState, SidebarTab, AppDesignTheme, AccentColor, UIDensity } from '@/types/viewer';
 
 export type FitMode = 'none' | 'width' | 'page' | 'content';
 export type ReadingTheme = 'default' | 'dark' | 'sepia' | 'high-contrast';
@@ -13,6 +13,9 @@ interface ViewerState {
   viewMode: ViewMode;
   pageTransition: PageTransitionType;
   theme: 'dark' | 'light' | 'system';
+  appDesignTheme: AppDesignTheme;
+  accentColor: AccentColor;
+  uiDensity: UIDensity;
   activeTool: ActiveTool;
   isPageManagerOpen: boolean;
   sidebarOpen: boolean;
@@ -33,6 +36,9 @@ interface ViewerState {
   setViewMode: (mode: ViewMode) => void;
   setPageTransition: (transition: PageTransitionType) => void;
   setTheme: (theme: 'dark' | 'light' | 'system') => void;
+  setAppDesignTheme: (theme: AppDesignTheme) => void;
+  setAccentColor: (accent: AccentColor) => void;
+  setUIDensity: (density: UIDensity) => void;
   setActiveTool: (tool: ActiveTool) => void;
   setPageManagerOpen: (open: boolean) => void;
   toggleSidebar: () => void;
@@ -57,6 +63,9 @@ export const ZOOM_STEPS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
 // Load persisted settings from localStorage
 interface SavedSettings {
   theme?: 'dark' | 'light' | 'system';
+  appDesignTheme?: AppDesignTheme;
+  accentColor?: AccentColor;
+  uiDensity?: UIDensity;
   viewMode?: ViewMode;
   zoom?: number;
   fitMode?: FitMode;
@@ -99,6 +108,9 @@ export const useViewerStore = create<ViewerState>()(
     viewMode: saved.viewMode || 'continuous',
     pageTransition: 'instant', // Kapali default
     theme: saved.theme || 'dark',
+    appDesignTheme: saved.appDesignTheme || 'fluent',
+    accentColor: saved.accentColor || 'sky',
+    uiDensity: saved.uiDensity || 'comfortable',
     activeTool: 'select',
     isPageManagerOpen: false,
     sidebarOpen: saved.sidebarOpen !== undefined ? saved.sidebarOpen : true,
@@ -191,6 +203,33 @@ export const useViewerStore = create<ViewerState>()(
             root.classList.remove('dark');
             root.classList.add('light');
           }
+        }
+      }),
+
+    setAppDesignTheme: (appDesignTheme) =>
+      set((state) => {
+        state.appDesignTheme = appDesignTheme;
+        saveSettings({ appDesignTheme });
+        if (typeof document !== 'undefined') {
+          document.documentElement.setAttribute('data-design-theme', appDesignTheme);
+        }
+      }),
+
+    setAccentColor: (accentColor) =>
+      set((state) => {
+        state.accentColor = accentColor;
+        saveSettings({ accentColor });
+        if (typeof document !== 'undefined') {
+          document.documentElement.setAttribute('data-accent', accentColor);
+        }
+      }),
+
+    setUIDensity: (uiDensity) =>
+      set((state) => {
+        state.uiDensity = uiDensity;
+        saveSettings({ uiDensity });
+        if (typeof document !== 'undefined') {
+          document.documentElement.setAttribute('data-density', uiDensity);
         }
       }),
 

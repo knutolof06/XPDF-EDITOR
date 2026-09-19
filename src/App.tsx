@@ -36,11 +36,14 @@ import { SecurityPermissionsModal } from './components/dialogs/SecurityPermissio
 import { SignatureVerifyModal } from './components/dialogs/SignatureVerifyModal';
 import { InsertBlankPageModal } from './components/dialogs/InsertBlankPageModal';
 import { FindReplaceModal } from './components/dialogs/FindReplaceModal';
+import { SettingsModal } from './components/settings/SettingsModal';
+import { RibbonToolbar } from './components/toolbar/RibbonToolbar';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { PdfExporter } from '@/core/engine/pdf-exporter';
 import { ToastContainer } from './components/ui/ToastContainer';
 import { FullscreenHUD } from './components/viewer/FullscreenHUD';
+import { cn } from '@/utils/cn';
 
 export const App: React.FC = () => {
   const { currentDocument, setActivePageIndex, selectAllPages, setDocument, addRecentDocument } = useDocumentStore();
@@ -54,6 +57,9 @@ export const App: React.FC = () => {
     isPageManagerOpen,
     setPageManagerOpen,
     theme,
+    appDesignTheme,
+    accentColor,
+    uiDensity,
   } = useViewerStore();
 
   const { activeTool, setActiveTool, selectedAnnotationId, deleteAnnotation } =
@@ -64,6 +70,7 @@ export const App: React.FC = () => {
     setPropertiesModalOpen,
     isShortcutsModalOpen,
     setShortcutsModalOpen,
+    setSettingsModalOpen,
     isMergeModalOpen,
     setMergeModalOpen,
     isSplitModalOpen,
@@ -355,6 +362,13 @@ export const App: React.FC = () => {
         return;
       }
 
+      // Ctrl + ,: Ayarlar Merkezi
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        setSettingsModalOpen(true);
+        return;
+      }
+
       // Ctrl + Plus / Minus for zoom
       if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
         e.preventDefault();
@@ -434,16 +448,30 @@ export const App: React.FC = () => {
     toggleFullscreenPresentation,
     setFitMode,
     setZoom,
+    setSettingsModalOpen,
     addToast,
   ]);
 
   return (
-    <div className="w-screen h-screen flex flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans overflow-hidden transition-colors duration-200">
+    <div
+      data-design-theme={appDesignTheme}
+      data-accent={accentColor}
+      data-density={uiDensity}
+      className={cn(
+        'w-screen h-screen flex flex-col font-sans overflow-hidden transition-colors duration-200',
+        appDesignTheme === 'linear'
+          ? 'bg-[#08090a] text-slate-100'
+          : 'bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100'
+      )}
+    >
       {/* Top Header Toolbar */}
       {!isFullscreenPresentation && <TopToolbar />}
 
-      {/* V3 Secondary Editor Toolbar (if document is open) */}
-      {!isFullscreenPresentation && currentDocument && <EditorToolbar />}
+      {/* Classic Ribbon Suite Toolbar (Active when 'ribbon' design is selected) */}
+      {!isFullscreenPresentation && currentDocument && appDesignTheme === 'ribbon' && <RibbonToolbar />}
+
+      {/* Secondary Editor Toolbar (Active when document is open and not in ribbon mode) */}
+      {!isFullscreenPresentation && currentDocument && appDesignTheme !== 'ribbon' && <EditorToolbar />}
 
       {/* Multi-Document Tab Bar */}
       {!isFullscreenPresentation && <TabBar />}
@@ -468,6 +496,7 @@ export const App: React.FC = () => {
       <FullscreenHUD />
 
       {/* Modals & Overlays */}
+      <SettingsModal />
       <PageManagerModal />
       <MergePdfModal />
       <SplitPdfModal />

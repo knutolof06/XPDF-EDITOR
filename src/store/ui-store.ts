@@ -38,6 +38,7 @@ interface UIState {
   pendingBlankPageInsertIndex: number | null;
   isFindReplaceModalOpen: boolean;
   isFullscreenPresentation: boolean;
+  isSettingsModalOpen: boolean;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
   removeToast: (id: string) => void;
@@ -67,10 +68,12 @@ interface UIState {
   setSecurityModalOpen: (open: boolean) => void;
   setSignatureVerifyModalOpen: (open: boolean) => void;
   setFindReplaceModalOpen: (open: boolean) => void;
+  setSettingsModalOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   toasts: [],
+  isSettingsModalOpen: false,
   isPropertiesModalOpen: false,
   isShortcutsModalOpen: false,
   isMergeModalOpen: false,
@@ -150,6 +153,7 @@ export const useUIStore = create<UIState>((set) => ({
   setSecurityModalOpen: (open) => set({ isSecurityModalOpen: open }),
   setSignatureVerifyModalOpen: (open) => set({ isSignatureVerifyModalOpen: open }),
   setFindReplaceModalOpen: (open) => set({ isFindReplaceModalOpen: open }),
+  setSettingsModalOpen: (open) => set({ isSettingsModalOpen: open }),
   setFullscreenPresentation: (open) => set({ isFullscreenPresentation: open }),
   toggleFullscreenPresentation: () =>
     set((state) => ({ isFullscreenPresentation: !state.isFullscreenPresentation })),

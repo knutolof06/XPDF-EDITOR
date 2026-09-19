@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useTabStore } from '@/store/tab-store';
 import { useUIStore } from '@/store/ui-store';
+import { useViewerStore } from '@/store/viewer-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { openRecentDocument } from '@/utils/recent-document-opener';
 import {
@@ -15,9 +16,11 @@ import {
   FileText,
   Trash2,
 } from 'lucide-react';
+import { cn } from '@/utils/cn';
 
 export const EmptyState: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const appDesignTheme = useViewerStore((s) => s.appDesignTheme);
 
   const {
     setDocument,
@@ -92,7 +95,15 @@ export const EmptyState: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none bg-slate-100 dark:bg-slate-950 transition-colors">
+    <div
+      className={cn(
+        'flex-1 flex flex-col items-center justify-center p-6 text-center select-none transition-colors overflow-y-auto',
+        appDesignTheme === 'cupertino' && 'bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900',
+        appDesignTheme === 'linear' && 'bg-[#08090a] text-slate-100',
+        appDesignTheme === 'ribbon' && 'bg-slate-100 dark:bg-slate-950',
+        appDesignTheme === 'fluent' && 'bg-slate-100 dark:bg-slate-950'
+      )}
+    >
       <input
         type="file"
         ref={fileInputRef}
@@ -104,7 +115,13 @@ export const EmptyState: React.FC = () => {
         className="hidden"
       />
 
-      <div className="max-w-xl w-full flex flex-col items-center">
+      <div
+        className={cn(
+          'max-w-xl w-full flex flex-col items-center p-4 transition-all',
+          appDesignTheme === 'cupertino' && 'cupertino-glass rounded-3xl p-8 shadow-2xl border',
+          appDesignTheme === 'linear' && 'bg-[#0e1015] border border-white/10 rounded-xl p-8'
+        )}
+      >
         {/* Modern App Icon */}
         <div className="w-28 h-28 flex items-center justify-center mb-4 group hover:scale-105 transition-transform duration-300">
           <img src="./icons/icon256.png" alt="XPDF Logo" className="w-full h-full object-contain drop-shadow-2xl" />

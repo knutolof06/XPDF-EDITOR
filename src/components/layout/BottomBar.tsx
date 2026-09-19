@@ -17,7 +17,7 @@ import { cn } from '@/utils/cn';
 
 export const BottomBar: React.FC = () => {
   const { currentDocument, setActivePageIndex } = useDocumentStore();
-  const { zoom, setZoom, zoomIn, zoomOut, fitMode, setFitMode } = useViewerStore();
+  const { zoom, setZoom, zoomIn, zoomOut, fitMode, setFitMode, appDesignTheme } = useViewerStore();
 
   if (!currentDocument) return null;
 
@@ -38,7 +38,15 @@ export const BottomBar: React.FC = () => {
   };
 
   return (
-    <footer className="h-10 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 select-none z-20 shrink-0 shadow-sm transition-colors">
+    <footer
+      className={cn(
+        'flex items-center justify-between text-xs select-none z-20 shrink-0 transition-all duration-200',
+        appDesignTheme === 'cupertino' && 'h-9 mb-1.5 mx-auto cupertino-glass rounded-2xl px-5 shadow-lg border max-w-fit gap-8',
+        appDesignTheme === 'linear' && 'h-6 bg-[#08090a] border-t border-white/10 px-3 text-[11px] font-mono shadow-none text-slate-400',
+        appDesignTheme === 'ribbon' && 'h-7 bg-slate-200 dark:bg-slate-900 border-t border-slate-300 dark:border-slate-800 px-3 text-xs text-slate-600 dark:text-slate-300',
+        appDesignTheme === 'fluent' && 'h-10 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-4 text-slate-700 dark:text-slate-300 shadow-sm'
+      )}
+    >
       {/* File Info */}
       <div className="flex items-center gap-3">
         <span className="font-semibold text-slate-900 dark:text-slate-200 truncate max-w-[200px] sm:max-w-xs">

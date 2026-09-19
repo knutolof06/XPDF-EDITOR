@@ -59,3 +59,8 @@ export interface ViewerPreferences {
   activeSidebarTab: SidebarTab;
 }
 
+export type AppDesignTheme = 'fluent' | 'cupertino' | 'linear' | 'ribbon';
+export type AccentColor = 'sky' | 'indigo' | 'emerald' | 'amber' | 'rose';
+export type UIDensity = 'comfortable' | 'compact';
+
+

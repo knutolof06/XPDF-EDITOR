@@ -2,6 +2,7 @@ import React from 'react';
 import { useAnnotationStore } from '@/store/annotation-store';
 import { useUIStore } from '@/store/ui-store';
 import { useDocumentStore } from '@/store/document-store';
+import { useViewerStore } from '@/store/viewer-store';
 import { ActiveTool } from '@/types/viewer';
 import {
   MousePointer,
@@ -54,6 +55,12 @@ export const EditorToolbar: React.FC = () => {
   const currentDocument = useDocumentStore((s) => s.currentDocument);
   const activePageId = currentDocument?.activePageId || currentDocument?.pages?.[currentDocument?.activePageIndex || 0]?.id;
 
+  const appDesignTheme = useViewerStore((s) => s.appDesignTheme);
+
+  if (appDesignTheme === 'ribbon') {
+    return null;
+  }
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -84,20 +91,27 @@ export const EditorToolbar: React.FC = () => {
 
   const imageInputRef = React.useRef<HTMLInputElement>(null);
 
-  const tools: { id: ActiveTool; label: string; icon: React.ReactNode }[] = [
-    { id: 'select', label: 'Seç / Taşı / Klonla (V)', icon: <MousePointer className="w-4 h-4" /> },
-    { id: 'text-add', label: 'Metin Ekle (T)', icon: <Type className="w-4 h-4" /> },
-    { id: 'whiteout', label: 'Beyazlat / Öğe Kapat (W)', icon: <Eraser className="w-4 h-4" /> },
-    { id: 'draw', label: 'Çizim Kalemi (P)', icon: <Pen className="w-4 h-4" /> },
-    { id: 'highlight', label: 'Fosforlu Kalem (H)', icon: <Highlighter className="w-4 h-4" /> },
-    { id: 'rect', label: 'Dikdörtgen', icon: <Square className="w-4 h-4" /> },
-    { id: 'circle', label: 'Daire', icon: <Circle className="w-4 h-4" /> },
-    { id: 'line', label: 'Çizgi', icon: <Minus className="w-4 h-4" /> },
-    { id: 'arrow', label: 'Ok', icon: <ArrowUpRight className="w-4 h-4" /> },
+  const tools: { id: ActiveTool; label: string; keyHint?: string; icon: React.ReactNode }[] = [
+    { id: 'select', label: 'Seç / Taşı / Klonla (V)', keyHint: 'V', icon: <MousePointer className="w-4 h-4" /> },
+    { id: 'text-add', label: 'Metin Ekle (T)', keyHint: 'T', icon: <Type className="w-4 h-4" /> },
+    { id: 'whiteout', label: 'Beyazlat / Öğe Kapat (W)', keyHint: 'W', icon: <Eraser className="w-4 h-4" /> },
+    { id: 'draw', label: 'Çizim Kalemi (P)', keyHint: 'P', icon: <Pen className="w-4 h-4" /> },
+    { id: 'highlight', label: 'Fosforlu Kalem (H)', keyHint: 'H', icon: <Highlighter className="w-4 h-4" /> },
+    { id: 'rect', label: 'Dikdörtgen', keyHint: 'R', icon: <Square className="w-4 h-4" /> },
+    { id: 'circle', label: 'Daire', keyHint: 'C', icon: <Circle className="w-4 h-4" /> },
+    { id: 'line', label: 'Çizgi', keyHint: 'L', icon: <Minus className="w-4 h-4" /> },
+    { id: 'arrow', label: 'Ok', keyHint: 'A', icon: <ArrowUpRight className="w-4 h-4" /> },
   ];
 
   return (
-    <div className="h-11 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between text-xs text-slate-700 dark:text-slate-200 select-none z-20 shrink-0 overflow-x-auto shadow-sm transition-colors">
+    <div
+      className={cn(
+        'flex items-center justify-between text-xs text-slate-700 dark:text-slate-200 select-none z-20 shrink-0 overflow-x-auto transition-all duration-200',
+        appDesignTheme === 'cupertino' && 'h-10 mx-auto my-1 cupertino-glass rounded-2xl px-4 shadow-md border max-w-fit',
+        appDesignTheme === 'linear' && 'h-9 bg-[#0e1015] border-b border-white/10 px-3 shadow-none',
+        appDesignTheme === 'fluent' && 'h-11 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 shadow-sm'
+      )}
+    >
       <input
         type="file"
         ref={imageInputRef}
@@ -121,6 +135,9 @@ export const EditorToolbar: React.FC = () => {
             title={t.label}
           >
             {t.icon}
+            {appDesignTheme === 'linear' && t.keyHint && (
+              <span className="linear-kbd text-[8px]">{t.keyHint}</span>
+            )}
           </button>
         ))}
 

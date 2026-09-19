@@ -23,6 +23,48 @@
     --border: 51 65 85;
   }
 
+  /* Design Themes: Linear Deep Obsidian */
+  [data-design-theme="linear"] {
+    --background: 8 9 10;
+    --card: 14 16 21;
+    --border: 30 36 46;
+  }
+  [data-design-theme="linear"].dark {
+    --background: 8 9 10;
+    --card: 14 16 21;
+    --border: 30 36 46;
+  }
+
+  /* Design Themes: Cupertino Glass */
+  [data-design-theme="cupertino"] {
+    --card: 255 255 255;
+  }
+  [data-design-theme="cupertino"].dark {
+    --card: 15 23 42;
+  }
+
+  /* Accent Color Tokens */
+  [data-accent="sky"] {
+    --accent-color: #0284c7;
+    --accent-light: rgba(2, 132, 199, 0.15);
+  }
+  [data-accent="indigo"] {
+    --accent-color: #6366f1;
+    --accent-light: rgba(99, 102, 241, 0.15);
+  }
+  [data-accent="emerald"] {
+    --accent-color: #10b981;
+    --accent-light: rgba(16, 185, 129, 0.15);
+  }
+  [data-accent="amber"] {
+    --accent-color: #f59e0b;
+    --accent-light: rgba(245, 158, 11, 0.15);
+  }
+  [data-accent="rose"] {
+    --accent-color: #f43f5e;
+    --accent-light: rgba(244, 63, 94, 0.15);
+  }
+
   html, body, #root {
     width: 100vw;
     height: 100vh;
@@ -150,4 +192,45 @@ body.is-dragging-page * {
     break-after: page;
   }
 }
+
+/* Cupertino Glassmorphism Utility */
+.cupertino-glass {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+.dark .cupertino-glass {
+  background: rgba(15, 23, 42, 0.75) !important;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Linear Keycap Badge */
+.linear-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1;
+}
+.light .linear-kbd {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.65);
+}
+
+/* UI Density */
+[data-density="compact"] {
+  --spacing-compact: 0.75;
+}
+
 
