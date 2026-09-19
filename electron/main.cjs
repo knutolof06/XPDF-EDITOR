@@ -415,7 +415,7 @@ ipcMain.handle('get-initial-file', async () => {
 
 ipcMain.handle('read-file', async (_event, filePath) => {
   try {
-    const buffer = fs.readFileSync(filePath);
+    const buffer = await fs.promises.readFile(filePath);
     const fileName = path.basename(filePath);
     return {
       name: fileName,
@@ -437,7 +437,7 @@ ipcMain.handle('show-open-dialog', async (_event, options) => {
 
   const files = [];
   for (const fp of result.filePaths) {
-    const buffer = fs.readFileSync(fp);
+    const buffer = await fs.promises.readFile(fp);
     files.push({
       name: path.basename(fp),
       path: fp,

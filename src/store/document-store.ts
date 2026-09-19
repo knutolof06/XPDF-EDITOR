@@ -26,6 +26,7 @@ interface DocumentState {
   reorderPages: (fromIndex: number, toIndex: number) => void;
   moveMultiplePages: (pageIds: string[], targetIndex: number, position: 'before' | 'after') => void;
   deletePage: (pageId: string) => void;
+  updatePageGeometry: (pageId: string, geometry: { width: number; height: number; rotation: number }) => void;
   setLoading: (isLoading: boolean, progress?: number) => void;
   setError: (error: string | null) => void;
   addRecentDocument: (item: RecentDocumentItem) => void;
@@ -218,6 +219,24 @@ export const useDocumentStore = create<DocumentState>()(
           }
 
           state.currentDocument.isModified = true;
+        }
+      }),
+
+    updatePageGeometry: (pageId, geometry) =>
+      set((state) => {
+        if (!state.currentDocument) return;
+        const p = state.currentDocument.pages.find((pg) => pg.id === pageId);
+        if (p) {
+          if (
+            Math.abs(p.width - geometry.width) > 0.5 ||
+            Math.abs(p.height - geometry.height) > 0.5 ||
+            p.rotation !== geometry.rotation
+          ) {
+            p.width = geometry.width;
+            p.height = geometry.height;
+            p.rotation = geometry.rotation;
+            p.aspectRatio = geometry.width / (geometry.height || 1);
+          }
         }
       }),
 

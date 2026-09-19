@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore } from '@/store/viewer-store';
 import { useTabStore } from '@/store/tab-store';
@@ -17,7 +17,7 @@ export const PdfViewer: React.FC = () => {
   const zoomEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { currentDocument, setActivePageIndex } = useDocumentStore();
-  const { zoom, setZoom, fitMode, viewMode } = useViewerStore();
+  const { zoom, setZoom, fitMode, viewMode, readingTheme } = useViewerStore();
   const { updateActiveTabState, tabs } = useTabStore();
 
   const fitModeRef = useRef(fitMode);
@@ -188,12 +188,23 @@ export const PdfViewer: React.FC = () => {
     });
   }, [zoom]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Track scroll position to update tab state
+  const [scrollState, setScrollState] = useState({ scrollTop: 0, clientHeight: 1000 });
+
+  // Track scroll position to update tab state & virtualization window
   const handleScroll = useCallback(() => {
-    // Suppress during tab switch AND during zoom restore
     if (isTabSwitchingRef.current || isZoomingRef.current || !containerRef.current || !currentDocument) return;
-    const scrollTop = containerRef.current.scrollTop;
+    const container = containerRef.current;
+    const scrollTop = container.scrollTop;
+    const clientHeight = container.clientHeight;
+
     updateActiveTabState(currentDocument.activePageIndex, scrollTop, zoom);
+
+    setScrollState((prev) => {
+      if (Math.abs(prev.scrollTop - scrollTop) > 30 || Math.abs(prev.clientHeight - clientHeight) > 20) {
+        return { scrollTop, clientHeight };
+      }
+      return prev;
+    });
   }, [currentDocument, zoom, updateActiveTabState]);
 
   // Handle Ctrl + Wheel for zoom & Normal Wheel in Single-Page view for page switching
@@ -246,6 +257,45 @@ export const PdfViewer: React.FC = () => {
     renderedPages = pages.slice(startIdx, startIdx + 4);
   }
 
+  // Precalculate cumulative offsets for 60 FPS continuous virtual windowing
+  const pageOffsets = useMemo(() => {
+    if (!currentDocument) return [];
+    const offsets: { top: number; bottom: number; height: number; width: number }[] = [];
+    let accTop = 32; // py-8
+    const gap = 24; // gap-6
+    for (let i = 0; i < currentDocument.pages.length; i++) {
+      const p = currentDocument.pages[i];
+      const h = Math.floor((p.height || 841.89) * zoom);
+      const w = Math.floor((p.width || 595.28) * zoom);
+      offsets.push({
+        top: accTop,
+        bottom: accTop + h,
+        height: h,
+        width: w,
+      });
+      accTop += h + gap;
+    }
+    return offsets;
+  }, [currentDocument, zoom]);
+
+  // Check if a page should have its full PageView mounted
+  const isPageMounted = useCallback(
+    (index: number) => {
+      if (viewMode !== 'continuous' && viewMode !== 'fit-width') return true;
+      if (!currentDocument || currentDocument.pages.length <= 6) return true; // Small docs mount all directly
+      const offset = pageOffsets[index];
+      if (!offset) return true;
+
+      // Generous buffer: 1.5 screen heights above and below
+      const buffer = Math.max(1200, scrollState.clientHeight * 1.5);
+      const viewTop = Math.max(0, scrollState.scrollTop - buffer);
+      const viewBottom = scrollState.scrollTop + scrollState.clientHeight + buffer;
+
+      return offset.bottom >= viewTop && offset.top <= viewBottom;
+    },
+    [viewMode, currentDocument, pageOffsets, scrollState.scrollTop, scrollState.clientHeight]
+  );
+
   // Dynamically update bitmap cache capacity to prevent thrashing in multi-page view modes
   useEffect(() => {
     updateDynamicBitmapCapacity(renderedPages.length);
@@ -261,6 +311,13 @@ export const PdfViewer: React.FC = () => {
     'fit-page': 'flex items-center justify-center min-h-full py-8',
   }[viewMode] || 'flex flex-col items-center gap-6 py-8';
 
+  const readingFilter = {
+    default: 'none',
+    dark: 'invert(0.9) hue-rotate(180deg)',
+    sepia: 'sepia(0.38) contrast(0.95) brightness(0.96)',
+    'high-contrast': 'contrast(1.3) brightness(1.05)',
+  }[readingTheme] || 'none';
+
   return (
     <div
       ref={containerRef}
@@ -271,14 +328,37 @@ export const PdfViewer: React.FC = () => {
     >
       <SearchOverlay />
 
-      <div className={cn('w-full max-w-full', gridClass)}>
+      <div
+        className={cn('w-full max-w-full transition-[filter] duration-200', gridClass)}
+        style={{ filter: readingFilter }}
+      >
         {renderedPages.map((page) => {
           const originalIndex = pages.findIndex((p) => p.id === page.id);
+          const idx = originalIndex !== -1 ? originalIndex : 0;
+          const shouldMount = isPageMounted(idx);
+
+          if (!shouldMount) {
+            const offset = pageOffsets[idx];
+            return (
+              <div
+                key={page.id}
+                id={`page-container-${idx}`}
+                style={{
+                  width: offset?.width || Math.floor((page.width || 595.28) * zoom),
+                  height: offset?.height || Math.floor((page.height || 841.89) * zoom),
+                }}
+                className="bg-white/80 dark:bg-slate-900/40 rounded-lg shadow-md border border-slate-200 dark:border-slate-800/80 shrink-0 flex items-center justify-center text-xs text-slate-400 select-none pointer-events-none"
+              >
+                Sayfa {page.displayPageNumber}
+              </div>
+            );
+          }
+
           return (
             <PageView
               key={page.id}
               page={page}
-              index={originalIndex !== -1 ? originalIndex : 0}
+              index={idx}
               scale={zoom}
             />
           );

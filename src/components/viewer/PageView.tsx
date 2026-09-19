@@ -199,7 +199,7 @@ export const PageView: React.FC<PageViewProps> = ({
       canvas.style.width = `${Math.floor(cssWidth)}px`;
       canvas.style.height = `${Math.floor(cssHeight)}px`;
 
-      const ctx = canvas.getContext('2d', { alpha: false });
+      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
       if (ctx) {
         ctx.drawImage(cachedEntry.bitmap, 0, 0);
         setIsRendered(true);
@@ -256,7 +256,7 @@ export const PageView: React.FC<PageViewProps> = ({
             entry.pageIndex === index &&
             entry.rotation === page.rotation
           ) {
-            const ctx = canvas.getContext('2d', { alpha: false });
+            const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
             if (ctx) {
               canvas.width = entry.width;
               canvas.height = entry.height;
@@ -274,6 +274,19 @@ export const PageView: React.FC<PageViewProps> = ({
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
         if (isCancelled) return;
 
+        // Dynamic geometry correction if actual page dimension / rotation differs from initial template
+        const baseV = pdfPage.getViewport({ scale: 1.0 });
+        if (
+          Math.abs(baseV.width - page.width) > 1 ||
+          Math.abs(baseV.height - page.height) > 1
+        ) {
+          useDocumentStore.getState().updatePageGeometry(page.id, {
+            width: baseV.width,
+            height: baseV.height,
+            rotation: page.rotation,
+          });
+        }
+
         const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
         const viewport = pdfPage.getViewport({
           scale: renderScale * dpr,
@@ -287,7 +300,7 @@ export const PageView: React.FC<PageViewProps> = ({
 
         if (!canvasRef.current || isCancelled) return;
         const currentCanvas = canvasRef.current;
-        const ctx = currentCanvas.getContext('2d', { alpha: false });
+        const ctx = currentCanvas.getContext('2d', { alpha: false, desynchronized: true });
         if (!ctx) return;
 
         currentCanvas.width = Math.floor(viewport.width);

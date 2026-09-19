@@ -4,10 +4,12 @@ import { ViewMode, PageTransitionType } from '@/types/document';
 import { ActiveTool, SearchState, SidebarTab } from '@/types/viewer';
 
 export type FitMode = 'none' | 'width' | 'page';
+export type ReadingTheme = 'default' | 'dark' | 'sepia' | 'high-contrast';
 
 interface ViewerState {
   zoom: number;
   fitMode: FitMode;
+  readingTheme: ReadingTheme;
   viewMode: ViewMode;
   pageTransition: PageTransitionType;
   theme: 'dark' | 'light' | 'system';
@@ -24,6 +26,7 @@ interface ViewerState {
   // Actions
   setZoom: (zoom: number | ((prev: number) => number), keepFitMode?: boolean) => void;
   setFitMode: (mode: FitMode) => void;
+  setReadingTheme: (theme: ReadingTheme) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
@@ -57,6 +60,7 @@ interface SavedSettings {
   viewMode?: ViewMode;
   zoom?: number;
   fitMode?: FitMode;
+  readingTheme?: ReadingTheme;
   sidebarOpen?: boolean;
   sidebarWidth?: number;
   thumbnailColumns?: number;
@@ -91,6 +95,7 @@ export const useViewerStore = create<ViewerState>()(
   immer((set) => ({
     zoom: saved.zoom || 1.0,
     fitMode: saved.fitMode || 'width', // Default 'width' for responsive auto-fit
+    readingTheme: saved.readingTheme || 'default',
     viewMode: saved.viewMode || 'continuous',
     pageTransition: 'instant', // Kapali default
     theme: saved.theme || 'dark',
@@ -127,6 +132,12 @@ export const useViewerStore = create<ViewerState>()(
       set((state) => {
         state.fitMode = mode;
         saveSettings({ fitMode: mode });
+      }),
+
+    setReadingTheme: (theme) =>
+      set((state) => {
+        state.readingTheme = theme;
+        saveSettings({ readingTheme: theme });
       }),
 
     zoomIn: () =>

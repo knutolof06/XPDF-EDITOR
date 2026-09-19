@@ -1,6 +1,6 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useDocumentStore } from '@/store/document-store';
-import { useViewerStore } from '@/store/viewer-store';
+import { useViewerStore, ReadingTheme } from '@/store/viewer-store';
 import { useUIStore } from '@/store/ui-store';
 import { useTabStore } from '@/store/tab-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
@@ -30,6 +30,8 @@ import {
   SlidersHorizontal,
   FoldHorizontal,
   Minimize2,
+  BookOpen,
+  Check,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -52,6 +54,8 @@ export const TopToolbar: React.FC = () => {
     zoom,
     fitMode,
     setFitMode,
+    readingTheme,
+    setReadingTheme,
     zoomIn,
     zoomOut,
     viewMode,
@@ -60,6 +64,23 @@ export const TopToolbar: React.FC = () => {
     setTheme,
     openSearch,
   } = useViewerStore();
+
+  const [isReadingThemeOpen, setIsReadingThemeOpen] = useState(false);
+  const readingThemeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (readingThemeRef.current && !readingThemeRef.current.contains(e.target as Node)) {
+        setIsReadingThemeOpen(false);
+      }
+    };
+    if (isReadingThemeOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isReadingThemeOpen]);
 
   const {
     setPropertiesModalOpen,
@@ -520,6 +541,69 @@ export const TopToolbar: React.FC = () => {
           >
             <Search className="w-4 h-4 text-sky-500 dark:text-sky-400" />
           </button>
+        )}
+
+        {/* Reading Theme Selector */}
+        {currentDocument && (
+          <div className="relative" ref={readingThemeRef}>
+            <button
+              onClick={() => setIsReadingThemeOpen(!isReadingThemeOpen)}
+              className={cn(
+                'p-2 rounded-lg transition-colors border shadow-sm flex items-center gap-1.5 text-xs font-medium',
+                readingTheme !== 'default'
+                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-600 dark:text-amber-400'
+                  : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700/80'
+              )}
+              title="Okuma Modu (Varsayılan, Gece, Sepya, Yüksek Kontrast)"
+            >
+              <BookOpen className="w-4 h-4" />
+              <span className="hidden xl:inline text-[11px]">
+                {readingTheme === 'default'
+                  ? 'Okuma Modu'
+                  : readingTheme === 'dark'
+                  ? 'Gece'
+                  : readingTheme === 'sepia'
+                  ? 'Sepya'
+                  : 'Kontrast'}
+              </span>
+            </button>
+
+            {isReadingThemeOpen && (
+              <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100">
+                <div className="px-3 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  Okuma Teması
+                </div>
+                {[
+                  { id: 'default', label: 'Varsayılan (Normal)', desc: 'Orijinal sayfa renkleri', color: 'bg-white border-slate-300' },
+                  { id: 'dark', label: 'Gece Modu', desc: 'Göz yormayan koyu kağıt', color: 'bg-slate-900 border-slate-700' },
+                  { id: 'sepia', label: 'Sepya Kitap', desc: 'Sıcak dinlendirici ton', color: 'bg-[#f4ecd8] border-amber-300' },
+                  { id: 'high-contrast', label: 'Yüksek Kontrast', desc: 'Daha net siyah/beyaz', color: 'bg-black border-white' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      setReadingTheme(item.id as ReadingTheme);
+                      setIsReadingThemeOpen(false);
+                      addToast(`Okuma Modu: ${item.label}`, 'info', 1000);
+                    }}
+                    className={cn(
+                      'w-full px-3 py-1.5 text-left flex items-center justify-between text-xs hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors',
+                      readingTheme === item.id ? 'font-semibold text-sky-600 dark:text-sky-400' : 'text-slate-700 dark:text-slate-300'
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={cn('w-3.5 h-3.5 rounded-full border shadow-xs shrink-0', item.color)} />
+                      <div>
+                        <div className="text-xs leading-snug">{item.label}</div>
+                        <div className="text-[10px] text-slate-400 font-normal leading-tight">{item.desc}</div>
+                      </div>
+                    </div>
+                    {readingTheme === item.id && <Check className="w-3.5 h-3.5 text-sky-500 shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Theme Toggle (Güneş / Ay) */}

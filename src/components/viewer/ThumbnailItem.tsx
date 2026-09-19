@@ -40,9 +40,31 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   const preparedFilePathRef = useRef<string | null>(null);
 
   const [isRendered, setIsRendered] = useState(false);
+  const [isVisible, setIsVisible] = useState(false);
   const [dragOverPosition, setDragOverPosition] = useState<'before' | 'after' | null>(null);
 
   const pdfDocProxy = useDocumentStore((s) => s.pdfDocProxy);
+
+  // Viewport IntersectionObserver: Only render thumbnails visibly on screen
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setIsVisible(true);
+        }
+      },
+      {
+        rootMargin: '300px 0px 300px 0px',
+        threshold: 0.01,
+      }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // Pre-generate single page PDF file ahead of drag
   const prepareSinglePagePdf = useCallback(async () => {
@@ -81,6 +103,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
   // Render or restore thumbnail from cache
   useEffect(() => {
+    if (!isVisible) return;
+
     const cacheKey = `thumb_${page.id}_p${page.sourcePageIndex}_rot${page.rotation}`;
 
     // Already rendered for this exact page and rotation
@@ -158,7 +182,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       isCancelled = true;
       cancelQueue();
     };
-  }, [pdfDocProxy, page.id, page.sourcePageIndex, page.rotation]);
+  }, [pdfDocProxy, page.id, page.sourcePageIndex, page.rotation, isVisible]);
 
   // Global cleanup: clear stale ring/highlight artifacts when any drag ends
   useEffect(() => {
