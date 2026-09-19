@@ -37,5 +37,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('updater-status', subscription);
     return () => ipcRenderer.removeListener('updater-status', subscription);
   },
+
+  // Windows Bölge OCR (WinRT — Snipping Tool / PowerToys Text Extractor motoru)
+  winrtOcrRegion: (imageDataUrl, lang) => ipcRenderer.invoke('winrt-ocr-region', { imageDataUrl, lang }),
+  winrtOcrGetLanguages: () => ipcRenderer.invoke('winrt-ocr-get-languages'),
 });
 

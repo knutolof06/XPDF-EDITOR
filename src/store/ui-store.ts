@@ -42,6 +42,7 @@ interface UIState {
   isOcrModalOpen: boolean;
   isFormsModalOpen: boolean;
   isCompareModalOpen: boolean;
+  isSnipOcrModalOpen: boolean;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
   removeToast: (id: string) => void;
@@ -75,6 +76,7 @@ interface UIState {
   setOcrModalOpen: (open: boolean) => void;
   setFormsModalOpen: (open: boolean) => void;
   setCompareModalOpen: (open: boolean) => void;
+  setSnipOcrModalOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -83,6 +85,7 @@ export const useUIStore = create<UIState>((set) => ({
   isOcrModalOpen: false,
   isFormsModalOpen: false,
   isCompareModalOpen: false,
+  isSnipOcrModalOpen: false,
   isPropertiesModalOpen: false,
   isShortcutsModalOpen: false,
   isMergeModalOpen: false,
@@ -166,6 +169,7 @@ export const useUIStore = create<UIState>((set) => ({
   setOcrModalOpen: (open) => set({ isOcrModalOpen: open }),
   setFormsModalOpen: (open) => set({ isFormsModalOpen: open }),
   setCompareModalOpen: (open) => set({ isCompareModalOpen: open }),
+  setSnipOcrModalOpen: (open) => set({ isSnipOcrModalOpen: open }),
   setFullscreenPresentation: (open) => set({ isFullscreenPresentation: open }),
   toggleFullscreenPresentation: () =>
     set((state) => ({ isFullscreenPresentation: !state.isFullscreenPresentation })),

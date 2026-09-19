@@ -37,6 +37,7 @@ import { SignatureVerifyModal } from './components/dialogs/SignatureVerifyModal'
 import { InsertBlankPageModal } from './components/dialogs/InsertBlankPageModal';
 import { FindReplaceModal } from './components/dialogs/FindReplaceModal';
 import { OcrRecognizeModal } from './components/dialogs/OcrRecognizeModal';
+import { SnipOcrModal } from './components/dialogs/SnipOcrModal';
 import { FormFieldsModal } from './components/dialogs/FormFieldsModal';
 import { CompareModal } from './components/dialogs/CompareModal';
 import { SettingsModal } from './components/settings/SettingsModal';
@@ -528,6 +529,7 @@ export const App: React.FC = () => {
       <InsertBlankPageModal />
       <FindReplaceModal />
       <OcrRecognizeModal />
+      <SnipOcrModal />
       <FormFieldsModal isOpen={isFormsModalOpen} onClose={() => setFormsModalOpen(false)} />
       <CompareModal isOpen={isCompareModalOpen} onClose={() => setCompareModalOpen(false)} />
       <ToastContainer />

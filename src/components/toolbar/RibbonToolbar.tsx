@@ -40,6 +40,7 @@ import {
   SlidersHorizontal,
   Grid2X2,
   Rows,
+  Crosshair,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -77,6 +78,7 @@ export const RibbonToolbar: React.FC = () => {
     setCompressModalOpen,
     setExportImageModalOpen,
     setOcrModalOpen,
+    setSnipOcrModalOpen,
     setSecurityModalOpen,
     setSignatureVerifyModalOpen,
     setFindReplaceModalOpen,
@@ -616,6 +618,22 @@ export const RibbonToolbar: React.FC = () => {
                 </button>
               </div>
               <span className="text-[9px] text-slate-400 font-medium">Dönüştürme & Optimize</span>
+            </div>
+
+            {/* Group: Bölge OCR */}
+            <div className="flex flex-col justify-between items-center pr-3">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSnipOcrModalOpen(true)}
+                  className="flex flex-col items-center justify-center p-1.5 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-lg text-slate-700 dark:text-slate-300 transition-colors w-16 border border-sky-200 dark:border-sky-800 bg-sky-50/50 dark:bg-sky-950/20"
+                  title="Windows Ekran Alıntısı / PowerToys Text Extractor tarzı Bölge OCR"
+                >
+                  <Crosshair className="w-5 h-5 text-sky-500 mb-1" />
+                  <span className="text-[10px] leading-tight font-semibold text-sky-600 dark:text-sky-400">Bölge OCR</span>
+                </button>
+              </div>
+              <span className="text-[9px] text-sky-500 dark:text-sky-400 font-semibold">Ekran Alıntısı</span>
             </div>
           </>
         )}

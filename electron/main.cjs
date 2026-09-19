@@ -698,6 +698,124 @@ ipcMain.on('start-drag-page', (event, data) => {
   }
 });
 
+// ─── WinRT Bölge OCR (Windows Snipping Tool / PowerToys Text Extractor motoru) ──
+ipcMain.handle('winrt-ocr-region', async (event, { imageDataUrl, lang }) => {
+  try {
+    // 1) Base64 PNG → geçici dosya
+    const base64Data = imageDataUrl.replace(/^data:image\/png;base64,/, '');
+    const tempDir = path.join(app.getPath('temp'), 'xpdf_ocr');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const tempImg = path.join(tempDir, `region_${Date.now()}.png`);
+    fs.writeFileSync(tempImg, Buffer.from(base64Data, 'base64'));
+
+    // 2) PowerShell WinRT OCR betiği
+    const langParam = lang || 'tr';
+    const ps = `
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Foundation.IAsyncOperation\`1, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.RandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
+
+# Async helper
+function Await {
+    param($WinRtTask, $ResultType)
+    $asTask = [System.WindowsRuntimeSystemExtensions]::AsTask($WinRtTask)
+    $asTask.Wait() | Out-Null
+    $asTask.Result
+}
+
+# OCR motoru: önce kullanıcı dil profili ile dene, yoksa İngilizce
+$ocrEngine = $null
+try {
+    $langs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
+    $targetLang = $langs | Where-Object { $_.LanguageTag -like '${langParam}*' } | Select-Object -First 1
+    if ($targetLang) {
+        $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($targetLang)
+    }
+} catch {}
+if (-not $ocrEngine) {
+    $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+}
+if (-not $ocrEngine) {
+    Write-Output '{"success":false,"error":"OCR motoru baslatılamadı. Dil paketi kurulu değil."}'
+    exit
+}
+
+# Görüntüyü yükle
+$imgPath = '${tempImg.replace(/\\/g, '\\\\')}' 
+$imgFile = [Windows.Storage.StorageFile]::GetFileFromPathAsync($imgPath) | Await -ResultType ([Windows.Storage.StorageFile])
+$stream  = $imgFile.OpenAsync([Windows.Storage.FileAccessMode]::Read) | Await -ResultType ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream) | Await -ResultType ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap  = $decoder.GetSoftwareBitmapAsync() | Await -ResultType ([Windows.Graphics.Imaging.SoftwareBitmap])
+
+# OCR tanıma
+$result = $ocrEngine.RecognizeAsync($bitmap) | Await -ResultType ([Windows.Media.Ocr.OcrResult])
+
+# Sonuçları JSON olarak çıkart
+$lines = @()
+foreach ($line in $result.Lines) {
+    $words = @()
+    foreach ($word in $line.Words) {
+        $r = $word.BoundingRect
+        $words += @{ text=$word.Text; x=[int]$r.X; y=[int]$r.Y; w=[int]$r.Width; h=[int]$r.Height }
+    }
+    $lines += @{ text=$line.Text; words=$words }
+}
+$out = @{ success=$true; text=$result.Text; lines=$lines } | ConvertTo-Json -Depth 6 -Compress
+Write-Output $out
+`;
+
+    const res = await runPowerShellScript(ps);
+
+    // 3) Geçici dosyayı temizle
+    try { fs.unlinkSync(tempImg); } catch {}
+
+    if (!res.success) {
+      return { success: false, error: res.error };
+    }
+
+    // 4) JSON parse
+    try {
+      const parsed = JSON.parse(res.output);
+      return parsed;
+    } catch {
+      // Bazen PS çıktısında BOM veya boş satırlar olabilir
+      const jsonMatch = res.output.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return JSON.parse(jsonMatch[0]);
+      return { success: false, error: 'JSON parse hatası: ' + res.output.substring(0, 200) };
+    }
+  } catch (err) {
+    console.error('winrt-ocr-region error:', err);
+    return { success: false, error: String(err) };
+  }
+});
+
+// Kullanılabilir WinRT OCR dil listesini döndür
+ipcMain.handle('winrt-ocr-get-languages', async () => {
+  try {
+    const ps = `
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+$langs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
+$list = $langs | ForEach-Object { @{ tag=$_.LanguageTag; name=$_.DisplayName } }
+$list | ConvertTo-Json -Compress
+`;
+    const res = await runPowerShellScript(ps);
+    if (!res.success) return { success: false, languages: [] };
+    try {
+      const langs = JSON.parse(res.output);
+      const arr = Array.isArray(langs) ? langs : [langs];
+      return { success: true, languages: arr };
+    } catch {
+      return { success: false, languages: [] };
+    }
+  } catch (err) {
+    return { success: false, languages: [] };
+  }
+});
+// ─────────────────────────────────────────────────────────────────────────────
+
 app.on('before-quit', () => {
   saveWindowState();
 });
