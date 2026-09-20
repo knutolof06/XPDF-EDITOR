@@ -705,56 +705,64 @@ ipcMain.handle('winrt-ocr-region', async (event, { imageDataUrl, lang }) => {
     const base64Data = imageDataUrl.replace(/^data:image\/png;base64,/, '');
     const tempDir = path.join(app.getPath('temp'), 'xpdf_ocr');
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-    const tempImg = path.join(tempDir, `region_${Date.now()}.png`);
+    const tempImg = path.join(tempDir, `region_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.png`);
     fs.writeFileSync(tempImg, Buffer.from(base64Data, 'base64'));
 
-    // 2) PowerShell WinRT OCR betiği
-    const langParam = lang || 'tr';
+    // 2) PowerShell WinRT OCR betiği (Doğrulanmış Generic Reflection Mimarisi)
+    const langParam = (lang || 'tr').toLowerCase();
     const ps = `
+Add-Type -AssemblyName System.IO
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
-$null = [Windows.Foundation.IAsyncOperation\`1, Windows.Foundation, ContentType=WindowsRuntime]
-$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
-$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
-$null = [Windows.Storage.Streams.RandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
 
-# Async helper
-function Await {
-    param($WinRtTask, $ResultType)
-    $asTask = [System.WindowsRuntimeSystemExtensions]::AsTask($WinRtTask)
-    $asTask.Wait() | Out-Null
-    $asTask.Result
+$asTaskGeneric = [System.WindowsRuntimeSystemExtensions].GetMethods() | 
+    Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 } | 
+    Select-Object -First 1
+
+function Await-WinRt($asyncOp, $resultType) {
+    $method = $global:asTaskGeneric.MakeGenericMethod($resultType)
+    $task = $method.Invoke($null, @($asyncOp))
+    $task.Wait()
+    return $task.Result
 }
 
-# OCR motoru: önce kullanıcı dil profili ile dene, yoksa İngilizce
+$imagePath = '${tempImg.replace(/\\/g, '\\\\')}'
+
+if (-not (Test-Path $imagePath)) {
+    $errOut = @{ success=$false; error="Image file not found" } | ConvertTo-Json -Compress
+    [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($errOut))
+    exit
+}
+
+$fs = [System.IO.File]::OpenRead($imagePath)
+$ras = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($fs)
+
+$decoder = Await-WinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($ras)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$softwareBitmap = Await-WinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+
+$langs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
+$targetLang = $langs | Where-Object { $_.LanguageTag -like '${langParam}*' } | Select-Object -First 1
 $ocrEngine = $null
-try {
-    $langs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
-    $targetLang = $langs | Where-Object { $_.LanguageTag -like '${langParam}*' } | Select-Object -First 1
-    if ($targetLang) {
-        $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($targetLang)
-    }
-} catch {}
+if ($targetLang) {
+    $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($targetLang)
+}
 if (-not $ocrEngine) {
     $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
 }
 if (-not $ocrEngine) {
-    Write-Output '{"success":false,"error":"OCR motoru baslatılamadı. Dil paketi kurulu değil."}'
+    $fs.Dispose()
+    $errOut = @{ success=$false; error="OCR engine not available for requested language" } | ConvertTo-Json -Compress
+    [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($errOut))
     exit
 }
 
-# Görüntüyü yükle
-$imgPath = '${tempImg.replace(/\\/g, '\\\\')}' 
-$imgFile = [Windows.Storage.StorageFile]::GetFileFromPathAsync($imgPath) | Await -ResultType ([Windows.Storage.StorageFile])
-$stream  = $imgFile.OpenAsync([Windows.Storage.FileAccessMode]::Read) | Await -ResultType ([Windows.Storage.Streams.IRandomAccessStream])
-$decoder = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream) | Await -ResultType ([Windows.Graphics.Imaging.BitmapDecoder])
-$bitmap  = $decoder.GetSoftwareBitmapAsync() | Await -ResultType ([Windows.Graphics.Imaging.SoftwareBitmap])
+$ocrResult = Await-WinRt ($ocrEngine.RecognizeAsync($softwareBitmap)) ([Windows.Media.Ocr.OcrResult])
 
-# OCR tanıma
-$result = $ocrEngine.RecognizeAsync($bitmap) | Await -ResultType ([Windows.Media.Ocr.OcrResult])
-
-# Sonuçları JSON olarak çıkart
 $lines = @()
-foreach ($line in $result.Lines) {
+foreach ($line in $ocrResult.Lines) {
     $words = @()
     foreach ($word in $line.Words) {
         $r = $word.BoundingRect
@@ -762,28 +770,47 @@ foreach ($line in $result.Lines) {
     }
     $lines += @{ text=$line.Text; words=$words }
 }
-$out = @{ success=$true; text=$result.Text; lines=$lines } | ConvertTo-Json -Depth 6 -Compress
-Write-Output $out
+
+$fs.Dispose()
+
+$outObj = @{ success=$true; text=$ocrResult.Text; lines=$lines }
+$outJson = $outObj | ConvertTo-Json -Depth 6 -Compress
+$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($outJson))
+Write-Output $b64
 `;
 
     const res = await runPowerShellScript(ps);
 
     // 3) Geçici dosyayı temizle
-    try { fs.unlinkSync(tempImg); } catch {}
+    try { if (fs.existsSync(tempImg)) fs.unlinkSync(tempImg); } catch {}
 
     if (!res.success) {
       return { success: false, error: res.error };
     }
 
-    // 4) JSON parse
+    // 4) Base64 UTF-8 JSON parse
     try {
-      const parsed = JSON.parse(res.output);
-      return parsed;
-    } catch {
-      // Bazen PS çıktısında BOM veya boş satırlar olabilir
-      const jsonMatch = res.output.match(/\{[\s\S]*\}/);
-      if (jsonMatch) return JSON.parse(jsonMatch[0]);
-      return { success: false, error: 'JSON parse hatası: ' + res.output.substring(0, 200) };
+      const outputText = res.output.trim();
+      // Try decode base64
+      let jsonString = '';
+      try {
+        jsonString = Buffer.from(outputText, 'base64').toString('utf8');
+      } catch {
+        jsonString = outputText;
+      }
+
+      if (jsonString.startsWith('{')) {
+        return JSON.parse(jsonString);
+      }
+
+      const match = jsonString.match(/\{[\s\S]*\}/);
+      if (match) {
+        return JSON.parse(match[0]);
+      }
+
+      return { success: false, error: 'Geçersiz OCR yanıtı: ' + jsonString.substring(0, 150) };
+    } catch (parseErr) {
+      return { success: false, error: 'JSON parse hatası: ' + parseErr.message };
     }
   } catch (err) {
     console.error('winrt-ocr-region error:', err);
