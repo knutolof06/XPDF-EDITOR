@@ -34,13 +34,14 @@ import {
   ArrowRight,
   ShieldCheck,
   RotateCcw,
+  Crosshair,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
 export type OcrWorkflowMode = 'searchable' | 'editable' | 'extract';
 
 export const OcrRecognizeModal: React.FC = () => {
-  const { isOcrModalOpen, setOcrModalOpen, addToast } = useUIStore();
+  const { isOcrModalOpen, setOcrModalOpen, setSnipOcrModalOpen, addToast } = useUIStore();
   const { currentDocument, pdfDocProxy, setDocument } = useDocumentStore();
   const { addTab, replaceActiveTab } = useTabStore();
   const setOcrHighlightPulse = useViewerStore((s) => s.setOcrHighlightPulse);
@@ -434,7 +435,7 @@ export const OcrRecognizeModal: React.FC = () => {
               <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
                 1. Çıktı Türü ve Eylem Modu
               </label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 {/* Mode 1: Searchable PDF (Recommended) */}
                 <button
                   type="button"
@@ -493,7 +494,34 @@ export const OcrRecognizeModal: React.FC = () => {
                   </div>
                 </button>
 
-                {/* Mode 3: Extract Text */}
+                {/* Mode 3: Snipping Tool / PowerToys Region OCR */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOcrModalOpen(false);
+                    setSnipOcrModalOpen(true);
+                  }}
+                  className="p-4 rounded-xl border text-left flex flex-col justify-between gap-3 transition-all relative border-sky-400 dark:border-sky-600 bg-gradient-to-br from-sky-50/80 to-indigo-50/50 dark:from-sky-950/40 dark:to-indigo-950/30 hover:shadow-md group"
+                >
+                  <div className="flex items-start justify-between w-full">
+                    <div className="w-8 h-8 rounded-lg bg-sky-500 text-white flex items-center justify-center shadow-xs group-hover:scale-110 transition-transform">
+                      <Crosshair className="w-4 h-4" />
+                    </div>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-500 text-white">
+                      Windows Ekran Alıntısı
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sky-700 dark:text-sky-300 text-xs mb-1 flex items-center gap-1">
+                      Bölge OCR (Seç & Tara) ⚡
+                    </h3>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                      Sayfada istediğiniz bir alanı fare ile dikdörtgen çizip kesin; Windows OCR yerel motoruyla anında metne çevirin.
+                    </p>
+                  </div>
+                </button>
+
+                {/* Mode 4: Extract Text */}
                 <button
                   type="button"
                   onClick={() => setWorkflowMode('extract')}

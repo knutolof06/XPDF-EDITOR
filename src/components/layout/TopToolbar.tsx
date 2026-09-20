@@ -35,6 +35,7 @@ import {
   FileText,
   ChevronDown,
   Settings,
+  Crosshair,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -609,6 +610,18 @@ export const TopToolbar: React.FC = () => {
               title="Tam Ekran Sunum Modu (F11 / Ctrl + L)"
             >
               <Maximize2 className="w-4 h-4" />
+            </button>
+
+            <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
+
+            {/* Bölge OCR (Windows Snipping Tool Tarzı) */}
+            <button
+              onClick={() => useUIStore.getState().setSnipOcrModalOpen(true)}
+              className="px-2 py-1 rounded-md text-xs font-medium text-sky-600 dark:text-sky-400 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 transition-colors flex items-center gap-1.5 shadow-xs"
+              title="Bölge OCR — Windows Ekran Alıntısı tarzı alandan metin tara"
+            >
+              <Crosshair className="w-3.5 h-3.5 text-sky-500" />
+              <span className="hidden lg:inline">Bölge OCR</span>
             </button>
           </div>
 

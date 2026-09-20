@@ -31,6 +31,7 @@ import {
   FilePlus,
   Replace,
   FileSearch,
+  Crosshair,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -70,6 +71,7 @@ export const RightToolsSidebar: React.FC = () => {
     setInsertBlankPageModalOpen,
     setFindReplaceModalOpen,
     setOcrModalOpen,
+    setSnipOcrModalOpen,
     setFormsModalOpen,
     setCompareModalOpen,
     addToast,
@@ -154,6 +156,16 @@ export const RightToolsSidebar: React.FC = () => {
       description: 'Taranmış belgeleri seçilebilir, aranabilir (Ctrl+F) ve düzenlenebilir hale getirin',
       badge: 'PDF24 / Acrobat',
       action: () => setOcrModalOpen(true),
+    },
+    {
+      id: 'snip_ocr',
+      title: 'Bölge OCR (Ekran Alıntısı)',
+      category: 'convert',
+      icon: Crosshair,
+      color: 'text-sky-500 bg-sky-500/10',
+      description: 'Windows Ekran Alıntısı tarzı: Sayfada dilediğiniz bölgeyi seçip anında metne dönüştürün',
+      badge: 'WinRT / PowerToys',
+      action: () => setSnipOcrModalOpen(true),
     },
     {
       id: 'compress',

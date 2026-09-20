@@ -22,6 +22,7 @@ import {
   Italic,
   Copy,
   Trash2,
+  Crosshair,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -50,6 +51,7 @@ export const EditorToolbar: React.FC = () => {
     setSignatureModalOpen,
     setStampModalOpen,
     setPageNumberModalOpen,
+    setSnipOcrModalOpen,
   } = useUIStore();
 
   const currentDocument = useDocumentStore((s) => s.currentDocument);
@@ -178,6 +180,18 @@ export const EditorToolbar: React.FC = () => {
         >
           <Hash className="w-4 h-4" />
           <span className="hidden xl:inline">Numaralandır</span>
+        </button>
+
+        <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-800 mx-1" />
+
+        {/* Windows Bölge OCR Button */}
+        <button
+          onClick={() => setSnipOcrModalOpen(true)}
+          className="p-1.5 rounded-lg text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950/40 hover:bg-sky-100 dark:hover:bg-sky-900/60 border border-sky-300 dark:border-sky-800 transition-colors flex items-center gap-1.5 font-medium shadow-xs"
+          title="Bölge OCR (Windows Ekran Alıntısı tarzı seç ve metne dönüştür)"
+        >
+          <Crosshair className="w-4 h-4 text-sky-500 animate-pulse" />
+          <span>Bölge OCR</span>
         </button>
       </div>
 
