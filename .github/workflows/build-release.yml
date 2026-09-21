@@ -1,0 +1,141 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (örn: v1.5.7)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: 🪟 Windows Build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Package Windows EXE
+        run: node scripts/package-app.js --skip-push
+        env:
+          SKIP_GIT_PUSH: true
+
+      - name: Create Windows ZIP
+        run: |
+          Compress-Archive -Path "release\XPDF Editor-win32-x64\*" -DestinationPath "XPDF-Editor-Windows-x64.zip"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: XPDF-Editor-Windows-x64.zip
+
+  build-macos:
+    name: 🍎 macOS Build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Package macOS App
+        run: |
+          npx @electron/packager . "XPDF Editor" \
+            --platform=darwin \
+            --arch=x64 \
+            --out=release \
+            --overwrite \
+            --asar=false \
+            --prune=true \
+            --icon=build/icon.icns \
+            --ignore="^/\.git" \
+            --ignore="^/release" \
+            --ignore="^/\.gemini"
+
+      - name: Create macOS ZIP
+        run: |
+          cd release
+          zip -r ../XPDF-Editor-macOS-x64.zip "XPDF Editor-darwin-x64"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: XPDF-Editor-macOS-x64.zip
+
+  release:
+    name: 🚀 Create GitHub Release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+
+      - name: Download macOS build
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: "XPDF Editor ${{ inputs.tag_name || github.ref_name }}"
+          body: |
+            ## 🚀 XPDF Editor ${{ github.ref_name }}
+
+            Modern, hızlı ve güçlü PDF Düzenleyici & Yöneticisi.
+
+            ### 📥 İndirme
+
+            | Platform | Dosya |
+            |----------|-------|
+            | 🪟 Windows 64-bit | `XPDF-Editor-Windows-x64.zip` |
+            | 🍎 macOS 64-bit | `XPDF-Editor-macOS-x64.zip` |
+
+            ### 🪟 Windows Kurulumu
+            1. `XPDF-Editor-Windows-x64.zip` dosyasını indirin ve ayıklayın
+            2. `XPDF Editor.exe` dosyasını çalıştırın
+            3. PDF ilişkilendirmesi için `Varsayilan-PDF-Yap-Ve-Onizlemeleri-Ac.bat` dosyasını çalıştırın
+
+            ### 🍎 macOS Kurulumu
+            1. `XPDF-Editor-macOS-x64.zip` dosyasını indirin ve ayıklayın
+            2. `XPDF Editor.app` dosyasını Uygulamalar klasörüne taşıyın
+            3. İlk açılışta sağ tıklayıp "Aç" seçeneğini kullanın (Gatekeeper bypass)
+          files: |
+            XPDF-Editor-Windows-x64.zip
+            XPDF-Editor-macOS-x64.zip
+          draft: false
+          prerelease: false
