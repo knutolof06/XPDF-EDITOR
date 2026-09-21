@@ -2,6 +2,7 @@ import { PDFDocument, degrees } from 'pdf-lib';
 import { PdfDocumentModel } from '@/types/document';
 import { binaryStore } from '../storage/binary-store';
 import { PdfLoader, LoadedPdfResult } from '../pdf/pdf-loader';
+import { ImagesToPdfConverter } from './images-to-pdf';
 
 export class PdfAssembler {
   /**
@@ -79,6 +80,26 @@ export class PdfAssembler {
     return results;
   }
 
+  private static async getValidBuffer(docModel: PdfDocumentModel): Promise<ArrayBuffer> {
+    let raw = binaryStore.get(docModel.id);
+    if (!raw || raw.byteLength === 0) {
+      if (docModel.filePath && (window as any).electronAPI?.readFile) {
+        try {
+          const res = await (window as any).electronAPI.readFile(docModel.filePath);
+          if (res && res.buffer) {
+            const fresh = res.buffer.slice(res.byteOffset, res.byteOffset + res.byteLength);
+            binaryStore.set(docModel.id, fresh.slice(0));
+            raw = fresh;
+          }
+        } catch {}
+      }
+    }
+    if (!raw || raw.byteLength === 0) {
+      throw new Error('Döküman verisi bulunamadı veya bellekten boşaltıldı.');
+    }
+    return raw.slice(0);
+  }
+
   /**
    * Inserts selected pages from an incoming PDF into an existing loaded document
    */
@@ -88,10 +109,7 @@ export class PdfAssembler {
     sourcePageIndices: number[], // 0-based
     insertAtIndex: number // index in logical pages array
   ): Promise<LoadedPdfResult> {
-    const targetBuffer = binaryStore.get(targetDocModel.id);
-    if (!targetBuffer) {
-      throw new Error('Hedef döküman verisi bulunamadı.');
-    }
+    const targetBuffer = await this.getValidBuffer(targetDocModel);
 
     const targetPdfLib = await PDFDocument.load(targetBuffer);
     const sourcePdfLib = await PDFDocument.load(sourceBuffer);
@@ -122,8 +140,7 @@ export class PdfAssembler {
     docModel: PdfDocumentModel,
     pageIds: string[]
   ): Promise<LoadedPdfResult> {
-    const rawBuffer = binaryStore.get(docModel.id);
-    if (!rawBuffer) throw new Error('Döküman bulunamadı.');
+    const rawBuffer = await this.getValidBuffer(docModel);
 
     const pdfLibDoc = await PDFDocument.load(rawBuffer);
     const pagesToDup = docModel.pages.filter((p) => pageIds.includes(p.id));
@@ -152,8 +169,7 @@ export class PdfAssembler {
     orientation: 'portrait' | 'landscape' = 'portrait',
     count: number = 1
   ): Promise<LoadedPdfResult> {
-    const rawBuffer = binaryStore.get(docModel.id);
-    if (!rawBuffer) throw new Error('Döküman bulunamadı.');
+    const rawBuffer = await this.getValidBuffer(docModel);
 
     const pdfLibDoc = await PDFDocument.load(rawBuffer);
 
@@ -210,10 +226,8 @@ export class PdfAssembler {
     | { mode: 'single'; name: string; buffer: ArrayBuffer; pageCount: number }
     | { mode: 'separate'; files: { name: string; buffer: ArrayBuffer; pageNumber: number }[] }
   > {
-    const rawBuffer = binaryStore.get(docModel.id);
-    if (!rawBuffer) throw new Error('Döküman verisi bulunamadı.');
-
-    const srcDoc = await PDFDocument.load(rawBuffer.slice(0));
+    const validBuffer = await this.getValidBuffer(docModel);
+    const srcDoc = await PDFDocument.load(validBuffer);
     const baseName = options.customBaseName || docModel.name.replace(/\.pdf$/i, '');
 
     // Map page IDs to page models in order
@@ -285,5 +299,69 @@ export class PdfAssembler {
         pageCount: pagesToExtract.length,
       };
     }
+  }
+
+  /**
+   * Processes a list of external files (PDFs and/or images) dropped or selected by the user,
+   * converting images to valid PDF buffers and reading PDF buffers.
+   */
+  public static async processDroppedFiles(
+    files: File[]
+  ): Promise<{ buffer: ArrayBuffer; pageCount: number; name: string }[]> {
+    const results: { buffer: ArrayBuffer; pageCount: number; name: string }[] = [];
+    const imageFiles: File[] = [];
+
+    for (const file of files) {
+      const name = file.name.toLowerCase();
+      const isPdf = file.type === 'application/pdf' || name.endsWith('.pdf');
+      const isImage =
+        file.type.startsWith('image/') ||
+        /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(name);
+
+      if (isPdf) {
+        try {
+          const buffer = await file.arrayBuffer();
+          const doc = await PDFDocument.load(buffer);
+          results.push({
+            buffer,
+            pageCount: doc.getPageCount(),
+            name: file.name,
+          });
+        } catch (e) {
+          console.error('PDF yükleme hatası:', file.name, e);
+        }
+      } else if (isImage) {
+        imageFiles.push(file);
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      try {
+        const imageItems = imageFiles.map((file) => ({
+          id: Math.random().toString(36).substring(2, 9),
+          file,
+          previewUrl: '',
+          width: 0,
+          height: 0,
+        }));
+        const imgPdfBuffer = await ImagesToPdfConverter.convertImagesToPdf(
+          imageItems,
+          { pageSize: 'original', orientation: 'auto', margin: 0 }
+        );
+        const doc = await PDFDocument.load(imgPdfBuffer);
+        results.push({
+          buffer: imgPdfBuffer,
+          pageCount: doc.getPageCount(),
+          name:
+            imageFiles.length === 1
+              ? imageFiles[0].name.replace(/\.[^/.]+$/, '') + '.pdf'
+              : 'Görseller.pdf',
+        });
+      } catch (e) {
+        console.error('Görseller PDF formatına dönüştürülürken hata oluştu:', e);
+      }
+    }
+
+    return results;
   }
 }

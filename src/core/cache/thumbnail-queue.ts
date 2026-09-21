@@ -65,8 +65,8 @@ function createQueue(maxConcurrent: number) {
   return { enqueue, clear };
 }
 
-// 4 concurrent workers for fast thumbnail rendering in forward order
-const thumbnailQ = createQueue(4);
+// 8 concurrent workers for ultra-fast parallel thumbnail rendering
+const thumbnailQ = createQueue(8);
 export const enqueueThumbnail = thumbnailQ.enqueue;
 export const clearThumbnailQueue = thumbnailQ.clear;
 

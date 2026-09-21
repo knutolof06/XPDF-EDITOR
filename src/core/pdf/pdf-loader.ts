@@ -24,13 +24,13 @@ export interface LoadedPdfResult {
 
 function toArrayBuffer(input: any): ArrayBuffer {
   if (input instanceof ArrayBuffer) {
-    return input;
+    return input.slice(0);
   }
   if (ArrayBuffer.isView(input)) {
     return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
   }
   if (input && input.type === 'Buffer' && Array.isArray(input.data)) {
-    return new Uint8Array(input.data).buffer;
+    return new Uint8Array(input.data).buffer.slice(0);
   }
   if (input && input.buffer instanceof ArrayBuffer) {
     const offset = input.byteOffset || 0;
@@ -53,11 +53,14 @@ export class PdfLoader {
     const rawBuffer = toArrayBuffer(data);
     const id = crypto.randomUUID ? crypto.randomUUID() : 'doc_' + Date.now();
     
-    // Store in binary store with zero-copy
-    binaryStore.set(id, rawBuffer);
+    // Store dedicated clone in binaryStore so web worker transfer cannot detach it
+    binaryStore.set(id, rawBuffer.slice(0));
+
+    // Pass separate independent copy to pdfjs worker
+    const workerCopy = new Uint8Array(rawBuffer.slice(0));
 
     const loadingTask = pdfjsLib.getDocument({
-      data: new Uint8Array(rawBuffer),
+      data: workerCopy,
       cMapUrl: getAssetUrl('pdfjs/cmaps/'),
       cMapPacked: true,
       standardFontDataUrl: getAssetUrl('pdfjs/standard_fonts/'),

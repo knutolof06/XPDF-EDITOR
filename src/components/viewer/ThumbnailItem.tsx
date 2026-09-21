@@ -12,7 +12,6 @@ import {
   DeletePageCommand,
 } from '@/core/history/command-manager';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
-import { PDFDocument } from 'pdf-lib';
 import { Trash2, RotateCw, GripVertical, Download } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -21,6 +20,7 @@ interface ThumbnailItemProps {
   index?: number;
   isActive: boolean;
   isSelected: boolean;
+  thumbnailSize?: 'small' | 'medium' | 'large';
   onPageClick: (pageId: string, index: number, isMulti: boolean, isShift: boolean) => void;
   onContextMenu?: (e: React.MouseEvent, pageId: string, index: number) => void;
 }
@@ -30,6 +30,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   index = 0,
   isActive,
   isSelected,
+  thumbnailSize = 'medium',
   onPageClick,
   onContextMenu,
 }) => {
@@ -46,7 +47,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   const pdfDocProxy = useDocumentStore((s) => s.pdfDocProxy);
   const appDesignTheme = useViewerStore((s) => s.appDesignTheme) || 'fluent';
 
-  // Viewport IntersectionObserver: Only render thumbnails visibly on screen
+  // Viewport IntersectionObserver: Proactive high-margin rendering (1000px)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -58,7 +59,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         }
       },
       {
-        rootMargin: '300px 0px 300px 0px',
+        rootMargin: '1000px 0px 1000px 0px',
         threshold: 0.01,
       }
     );
@@ -97,9 +98,9 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   useEffect(() => {
     if (!isVisible) return;
 
-    const cacheKey = `thumb_${page.id}_p${page.sourcePageIndex}_rot${page.rotation}`;
+    const cacheKey = `thumb_${page.id}_p${page.sourcePageIndex}_rot${page.rotation}_${thumbnailSize}`;
 
-    // Already rendered for this exact page and rotation
+    // Already rendered for this exact page, rotation, and size
     if (renderedKeyRef.current === cacheKey) {
       return;
     }
@@ -131,7 +132,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
         if (isCancelled || !canvasRef.current) return;
 
-        const targetWidth = 140;
+        // Dynamic width based on chosen thumbnailSize
+        const targetWidth = thumbnailSize === 'large' ? 320 : thumbnailSize === 'small' ? 110 : 175;
         const unscaledViewport = pdfPage.getViewport({ scale: 1.0, rotation: page.rotation });
         const scale = targetWidth / unscaledViewport.width;
         const viewport = pdfPage.getViewport({ scale, rotation: page.rotation });
@@ -167,14 +169,14 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       }
     }
 
-    // Auto-prioritized thumbnail render queue (lowest page index first)
-    const cancelQueue = enqueueThumbnail(renderThumbnail, page.sourcePageIndex);
+    // Visible thumbnails on screen get immediate priority 0!
+    const cancelQueue = enqueueThumbnail(renderThumbnail, 0);
 
     return () => {
       isCancelled = true;
       cancelQueue();
     };
-  }, [pdfDocProxy, page.id, page.sourcePageIndex, page.rotation, isVisible]);
+  }, [pdfDocProxy, page.id, page.sourcePageIndex, page.rotation, thumbnailSize, isVisible]);
 
   // Global cleanup: clear stale ring/highlight artifacts when any drag ends
   useEffect(() => {
@@ -357,46 +359,44 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       return;
     }
 
-    // 2. External PDF file drop from Desktop or Explorer
+    // 2. External PDF or Image file drop from Desktop or Explorer
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const files = Array.from(e.dataTransfer.files).filter(
-        (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-      );
-
-      if (files.length > 0) {
-        const targetIndex = doc.pages.findIndex((p) => p.id === page.id);
-        if (targetIndex !== -1) {
-          const insertAt = position === 'after' ? targetIndex + 1 : targetIndex;
-          try {
-            useUIStore.getState().addToast('Harici PDF sayfaları ekleniyor...', 'info');
-            let currentDoc = doc;
-            let currentInsertIndex = insertAt;
-            let totalAdded = 0;
-
-            for (const file of files) {
-              const buffer = await file.arrayBuffer();
-              const srcDoc = await PDFDocument.load(buffer);
-              const count = srcDoc.getPageCount();
-              const indices = Array.from({ length: count }, (_, i) => i);
-              const result = await PdfAssembler.insertPagesIntoDocument(
-                currentDoc,
-                buffer,
-                indices,
-                currentInsertIndex
-              );
-              currentDoc = result.model;
-              currentInsertIndex += indices.length;
-              totalAdded += indices.length;
-              useDocumentStore.getState().setDocument(result.model, result.pdfDoc);
-            }
-
-            useUIStore.getState().addToast(`${totalAdded} sayfa başarıyla eklendi!`, 'success');
-          } catch (err: any) {
-            console.error('External PDF insertion error:', err);
-            useUIStore.getState().addToast('PDF eklenirken hata oluştu.', 'error');
+      const droppedFiles = Array.from(e.dataTransfer.files);
+      const targetIndex = doc.pages.findIndex((p) => p.id === page.id);
+      if (targetIndex !== -1) {
+        const insertAt = position === 'after' ? targetIndex + 1 : targetIndex;
+        try {
+          useUIStore.getState().addToast('Harici dosya(lar) ekleniyor...', 'info');
+          const processed = await PdfAssembler.processDroppedFiles(droppedFiles);
+          if (processed.length === 0) {
+            useUIStore.getState().addToast('Desteklenen dosya bulunamadı (PDF, PNG, JPEG, WEBP).', 'error');
+            return;
           }
-          return;
+
+          let currentDoc = doc;
+          let currentInsertIndex = insertAt;
+          let totalAdded = 0;
+
+          for (const item of processed) {
+            const indices = Array.from({ length: item.pageCount }, (_, i) => i);
+            const result = await PdfAssembler.insertPagesIntoDocument(
+              currentDoc,
+              item.buffer,
+              indices,
+              currentInsertIndex
+            );
+            currentDoc = result.model;
+            currentInsertIndex += indices.length;
+            totalAdded += indices.length;
+            useDocumentStore.getState().setDocument(result.model, result.pdfDoc);
+          }
+
+          useUIStore.getState().addToast(`${totalAdded} sayfa başarıyla eklendi!`, 'success');
+        } catch (err: any) {
+          console.error('External file drop error:', err);
+          useUIStore.getState().addToast('Dosyalar eklenirken hata oluştu.', 'error');
         }
+        return;
       }
     }
   }, [page.id]);
@@ -433,40 +433,40 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
           'rounded-lg border bg-[#0E1015]',
           dragOverPosition
             ? 'ring-2 ring-cyan-400 border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.4)] scale-[1.02]'
-            : isActive
-            ? 'border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.25)] bg-cyan-950/20'
             : isSelected
-            ? 'border-cyan-700/80 bg-cyan-950/40'
+            ? 'border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.3)] bg-cyan-950/40 ring-2 ring-cyan-500'
+            : isActive
+            ? 'border-cyan-500/50 bg-cyan-950/20'
             : 'border-white/10 hover:border-white/20 hover:bg-white/[0.03]',
         ],
         appDesignTheme === 'cupertino' && [
           'rounded-2xl border transition-all duration-200',
           dragOverPosition
             ? 'ring-2 ring-sky-500 border-sky-400 shadow-xl scale-[1.02]'
-            : isActive
-            ? 'border-sky-500/80 bg-sky-500/10 shadow-lg'
             : isSelected
-            ? 'border-sky-400/60 bg-sky-500/15'
+            ? 'ring-2 ring-sky-500 border-sky-400 bg-sky-500/20 shadow-lg'
+            : isActive
+            ? 'border-sky-500/50 bg-sky-500/10'
             : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-xs hover:shadow-md',
         ],
         appDesignTheme === 'fluent' && [
           'rounded-xl border-2',
           dragOverPosition
             ? 'ring-2 ring-sky-500 border-sky-400 bg-sky-500/5 shadow-md scale-[1.02]'
-            : isActive
-            ? 'bg-sky-500/10 border-sky-500 shadow-md shadow-sky-500/10'
             : isSelected
-            ? 'bg-slate-200/80 dark:bg-slate-800/80 border-sky-500/70 shadow-sm'
+            ? 'ring-2 ring-sky-500 border-sky-500 bg-sky-500/15 shadow-md shadow-sky-500/20'
+            : isActive
+            ? 'border-sky-400/60 bg-sky-500/5'
             : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-transparent hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/70',
         ],
         appDesignTheme === 'ribbon' && [
           'rounded-md border-2',
           dragOverPosition
             ? 'ring-2 ring-blue-600 border-blue-500 bg-blue-50/20 scale-[1.02]'
-            : isActive
-            ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-600 shadow-xs'
             : isSelected
-            ? 'bg-slate-200 dark:bg-slate-800 border-blue-500'
+            ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-100 dark:bg-blue-900/40'
+            : isActive
+            ? 'border-blue-400 bg-blue-50/50 dark:bg-blue-950/20'
             : 'bg-white dark:bg-slate-800/60 border-slate-300 dark:border-slate-700 hover:border-slate-400',
         ]
       )}

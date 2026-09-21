@@ -636,6 +636,14 @@ function getValidDragIcon() {
       } catch {}
     }
   }
+  if (dragIcon.isEmpty()) {
+    // 16x16 standard fallback PNG to ensure Windows OLE drag never fails on empty icon
+    const fallbackPng = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAUSURBVDhPY/wPBAwUACMYNWDUAAYGAHmcASWqO6dSAAAAAElFTkSuQmCC',
+      'base64'
+    );
+    dragIcon = nativeImage.createFromBuffer(fallbackPng);
+  }
   return dragIcon;
 }
 
