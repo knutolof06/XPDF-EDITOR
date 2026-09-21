@@ -281,7 +281,7 @@ export const PageManagerModal: React.FC = () => {
   const selectedCount = currentDocument.selectedPageIds.length;
   const isAllSelected = selectedCount === currentDocument.pages.length;
 
-  const handleExportSelectedToDesktop = useCallback(async () => {
+  const handleExportSelectedToDesktop = async () => {
     if (!currentDocument || currentDocument.selectedPageIds.length === 0) return;
     try {
       addToast('Seçili sayfalar dışa aktarılıyor...', 'info');
@@ -320,7 +320,7 @@ export const PageManagerModal: React.FC = () => {
       console.error('Export error:', err);
       addToast('Dışa aktarma sırasında hata oluştu.', 'error');
     }
-  }, [currentDocument, addToast]);
+  };
 
   const handleDuplicate = async () => {
     if (selectedCount === 0) return;

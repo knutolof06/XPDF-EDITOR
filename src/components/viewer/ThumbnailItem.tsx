@@ -140,11 +140,15 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
         if (isCancelled || !canvasRef.current) return;
         const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d', { alpha: false });
+        const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
+
+        // Pre-fill solid white so transparent PDFs never render black
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         const renderTask = pdfPage.render({ canvasContext: ctx, viewport });
         await renderTask.promise;
@@ -492,7 +496,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         <canvas
           ref={canvasRef}
           className={cn(
-            'max-w-full max-h-full object-contain',
+            'max-w-full max-h-full object-contain bg-white',
             isRendered ? 'opacity-100' : 'opacity-0'
           )}
         />
