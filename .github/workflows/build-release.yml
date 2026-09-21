@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (örn: v1.5.7)'
+        description: 'Release Tag (örn: v1.5.8)'
         required: false
         default: ''
 
@@ -34,20 +34,27 @@ jobs:
       - name: Build web app
         run: npm run build
 
-      - name: Package Windows EXE
-        run: node scripts/package-app.js --skip-push
-        env:
-          SKIP_GIT_PUSH: true
+      - name: Build Windows Installer & Portable EXE
+        run: npx electron-builder --win nsis portable --x64
 
-      - name: Create Windows ZIP
+      - name: Create Windows Portable ZIP
         run: |
-          Compress-Archive -Path "release\XPDF Editor-win32-x64\*" -DestinationPath "XPDF-Editor-Windows-x64.zip"
+          Compress-Archive -Path "release\win-unpacked\*" -DestinationPath "XPDF-Editor-Windows-x64-Portable.zip" -Force
+          $origExe = Get-Item "release\XPDF Editor *.exe" | Select-Object -First 1
+          if ($origExe) {
+            Copy-Item $origExe.FullName -Destination "release\XPDF-Editor-Portable.exe"
+          }
 
-      - name: Upload Windows artifact
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: XPDF-Editor-Windows-x64.zip
+          path: |
+            release/XPDF-Editor-Kurulum-Setup.exe
+            release/XPDF-Editor-Kurulum-Setup.exe.blockmap
+            release/XPDF-Editor-Portable.exe
+            release/latest.yml
+            XPDF-Editor-Windows-x64-Portable.zip
 
   build-macos:
     name: 🍎 macOS Build
@@ -114,28 +121,34 @@ jobs:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
           name: "XPDF Editor ${{ inputs.tag_name || github.ref_name }}"
           body: |
-            ## 🚀 XPDF Editor ${{ github.ref_name }}
+            ## 🚀 XPDF Editor ${{ inputs.tag_name || github.ref_name }}
 
             Modern, hızlı ve güçlü PDF Düzenleyici & Yöneticisi.
 
-            ### 📥 İndirme
+            ### 📥 İndirme Seçenekleri
 
-            | Platform | Dosya |
-            |----------|-------|
-            | 🪟 Windows 64-bit | `XPDF-Editor-Windows-x64.zip` |
-            | 🍎 macOS 64-bit | `XPDF-Editor-macOS-x64.zip` |
+            | Platform | Dosya | Açıklama |
+            |----------|-------|----------|
+            | 🪟 Windows | `XPDF-Editor-Kurulum-Setup.exe` | Windows Otomatik Kurulum Paketi (Önerilen) |
+            | 🪟 Windows | `XPDF-Editor-Portable.exe` | Kurulumsuz Tekil Çalıştırılabilir EXE |
+            | 🪟 Windows | `XPDF-Editor-Windows-x64-Portable.zip` | Kurulumsuz Taşınabilir ZIP Arşivi |
+            | 🍎 macOS | `XPDF-Editor-macOS-x64.zip` | macOS 64-bit Uygulama Paketi |
 
             ### 🪟 Windows Kurulumu
-            1. `XPDF-Editor-Windows-x64.zip` dosyasını indirin ve ayıklayın
-            2. `XPDF Editor.exe` dosyasını çalıştırın
-            3. PDF ilişkilendirmesi için `Varsayilan-PDF-Yap-Ve-Onizlemeleri-Ac.bat` dosyasını çalıştırın
+            - **Kurulum paketi için:** `XPDF-Editor-Kurulum-Setup.exe` dosyasını çalıştırın.
+            - **Taşınabilir versiyon için:** `XPDF-Editor-Windows-x64-Portable.zip` dosyasını ayıklayın ve `XPDF Editor.exe` dosyasını çalıştırın.
+            - PDF ilişkilendirmesi için klasör içindeki `Varsayilan-PDF-Yap-Ve-Onizlemeleri-Ac.bat` dosyasını çalıştırabilirsiniz.
 
             ### 🍎 macOS Kurulumu
             1. `XPDF-Editor-macOS-x64.zip` dosyasını indirin ve ayıklayın
             2. `XPDF Editor.app` dosyasını Uygulamalar klasörüne taşıyın
             3. İlk açılışta sağ tıklayıp "Aç" seçeneğini kullanın (Gatekeeper bypass)
           files: |
-            XPDF-Editor-Windows-x64.zip
+            XPDF-Editor-Kurulum-Setup.exe
+            XPDF-Editor-Kurulum-Setup.exe.blockmap
+            XPDF-Editor-Portable.exe
+            latest.yml
+            XPDF-Editor-Windows-x64-Portable.zip
             XPDF-Editor-macOS-x64.zip
           draft: false
           prerelease: false
