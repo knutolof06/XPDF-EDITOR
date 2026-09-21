@@ -11,7 +11,6 @@ import {
   RotatePageCommand,
   DeletePageCommand,
 } from '@/core/history/command-manager';
-import { binaryStore } from '@/core/storage/binary-store';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
 import { PDFDocument } from 'pdf-lib';
 import { Trash2, RotateCw, GripVertical, Download } from 'lucide-react';
@@ -68,40 +67,31 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     return () => observer.disconnect();
   }, []);
 
-  // Pre-generate single page PDF file ahead of drag
+  // Pre-generate PDF file ahead of drag (single or multi-selected pages)
   const prepareSinglePagePdf = useCallback(async () => {
-    if (preparedFilePathRef.current) return;
     const doc = useDocumentStore.getState().currentDocument;
     if (!doc || !(window as any).electronAPI?.prepareDragFile) return;
     try {
-      const raw = binaryStore.get(doc.id);
-      if (!raw) return;
+      const isPartOfSelection = doc.selectedPageIds.includes(page.id);
+      const movingPageIds =
+        isPartOfSelection && doc.selectedPageIds.length > 1
+          ? doc.selectedPageIds
+          : [page.id];
 
-      const srcDoc = await PDFDocument.load(raw.slice(0));
-      const outDoc = await PDFDocument.create();
-      const [cp] = await outDoc.copyPages(srcDoc, [page.sourcePageIndex]);
-      if (page.rotation !== 0) {
-        try {
-          // @ts-ignore
-          cp.setRotation({ type: 'degrees', angle: page.rotation });
-        } catch {}
-      }
-      outDoc.addPage(cp);
-      const bytes = await outDoc.save();
-      const baseName = doc.name.replace(/\.pdf$/i, '');
-      const fileName = `${baseName}_sayfa_${page.displayPageNumber}.pdf`;
-
-      const res = await (window as any).electronAPI.prepareDragFile({
-        fileName,
-        buffer: bytes,
-      });
-      if (res?.success && res.filePath) {
-        preparedFilePathRef.current = res.filePath;
+      const res = await PdfAssembler.extractPages(doc, movingPageIds, { separateFiles: false });
+      if (res.mode === 'single') {
+        const prepRes = await (window as any).electronAPI.prepareDragFile({
+          fileName: res.name,
+          buffer: res.buffer,
+        });
+        if (prepRes?.success && prepRes.filePath) {
+          preparedFilePathRef.current = prepRes.filePath;
+        }
       }
     } catch (err) {
       // silent
     }
-  }, [page.sourcePageIndex, page.displayPageNumber, page.rotation]);
+  }, [page.id]);
 
   // Render or restore thumbnail from cache
   useEffect(() => {
@@ -219,20 +209,20 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         ? doc.selectedPageIds
         : [page.id];
 
+    // Coordinate internal drag flag
+    (window as any).__xpdf_internal_drag = {
+      pageIds: movingPageIds,
+      sourceDocId: doc.id,
+      filePath: preparedFilePathRef.current,
+    };
+
     e.dataTransfer.setData('application/json', JSON.stringify({ pageIds: movingPageIds }));
     e.dataTransfer.setData('text/plain', movingPageIds.join(','));
     e.dataTransfer.effectAllowed = 'copyMove';
 
-    if (preparedFilePathRef.current) {
-      const baseName = doc.name.replace(/\.pdf$/i, '');
-      const fileName =
-        movingPageIds.length === 1
-          ? `${baseName}_sayfa_${page.displayPageNumber}.pdf`
-          : `${baseName}_${movingPageIds.length}_sayfa.pdf`;
-      const fileUrl = `file:///${preparedFilePathRef.current.replace(/\\/g, '/')}`;
-      try {
-        e.dataTransfer.setData('DownloadURL', `application/pdf:${fileName}:${fileUrl}`);
-      } catch {}
+    // Start native Windows OLE drag to Desktop / Explorer
+    if (preparedFilePathRef.current && (window as any).electronAPI?.startDragFile) {
+      (window as any).electronAPI.startDragFile({ filePath: preparedFilePathRef.current });
     }
 
     // Create high-contrast floating drag ghost pill
@@ -266,6 +256,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
   const handleDragEnd = useCallback(() => {
     document.body.classList.remove('is-dragging-page');
+    (window as any).__xpdf_internal_drag = null;
     dropPositionRef.current = null;
     setDragOverPosition(null);
   }, []);
@@ -275,30 +266,20 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     const doc = useDocumentStore.getState().currentDocument;
     if (!doc) return;
     try {
-      const raw = binaryStore.get(doc.id);
-      if (!raw) return;
-
-      const srcDoc = await PDFDocument.load(raw.slice(0));
-      const outDoc = await PDFDocument.create();
-      const [cp] = await outDoc.copyPages(srcDoc, [page.sourcePageIndex]);
-      outDoc.addPage(cp);
-
-      const bytes = await outDoc.save();
-      const rawBuffer = bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength
-      ) as ArrayBuffer;
-      const blob = new Blob([rawBuffer], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${doc.name.replace(/\.pdf$/i, '')}_sayfa_${page.displayPageNumber}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const res = await PdfAssembler.extractPages(doc, [page.id], { separateFiles: false });
+      if (res.mode === 'single') {
+        const blob = new Blob([res.buffer], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = res.name;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
     } catch (err) {
       console.error('Download error:', err);
     }
-  }, [page.sourcePageIndex, page.displayPageNumber]);
+  }, [page.id]);
 
   // High-Precision Drag Over
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -318,7 +299,6 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    // Only reset if mouse left the card's boundary
     if (
       e.clientX < rect.left ||
       e.clientX >= rect.right ||
@@ -342,7 +322,42 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     const doc = useDocumentStore.getState().currentDocument;
     if (!doc) return;
 
-    // 1. External PDF drop
+    // 1. Internal page reordering (Check internal coordinator or JSON first)
+    const internalDrag = (window as any).__xpdf_internal_drag;
+    let pageIds: string[] = internalDrag?.pageIds || [];
+
+    if (pageIds.length === 0) {
+      try {
+        const jsonStr = e.dataTransfer.getData('application/json');
+        if (jsonStr) {
+          const parsed = JSON.parse(jsonStr);
+          if (Array.isArray(parsed?.pageIds)) {
+            pageIds = parsed.pageIds;
+          }
+        }
+      } catch {
+        // fallback
+      }
+    }
+
+    if (pageIds.length === 0) {
+      const plainText = e.dataTransfer.getData('text/plain');
+      if (plainText) {
+        pageIds = plainText.split(',').filter(Boolean);
+      }
+    }
+
+    if (pageIds.length > 0) {
+      // Clear internal coordinator
+      (window as any).__xpdf_internal_drag = null;
+      const targetIndex = doc.pages.findIndex((p) => p.id === page.id);
+      if (targetIndex !== -1) {
+        historyManager.execute(new MoveMultiplePagesCommand(pageIds, targetIndex, position));
+      }
+      return;
+    }
+
+    // 2. External PDF file drop from Desktop or Explorer
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const files = Array.from(e.dataTransfer.files).filter(
         (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
@@ -383,34 +398,6 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
           return;
         }
       }
-    }
-
-    // 2. Internal page reordering
-    let pageIds: string[] = [];
-    try {
-      const jsonStr = e.dataTransfer.getData('application/json');
-      if (jsonStr) {
-        const parsed = JSON.parse(jsonStr);
-        if (Array.isArray(parsed?.pageIds)) {
-          pageIds = parsed.pageIds;
-        }
-      }
-    } catch {
-      // fallback
-    }
-
-    if (pageIds.length === 0) {
-      const plainText = e.dataTransfer.getData('text/plain');
-      if (plainText) {
-        pageIds = plainText.split(',').filter(Boolean);
-      }
-    }
-
-    if (pageIds.length === 0) return;
-
-    const targetIndex = doc.pages.findIndex((p) => p.id === page.id);
-    if (targetIndex !== -1) {
-      historyManager.execute(new MoveMultiplePagesCommand(pageIds, targetIndex, position));
     }
   }, [page.id]);
 
@@ -560,14 +547,27 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         <div
           draggable
           onMouseEnter={prepareSinglePagePdf}
+          onMouseDown={prepareSinglePagePdf}
           onDragStart={(e) => {
             e.stopPropagation();
+            const doc = useDocumentStore.getState().currentDocument;
+            const movingPageIds =
+              doc && doc.selectedPageIds.includes(page.id) && doc.selectedPageIds.length > 1
+                ? doc.selectedPageIds
+                : [page.id];
+
+            (window as any).__xpdf_internal_drag = {
+              pageIds: movingPageIds,
+              sourceDocId: doc?.id,
+              filePath: preparedFilePathRef.current,
+            };
+
             if (preparedFilePathRef.current && (window as any).electronAPI?.startDragFile) {
               (window as any).electronAPI.startDragFile({ filePath: preparedFilePathRef.current });
             }
           }}
           className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 p-1 rounded-md bg-white/95 dark:bg-slate-800/95 text-slate-500 hover:text-sky-600 hover:bg-sky-50 dark:hover:bg-slate-700 shadow-xs border border-slate-200 dark:border-slate-700 cursor-grab active:cursor-grabbing transition-all z-20"
-          title="Masaüstüne veya Klasöre Sürükle (PDF Olarak Çıkart)"
+          title="Masaüstüne veya Klasöre Sürükle (Yeni PDF Olarak Çıkart)"
         >
           <GripVertical className="w-3.5 h-3.5" />
         </div>

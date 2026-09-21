@@ -639,16 +639,28 @@ function getValidDragIcon() {
   return dragIcon;
 }
 
+// Cleanup temporary drag folder
+function cleanupDragTempFolder() {
+  try {
+    const tempDir = path.join(app.getPath('temp'), 'xpdf_drag');
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  } catch {}
+}
+
 // Prepare file on disk ahead of time (synchronously or ahead of drag)
 ipcMain.handle('prepare-drag-file', async (event, data) => {
   try {
     if (!data || !data.buffer) return { success: false, error: 'No buffer' };
-    const tempDir = path.join(app.getPath('temp'), 'xpdf_drag');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+    const baseTempDir = path.join(app.getPath('temp'), 'xpdf_drag');
+    // Unique session subfolder to prevent EBUSY locks from Windows Explorer
+    const sessionDir = path.join(baseTempDir, `drag_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
     }
     const safeFileName = (data.fileName || 'sayfa.pdf').replace(/[/\\?%*:|"<>]/g, '_');
-    const tempFilePath = path.join(tempDir, safeFileName);
+    const tempFilePath = path.join(sessionDir, safeFileName);
     fs.writeFileSync(tempFilePath, Buffer.from(data.buffer));
     return { success: true, filePath: tempFilePath };
   } catch (err) {
@@ -658,10 +670,18 @@ ipcMain.handle('prepare-drag-file', async (event, data) => {
 });
 
 // Start native OS Drag (to Desktop, Explorer, or external apps)
-ipcMain.on('start-drag-file', (event, { filePath }) => {
+ipcMain.on('start-drag-file', (event, { filePath, iconDataUrl }) => {
   try {
     if (!filePath || !fs.existsSync(filePath)) return;
-    const dragIcon = getValidDragIcon();
+    let dragIcon = getValidDragIcon();
+    if (iconDataUrl) {
+      try {
+        const customImg = nativeImage.createFromDataURL(iconDataUrl);
+        if (!customImg.isEmpty()) {
+          dragIcon = customImg;
+        }
+      } catch {}
+    }
 
     if (event.sender && !event.sender.isDestroyed()) {
       event.sender.startDrag({
@@ -845,5 +865,6 @@ $list | ConvertTo-Json -Compress
 
 app.on('before-quit', () => {
   saveWindowState();
+  cleanupDragTempFolder();
 });
 

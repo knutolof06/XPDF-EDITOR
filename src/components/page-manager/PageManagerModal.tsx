@@ -12,7 +12,6 @@ import {
 } from '@/core/history/command-manager';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
-import { binaryStore } from '@/core/storage/binary-store';
 import { PDFDocument } from 'pdf-lib';
 import {
   X,
@@ -29,6 +28,9 @@ import {
   Undo2,
   Redo2,
   Plus,
+  Scissors,
+  ChevronDown,
+  FileUp,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -44,6 +46,8 @@ interface CachedPageBound {
 export const PageManagerModal: React.FC = () => {
   const gridContainerRef = useRef<HTMLDivElement>(null);
   const selectionBoxRef = useRef<HTMLDivElement>(null);
+  const addFileInputRef = useRef<HTMLInputElement>(null);
+  const preparedMultiDragPathRef = useRef<string | null>(null);
 
   const isSelectingRef = useRef(false);
   const isMultiSelectModeRef = useRef(false);
@@ -57,6 +61,7 @@ export const PageManagerModal: React.FC = () => {
   const autoScrollRafRef = useRef<number | null>(null);
 
   const [thumbnailSize, setThumbnailSize] = useState<'small' | 'medium' | 'large'>('medium');
+  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
 
   const {
     currentDocument,
@@ -69,7 +74,12 @@ export const PageManagerModal: React.FC = () => {
 
   const { addTab } = useTabStore();
   const { isPageManagerOpen, setPageManagerOpen } = useViewerStore();
-  const { setPageLayoutModalOpen, addToast, setInsertBlankPageModalOpen } = useUIStore();
+  const {
+    setPageLayoutModalOpen,
+    addToast,
+    setInsertBlankPageModalOpen,
+    setExtractPagesModalOpen,
+  } = useUIStore();
   const pdfDocProxy = useDocumentStore((s) => s.pdfDocProxy);
 
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
@@ -85,12 +95,11 @@ export const PageManagerModal: React.FC = () => {
     return historyManager.subscribe(() => forceUpdate());
   }, []);
 
-  // Keyboard shortcut listener for Ctrl+Z and Ctrl+Y in Page Manager
+  // Keyboard shortcut listener for Ctrl+Z, Ctrl+Y, Delete, Ctrl+A and Escape
   useEffect(() => {
     if (!isPageManagerOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept if typing in an input
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
@@ -108,8 +117,18 @@ export const PageManagerModal: React.FC = () => {
           historyManager.redo();
           addToast('İşlem yinelendi.', 'info');
         }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        selectAllPages();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (currentDocument && currentDocument.selectedPageIds.length > 0) {
+          e.preventDefault();
+          handleDeleteSelected();
+        }
       } else if (e.key === 'Escape') {
-        if (contextMenu) {
+        if (isAddMenuOpen) {
+          setIsAddMenuOpen(false);
+        } else if (contextMenu) {
           setContextMenu(null);
         } else {
           setPageManagerOpen(false);
@@ -119,15 +138,17 @@ export const PageManagerModal: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPageManagerOpen, contextMenu, addToast, setPageManagerOpen]);
+  }, [isPageManagerOpen, contextMenu, isAddMenuOpen, currentDocument, addToast, selectAllPages, setPageManagerOpen]);
 
-  // Dismiss context menu on window click
+  // Dismiss context menu & dropdown on window click
   useEffect(() => {
-    if (!contextMenu) return;
-    const closeMenu = () => setContextMenu(null);
-    window.addEventListener('click', closeMenu);
-    return () => window.removeEventListener('click', closeMenu);
-  }, [contextMenu]);
+    const handleGlobalClick = () => {
+      if (contextMenu) setContextMenu(null);
+      if (isAddMenuOpen) setIsAddMenuOpen(false);
+    };
+    window.addEventListener('click', handleGlobalClick);
+    return () => window.removeEventListener('click', handleGlobalClick);
+  }, [contextMenu, isAddMenuOpen]);
 
   // Proximity auto-scrolling during drag
   const startAutoScrollLoop = useCallback(() => {
@@ -159,6 +180,102 @@ export const PageManagerModal: React.FC = () => {
       stopAutoScrollLoop();
     };
   }, [stopAutoScrollLoop]);
+
+  // Proactive Multi-Page Drag Pre-bundling
+  const prepareMultiPagePdf = useCallback(async () => {
+    if (!currentDocument || currentDocument.selectedPageIds.length === 0) {
+      preparedMultiDragPathRef.current = null;
+      return;
+    }
+    const electron = (window as any).electronAPI;
+    if (!electron?.prepareDragFile) return;
+
+    try {
+      const res = await PdfAssembler.extractPages(
+        currentDocument,
+        currentDocument.selectedPageIds,
+        { separateFiles: false }
+      );
+      if (res.mode === 'single') {
+        const prepRes = await electron.prepareDragFile({
+          fileName: res.name,
+          buffer: res.buffer,
+        });
+        if (prepRes?.success && prepRes.filePath) {
+          preparedMultiDragPathRef.current = prepRes.filePath;
+        }
+      }
+    } catch {
+      // silent fallback
+    }
+  }, [currentDocument]);
+
+  // Debounced auto-preparation whenever selectedPageIds changes
+  useEffect(() => {
+    if (!isPageManagerOpen || !currentDocument || currentDocument.selectedPageIds.length === 0) {
+      preparedMultiDragPathRef.current = null;
+      return;
+    }
+    const timer = setTimeout(() => {
+      prepareMultiPagePdf();
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [isPageManagerOpen, currentDocument?.selectedPageIds, prepareMultiPagePdf]);
+
+  const handleMultiPageDragStart = useCallback(
+    (e: React.DragEvent) => {
+      if (!currentDocument || currentDocument.selectedPageIds.length === 0) return;
+      document.body.classList.add('is-dragging-page');
+
+      const pageIds = currentDocument.selectedPageIds;
+      (window as any).__xpdf_internal_drag = {
+        pageIds,
+        sourceDocId: currentDocument.id,
+        filePath: preparedMultiDragPathRef.current,
+      };
+
+      e.dataTransfer.setData('application/json', JSON.stringify({ pageIds }));
+      e.dataTransfer.setData('text/plain', pageIds.join(','));
+      e.dataTransfer.effectAllowed = 'copyMove';
+
+      // Start native Windows OLE drag to Desktop / Explorer
+      if (preparedMultiDragPathRef.current && (window as any).electronAPI?.startDragFile) {
+        (window as any).electronAPI.startDragFile({
+          filePath: preparedMultiDragPathRef.current,
+        });
+      }
+
+      // Drag ghost preview pill
+      try {
+        const ghost = document.createElement('div');
+        ghost.style.position = 'absolute';
+        ghost.style.top = '-1000px';
+        ghost.style.left = '-1000px';
+        ghost.style.padding = '8px 16px';
+        ghost.style.borderRadius = '14px';
+        ghost.style.background = '#0284c7';
+        ghost.style.color = '#ffffff';
+        ghost.style.fontWeight = '700';
+        ghost.style.fontSize = '12px';
+        ghost.style.boxShadow = '0 12px 28px rgba(2, 132, 199, 0.45)';
+        ghost.style.border = '2px solid rgba(255, 255, 255, 0.7)';
+        ghost.style.display = 'flex';
+        ghost.style.alignItems = 'center';
+        ghost.style.gap = '8px';
+        ghost.style.zIndex = '9999';
+        ghost.innerHTML = `<span>📦</span> <span>${pageIds.length} Sayfa Taşınıyor (Masaüstüne Bırakın)</span>`;
+        document.body.appendChild(ghost);
+        e.dataTransfer.setDragImage(ghost, 20, 20);
+        setTimeout(() => ghost.remove(), 100);
+      } catch {}
+    },
+    [currentDocument]
+  );
+
+  const handleMultiPageDragEnd = useCallback(() => {
+    document.body.classList.remove('is-dragging-page');
+    (window as any).__xpdf_internal_drag = null;
+  }, []);
 
   if (!isPageManagerOpen || !currentDocument) return null;
 
@@ -197,59 +314,17 @@ export const PageManagerModal: React.FC = () => {
 
   const handleDeleteSelected = () => {
     if (selectedCount === 0) return;
+    if (selectedCount >= currentDocument.pages.length) {
+      addToast('Dökümandaki tüm sayfalar silinemez. En az bir sayfa kalmalıdır.', 'error');
+      return;
+    }
+
     const deleted = currentDocument.pages
       .map((p, idx) => ({ page: p, index: idx }))
       .filter((item) => currentDocument.selectedPageIds.includes(item.page.id));
 
     historyManager.execute(new DeletePageCommand(deleted));
-    addToast(`${deleted.length} sayfa silindi.`, 'info');
-  };
-
-  // Extract Pages to New PDF and Download
-  const handleExtractAndDownload = async () => {
-    if (selectedCount === 0) {
-      addToast('Lütfen ayıklamak istediğiniz sayfaları seçin.', 'warning');
-      return;
-    }
-
-    const rawBuffer = binaryStore.get(currentDocument.id);
-    if (!rawBuffer) {
-      addToast('Döküman verisi bulunamadı.', 'error');
-      return;
-    }
-
-    try {
-      addToast('Seçili sayfalar yeni PDF olarak ayıklanıyor...', 'info');
-      const srcDoc = await PDFDocument.load(rawBuffer.slice(0));
-      const outDoc = await PDFDocument.create();
-
-      const selectedPages = currentDocument.pages.filter((p) =>
-        currentDocument.selectedPageIds.includes(p.id)
-      );
-
-      const indices = selectedPages.map((p) => p.sourcePageIndex);
-      const copiedPages = await outDoc.copyPages(srcDoc, indices);
-      copiedPages.forEach((p) => outDoc.addPage(p));
-
-      const pdfBytes = await outDoc.save();
-      const rawOut = pdfBytes.buffer.slice(
-        pdfBytes.byteOffset,
-        pdfBytes.byteOffset + pdfBytes.byteLength
-      ) as ArrayBuffer;
-
-      const blob = new Blob([rawOut], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${currentDocument.name.replace(/\.pdf$/i, '')}_ayiklanan_${selectedCount}_sayfa.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      addToast(`${selectedCount} sayfa yeni bir PDF olarak indirildi!`, 'success');
-    } catch (err: any) {
-      console.error(err);
-      addToast('Ayıklama sırasında hata oluştu.', 'error');
-    }
+    addToast(`${deleted.length} sayfa silindi. (Geri almak için Ctrl+Z)`, 'info');
   };
 
   // Extract Pages and Open directly as New PDF / Tab in editor
@@ -259,50 +334,63 @@ export const PageManagerModal: React.FC = () => {
       return;
     }
 
-    const rawBuffer = binaryStore.get(currentDocument.id);
-    if (!rawBuffer) {
-      addToast('Döküman verisi bulunamadı.', 'error');
-      return;
-    }
-
     try {
       addToast('Seçili sayfalar yeni PDF olarak açılıyor...', 'info');
-      const srcDoc = await PDFDocument.load(rawBuffer.slice(0));
-      const outDoc = await PDFDocument.create();
+      const res = await PdfAssembler.extractPages(currentDocument, currentDocument.selectedPageIds, {
+        separateFiles: false,
+      });
 
-      const selectedPages = currentDocument.pages.filter((p) =>
-        currentDocument.selectedPageIds.includes(p.id)
-      );
-
-      const indices = selectedPages.map((p) => p.sourcePageIndex);
-      const copiedPages = await outDoc.copyPages(srcDoc, indices);
-      copiedPages.forEach((p) => outDoc.addPage(p));
-
-      const pdfBytes = await outDoc.save();
-      const rawOut = pdfBytes.buffer.slice(
-        pdfBytes.byteOffset,
-        pdfBytes.byteOffset + pdfBytes.byteLength
-      ) as ArrayBuffer;
-
-      const baseName = currentDocument.name.replace(/\.pdf$/i, '');
-      const newFileName = `${baseName}_ayiklanan_${selectedCount}_sayfa.pdf`;
-
-      const loaded = await PdfLoader.loadDocument(newFileName, rawOut);
-
-      setDocument(loaded.model, loaded.pdfDoc);
-      addTab(loaded.model, loaded.pdfDoc);
-      setPageManagerOpen(false);
-
-      addToast(`${selectedCount} sayfa yeni sekmede açıldı!`, 'success');
+      if (res.mode === 'single') {
+        const loaded = await PdfLoader.loadDocument(res.name, res.buffer);
+        setDocument(loaded.model, loaded.pdfDoc);
+        addTab(loaded.model, loaded.pdfDoc);
+        setPageManagerOpen(false);
+        addToast(`${selectedCount} sayfa yeni sekmede açıldı!`, 'success');
+      }
     } catch (err: any) {
       console.error(err);
       addToast('Yeni PDF açılırken hata oluştu.', 'error');
     }
   };
 
+  // Add pages from external PDF file directly
+  const handleAddPagesFromFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !currentDocument) return;
+    try {
+      addToast('Harici PDF sayfaları dökümana ekleniyor...', 'info');
+      let currentDoc = currentDocument;
+      let currentInsertIndex = currentDoc.pages.length;
+      let totalAdded = 0;
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const buffer = await file.arrayBuffer();
+        const srcDoc = await PDFDocument.load(buffer);
+        const count = srcDoc.getPageCount();
+        const indices = Array.from({ length: count }, (_, idx) => idx);
+        const result = await PdfAssembler.insertPagesIntoDocument(
+          currentDoc,
+          buffer,
+          indices,
+          currentInsertIndex
+        );
+        currentDoc = result.model;
+        currentInsertIndex += indices.length;
+        totalAdded += indices.length;
+        setDocument(result.model, result.pdfDoc);
+      }
+      addToast(`${totalAdded} sayfa başarıyla eklendi!`, 'success');
+    } catch (err: any) {
+      console.error(err);
+      addToast('PDF sayfaları eklenirken hata oluştu.', 'error');
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
+
   // Ultra-Fast Zero-Allocation Marquee Selection Handlers
   const handleMouseDown = (e: React.MouseEvent) => {
-    // If clicking quick buttons or drag handles, don't start box selection
     if ((e.target as HTMLElement).closest('button, [draggable="true"]')) return;
     if (e.button !== 0 || !gridContainerRef.current) return;
 
@@ -375,7 +463,6 @@ export const PageManagerModal: React.FC = () => {
           selectionBoxRef.current.style.height = `${boxBottom - boxTop}px`;
         }
 
-        // Pure math hit-testing over cached bounds with guarded DOM mutations
         const bounds = cachedBoundsRef.current;
         const intersectingIds: string[] = [];
 
@@ -415,12 +502,10 @@ export const PageManagerModal: React.FC = () => {
     }
 
     if (isSelectingRef.current) {
-      // Clear direct DOM highlights
       cachedBoundsRef.current.forEach((b) => {
         b.el.classList.remove('ring-2', 'ring-sky-500', 'scale-[0.98]');
       });
 
-      // Commit final selection once
       const finalSelected = Array.from(currentSelectedSetRef.current);
       if (finalSelected.length > 0) {
         selectPages(finalSelected, false);
@@ -473,137 +558,100 @@ export const PageManagerModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/85 flex flex-col animate-in fade-in duration-150">
-      {/* Top Header */}
-      <div className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 flex items-center justify-between text-slate-800 dark:text-slate-100 select-none shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-sky-500/10 text-sky-500 dark:text-sky-400">
-            <LayoutGrid className="w-5 h-5" />
+      {/* Hidden File Input for "Dosyadan Sayfa Ekle" */}
+      <input
+        type="file"
+        ref={addFileInputRef}
+        onChange={handleAddPagesFromFile}
+        accept=".pdf"
+        multiple
+        className="hidden"
+      />
+
+      {/* Top Header - Fluent 3-Part Toolbar */}
+      <div className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 flex items-center justify-between text-slate-800 dark:text-slate-100 select-none shadow-sm z-30">
+        {/* Left Section: Info & Add Pages */}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400">
+              <LayoutGrid className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">
+                  Sayfa Düzenleyici
+                </h2>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                  {currentDocument.pages.length} sayfa
+                </span>
+                {selectedCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-950/60 text-[11px] font-bold text-sky-700 dark:text-sky-300">
+                    {selectedCount} seçili
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-400 truncate max-w-[200px] sm:max-w-xs">
+                {currentDocument.name}
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-base font-bold tracking-tight text-slate-900 dark:text-white">Sayfa Yöneticisi & Düzenleyici</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Toplam {currentDocument.totalPages} sayfa • {selectedCount} sayfa seçili (Alan çizerek toplu seçebilir veya sürükleyebilirsiniz)
-            </p>
+
+          <div className="h-6 w-px bg-slate-200 dark:border-slate-800" />
+
+          {/* Add Page Dropdown Menu */}
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsAddMenuOpen((prev) => !prev);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold transition-all shadow-xs"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Sayfa Ekle</span>
+              <ChevronDown className="w-3 h-3 ml-0.5 opacity-70" />
+            </button>
+
+            {isAddMenuOpen && (
+              <div
+                className="absolute left-0 top-full mt-1.5 w-52 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl p-1.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-100"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  onClick={() => {
+                    setIsAddMenuOpen(false);
+                    const selectedIdx =
+                      selectedCount > 0
+                        ? currentDocument.pages.findIndex(
+                            (p) => p.id === currentDocument.selectedPageIds[0]
+                          ) + 1
+                        : currentDocument.pages.length;
+                    setInsertBlankPageModalOpen(true, selectedIdx);
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-emerald-50 dark:hover:bg-emerald-950/60 hover:text-emerald-600 transition-colors"
+                >
+                  <Plus className="w-4 h-4 text-emerald-500" />
+                  <span>Boş Sayfa Ekle</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsAddMenuOpen(false);
+                    addFileInputRef.current?.click();
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-sky-50 dark:hover:bg-sky-950/60 hover:text-sky-600 transition-colors"
+                >
+                  <FileUp className="w-4 h-4 text-sky-500" />
+                  <span>PDF Dosyasından Ekle...</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Action Toolbar */}
-        <div className="flex items-center gap-2">
-          {/* Undo / Redo */}
-          <div className="flex items-center gap-1 border-r border-slate-200 dark:border-slate-800 pr-2 mr-1">
-            <button
-              onClick={() => {
-                if (historyManager.undo()) {
-                  addToast('İşlem geri alındı.', 'info');
-                }
-              }}
-              disabled={!historyManager.canUndo()}
-              className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-700 dark:text-slate-200 transition-colors border border-slate-200 dark:border-slate-700"
-              title="Son İşlemi Geri Al (Ctrl+Z)"
-            >
-              <Undo2 className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => {
-                if (historyManager.redo()) {
-                  addToast('Son işlem yinelendi.', 'info');
-                }
-              }}
-              disabled={!historyManager.canRedo()}
-              className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-700 dark:text-slate-200 transition-colors border border-slate-200 dark:border-slate-700"
-              title="Son İşlemi Yinele (Ctrl+Y)"
-            >
-              <Redo2 className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Insert Blank Page button */}
-          <button
-            onClick={() => {
-              const selectedIdx = currentDocument.selectedPageIds.length > 0
-                ? currentDocument.pages.findIndex((p) => p.id === currentDocument.selectedPageIds[0]) + 1
-                : currentDocument.pages.length;
-              setInsertBlankPageModalOpen(true, selectedIdx);
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-950/60 hover:bg-emerald-200 dark:hover:bg-emerald-900 border border-emerald-300 dark:border-emerald-700/80 text-emerald-800 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white text-xs font-semibold transition-colors shadow-xs"
-            title="Dökümana yeni bir boş sayfa ekle"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Boş Sayfa</span>
-          </button>
-
-          {/* Zoom / Grid Size Toggle */}
-          <div className="flex items-center p-0.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs">
-            <button
-              onClick={() => setThumbnailSize('small')}
-              className={cn(
-                'px-2 py-1 rounded-md text-[11px] font-semibold transition-all',
-                thumbnailSize === 'small'
-                  ? 'bg-white dark:bg-slate-900 text-sky-600 shadow-xs'
-                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-              )}
-              title="Kompakt Görünüm (Daha Fazla Sayfa)"
-            >
-              Küçük
-            </button>
-            <button
-              onClick={() => setThumbnailSize('medium')}
-              className={cn(
-                'px-2 py-1 rounded-md text-[11px] font-semibold transition-all',
-                thumbnailSize === 'medium'
-                  ? 'bg-white dark:bg-slate-900 text-sky-600 shadow-xs'
-                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-              )}
-              title="Standart Görünüm"
-            >
-              Orta
-            </button>
-            <button
-              onClick={() => setThumbnailSize('large')}
-              className={cn(
-                'px-2 py-1 rounded-md text-[11px] font-semibold transition-all',
-                thumbnailSize === 'large'
-                  ? 'bg-white dark:bg-slate-900 text-sky-600 shadow-xs'
-                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-              )}
-              title="Büyük Görünüm (Detaylı Önizleme)"
-            >
-              Büyük
-            </button>
-          </div>
-
-          {/* Select all toggle */}
-          <button
-            onClick={isAllSelected ? clearPageSelection : selectAllPages}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200 dark:border-slate-700"
-          >
-            {isAllSelected ? <Square className="w-3.5 h-3.5" /> : <CheckSquare className="w-3.5 h-3.5" />}
-            {isAllSelected ? 'Seçimi Kaldır' : 'Tümünü Seç'}
-          </button>
-
-          {/* Extract and Open as New PDF / Tab */}
-          <button
-            onClick={handleExtractAndOpenNewPdf}
-            disabled={selectedCount === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-100 dark:bg-sky-950/70 hover:bg-sky-200 dark:hover:bg-sky-900 border border-sky-300 dark:border-sky-600/80 text-sky-700 dark:text-sky-300 hover:text-sky-900 dark:hover:text-white disabled:opacity-40 text-xs font-semibold transition-colors shadow-sm"
-            title="Seçili sayfaları ayıklayıp doğrudan yeni bir PDF sekmesi olarak aç"
-          >
-            <FilePlus className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-            <span>Yeni PDF Aç</span>
-          </button>
-
-          {/* Extract / Ayıkla & İndir button */}
-          <button
-            onClick={handleExtractAndDownload}
-            disabled={selectedCount === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-950/60 hover:bg-emerald-200 dark:hover:bg-emerald-900 border border-emerald-300 dark:border-emerald-700/80 text-emerald-800 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white disabled:opacity-40 text-xs font-medium transition-colors shadow-sm"
-            title="Seçili sayfaları ayıklayıp ayrı bir PDF olarak indir"
-          >
-            <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span>Ayıkla & İndir</span>
-          </button>
-
-          {/* Rotate actions */}
+        {/* Center Section: Core Page Editing Actions */}
+        <div className="flex items-center gap-1.5">
+          {/* Rotate Left */}
           <button
             onClick={() => {
               if (selectedCount > 0) {
@@ -611,11 +659,14 @@ export const PageManagerModal: React.FC = () => {
               }
             }}
             disabled={selectedCount === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200 dark:border-slate-700"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-35 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
+            title="Seçili Sayfaları 90° Sola Döndür"
           >
             <RotateCcw className="w-3.5 h-3.5 text-sky-500 dark:text-sky-400" />
-            Sola (-90°)
+            <span>Sola</span>
           </button>
+
+          {/* Rotate Right */}
           <button
             onClick={() => {
               if (selectedCount > 0) {
@@ -623,21 +674,32 @@ export const PageManagerModal: React.FC = () => {
               }
             }}
             disabled={selectedCount === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200 dark:border-slate-700"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-35 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
+            title="Seçili Sayfaları 90° Sağa Döndür"
           >
             <RotateCw className="w-3.5 h-3.5 text-sky-500 dark:text-sky-400" />
-            Sağa (+90°)
+            <span>Sağa</span>
           </button>
 
-          {/* Duplicate */}
+          {/* Extract Button */}
+          <button
+            onClick={() => setExtractPagesModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs font-bold transition-all shadow-sm shadow-sky-500/20 active:scale-95"
+            title="Sayfaları Ayıkla (Yeni PDF, Ayrı Sayfalar veya ZIP)"
+          >
+            <Scissors className="w-3.5 h-3.5" />
+            <span>Ayıkla...</span>
+          </button>
+
+          {/* Duplicate Button */}
           <button
             onClick={handleDuplicate}
             disabled={selectedCount === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200 dark:border-slate-700"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-35 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
             title="Seçili Sayfaları Çoğalt"
           >
-            <Copy className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
-            Çoğalt
+            <Copy className="w-3.5 h-3.5 text-amber-500" />
+            <span>Çoğalt</span>
           </button>
 
           {/* Synthesize N-up button */}
@@ -647,29 +709,110 @@ export const PageManagerModal: React.FC = () => {
               setPageLayoutModalOpen(true);
             }}
             disabled={selectedCount === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900 border border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:text-purple-900 dark:hover:text-white disabled:opacity-40 text-xs font-medium transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-35 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
             title="Seçili sayfaları tek bir A4/A3 sayfada birleştir"
           >
-            <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-            Tek Sayfada Birleştir
+            <Sparkles className="w-3.5 h-3.5 text-purple-500" />
+            <span>Birleştir</span>
           </button>
 
           {/* Delete selected */}
           <button
             onClick={handleDeleteSelected}
             disabled={selectedCount === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-100 dark:bg-rose-950/50 hover:bg-rose-200 dark:hover:bg-rose-900/80 border border-rose-300 dark:border-rose-800/80 text-rose-700 dark:text-rose-300 disabled:opacity-40 text-xs font-medium transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 disabled:opacity-35 text-xs font-medium transition-colors"
+            title="Seçili Sayfaları Sil (Delete/Backspace)"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Sil
+            <span>Sil</span>
+          </button>
+        </div>
+
+        {/* Right Section: View, Undo/Redo & Close */}
+        <div className="flex items-center gap-3">
+          {/* Undo / Redo */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => {
+                if (historyManager.undo()) addToast('İşlem geri alındı.', 'info');
+              }}
+              disabled={!historyManager.canUndo()}
+              className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
+              title="Geri Al (Ctrl+Z)"
+            >
+              <Undo2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => {
+                if (historyManager.redo()) addToast('İşlem yinelendi.', 'info');
+              }}
+              disabled={!historyManager.canRedo()}
+              className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
+              title="Yinele (Ctrl+Y)"
+            >
+              <Redo2 className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="h-5 w-px bg-slate-200 dark:border-slate-800" />
+
+          {/* Grid Size Switcher */}
+          <div className="flex items-center p-0.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 text-xs">
+            <button
+              onClick={() => setThumbnailSize('small')}
+              className={cn(
+                'px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all',
+                thumbnailSize === 'small'
+                  ? 'bg-white dark:bg-slate-900 text-sky-600 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+              )}
+              title="Küçük Boyut"
+            >
+              Küçük
+            </button>
+            <button
+              onClick={() => setThumbnailSize('medium')}
+              className={cn(
+                'px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all',
+                thumbnailSize === 'medium'
+                  ? 'bg-white dark:bg-slate-900 text-sky-600 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+              )}
+              title="Orta Boyut"
+            >
+              Orta
+            </button>
+            <button
+              onClick={() => setThumbnailSize('large')}
+              className={cn(
+                'px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all',
+                thumbnailSize === 'large'
+                  ? 'bg-white dark:bg-slate-900 text-sky-600 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+              )}
+              title="Büyük Boyut"
+            >
+              Büyük
+            </button>
+          </div>
+
+          {/* Select all toggle */}
+          <button
+            onClick={isAllSelected ? clearPageSelection : selectAllPages}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
+            title={isAllSelected ? 'Tüm seçimleri temizle' : 'Tüm sayfaları seç (Ctrl+A)'}
+          >
+            {isAllSelected ? <Square className="w-3.5 h-3.5" /> : <CheckSquare className="w-3.5 h-3.5" />}
+            <span>{isAllSelected ? 'Temizle' : 'Tümünü Seç'}</span>
           </button>
 
           {/* Close button */}
           <button
             onClick={() => setPageManagerOpen(false)}
-            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors border border-slate-200 dark:border-slate-700 ml-2"
+            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors border border-slate-200/80 dark:border-slate-700/80"
+            title="Kapat (ESC)"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -716,6 +859,13 @@ export const PageManagerModal: React.FC = () => {
           stopAutoScrollLoop();
           e.preventDefault();
           e.stopPropagation();
+
+          // If internal reorder drag was triggered, do NOT treat as external file insertion!
+          if ((window as any).__xpdf_internal_drag) {
+            (window as any).__xpdf_internal_drag = null;
+            return;
+          }
+
           if (!currentDocument || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
           const files = Array.from(e.dataTransfer.files).filter(
             (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
@@ -748,7 +898,7 @@ export const PageManagerModal: React.FC = () => {
             addToast('PDF eklenirken hata oluştu.', 'error');
           }
         }}
-        className="relative flex-1 overflow-y-auto p-8 select-none bg-slate-100/80 dark:bg-slate-950/60"
+        className="relative flex-1 overflow-y-auto p-8 select-none bg-slate-100/80 dark:bg-slate-950/60 pb-24"
       >
         {/* Direct DOM Marquee Rectangle */}
         <div
@@ -783,6 +933,86 @@ export const PageManagerModal: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* Floating Action Dock (Adobe Acrobat / Figma Style) */}
+      {selectedCount > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-slate-900/92 dark:bg-slate-900/95 text-white backdrop-blur-xl border border-white/10 shadow-2xl shadow-black/40 animate-in fade-in slide-in-from-bottom-5 duration-200 select-none">
+          {/* Selected Count Indicator */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white/10 text-xs font-bold text-slate-200">
+            <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
+            <span>{selectedCount} sayfa seçildi</span>
+          </div>
+
+          <div className="h-4 w-px bg-white/15" />
+
+          {/* Draggable Badge for Desktop Drag */}
+          <div
+            draggable
+            onMouseEnter={prepareMultiPagePdf}
+            onMouseDown={prepareMultiPagePdf}
+            onDragStart={handleMultiPageDragStart}
+            onDragEnd={handleMultiPageDragEnd}
+            title="Bu rozeti Windows Masaüstüne veya Dosya Gezgini klasörüne sürükleyip bırakarak yeni bir PDF oluşturabilirsiniz."
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold text-xs cursor-grab active:cursor-grabbing transition-all shadow-md shadow-sky-500/25 border border-sky-400/40 hover:scale-105 active:scale-95"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Masaüstüne Sürükleyin ↗</span>
+          </div>
+
+          <div className="h-4 w-px bg-white/15" />
+
+          {/* Quick Action: Extract */}
+          <button
+            onClick={() => setExtractPagesModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl hover:bg-white/10 text-xs font-medium text-slate-200 hover:text-white transition-colors"
+            title="Seçili Sayfaları Ayıkla"
+          >
+            <Scissors className="w-3.5 h-3.5 text-sky-400" />
+            <span>Ayıkla</span>
+          </button>
+
+          {/* Quick Action: Rotate */}
+          <button
+            onClick={() => historyManager.execute(new RotatePageCommand(currentDocument.selectedPageIds, 90))}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl hover:bg-white/10 text-xs font-medium text-slate-200 hover:text-white transition-colors"
+            title="90° Sağa Döndür"
+          >
+            <RotateCw className="w-3.5 h-3.5 text-sky-400" />
+            <span>Döndür</span>
+          </button>
+
+          {/* Quick Action: Duplicate */}
+          <button
+            onClick={handleDuplicate}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl hover:bg-white/10 text-xs font-medium text-slate-200 hover:text-white transition-colors"
+            title="Seçili Sayfaları Çoğalt"
+          >
+            <Copy className="w-3.5 h-3.5 text-amber-400" />
+            <span>Çoğalt</span>
+          </button>
+
+          {/* Quick Action: Delete */}
+          <button
+            onClick={handleDeleteSelected}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl hover:bg-rose-500/20 text-xs font-medium text-rose-300 hover:text-rose-200 transition-colors"
+            title="Seçili Sayfaları Sil"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+            <span>Sil</span>
+          </button>
+
+          <div className="h-4 w-px bg-white/15" />
+
+          {/* Clear Selection */}
+          <button
+            onClick={clearPageSelection}
+            className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+            title="Seçimi Temizle"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Desktop Right-Click Context Menu */}
       {contextMenu && (
@@ -844,13 +1074,13 @@ export const PageManagerModal: React.FC = () => {
 
           <button
             onClick={() => {
-              handleExtractAndDownload();
+              setExtractPagesModalOpen(true);
               setContextMenu(null);
             }}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
           >
-            <Download className="w-3.5 h-3.5 text-emerald-500" />
-            <span>Yeni PDF Olarak Ayıkla</span>
+            <Scissors className="w-3.5 h-3.5 text-sky-500" />
+            <span>Sayfaları Ayıkla...</span>
           </button>
 
           <button

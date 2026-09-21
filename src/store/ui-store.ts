@@ -43,6 +43,7 @@ interface UIState {
   isFormsModalOpen: boolean;
   isCompareModalOpen: boolean;
   isSnipOcrModalOpen: boolean;
+  isExtractPagesModalOpen: boolean;
 
   addToast: (message: string, type?: ToastItem['type'], duration?: number) => void;
   removeToast: (id: string) => void;
@@ -52,6 +53,7 @@ interface UIState {
   setShortcutsModalOpen: (open: boolean) => void;
   setMergeModalOpen: (open: boolean) => void;
   setSplitModalOpen: (open: boolean) => void;
+  setExtractPagesModalOpen: (open: boolean) => void;
   setInsertModalOpen: (open: boolean, file?: File | null) => void;
   setInsertBlankPageModalOpen: (open: boolean, insertIndex?: number | null) => void;
   setPageLayoutModalOpen: (open: boolean) => void;
@@ -86,6 +88,7 @@ export const useUIStore = create<UIState>((set) => ({
   isFormsModalOpen: false,
   isCompareModalOpen: false,
   isSnipOcrModalOpen: false,
+  isExtractPagesModalOpen: false,
   isPropertiesModalOpen: false,
   isShortcutsModalOpen: false,
   isMergeModalOpen: false,
@@ -140,6 +143,7 @@ export const useUIStore = create<UIState>((set) => ({
   setShortcutsModalOpen: (open) => set({ isShortcutsModalOpen: open }),
   setMergeModalOpen: (open) => set({ isMergeModalOpen: open }),
   setSplitModalOpen: (open) => set({ isSplitModalOpen: open }),
+  setExtractPagesModalOpen: (open) => set({ isExtractPagesModalOpen: open }),
   setInsertModalOpen: (open, file = null) =>
     set({ isInsertModalOpen: open, pendingInsertFile: file }),
   setInsertBlankPageModalOpen: (open, insertIndex = null) =>

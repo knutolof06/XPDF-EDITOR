@@ -14,6 +14,7 @@ import { RightToolsSidebar } from './components/layout/RightToolsSidebar';
 import { BottomBar } from './components/layout/BottomBar';
 import { PdfViewer } from './components/viewer/PdfViewer';
 import { PageManagerModal } from './components/page-manager/PageManagerModal';
+import { ExtractPagesModal } from './components/page-manager/ExtractPagesModal';
 import { DocumentPropertiesModal } from './components/dialogs/DocumentPropertiesModal';
 import { ShortcutsModal } from './components/dialogs/ShortcutsModal';
 import { MergePdfModal } from './components/dialogs/MergePdfModal';
@@ -506,6 +507,7 @@ export const App: React.FC = () => {
       {/* Modals & Overlays */}
       <SettingsModal />
       <PageManagerModal />
+      <ExtractPagesModal />
       <MergePdfModal />
       <SplitPdfModal />
       <InsertPagesModal />

@@ -1,4 +1,4 @@
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, degrees } from 'pdf-lib';
 import { PdfDocumentModel } from '@/types/document';
 import { binaryStore } from '../storage/binary-store';
 import { PdfLoader, LoadedPdfResult } from '../pdf/pdf-loader';
@@ -192,5 +192,98 @@ export class PdfAssembler {
     ) as ArrayBuffer;
 
     return await PdfLoader.loadDocument(docModel.name, updatedBuffer);
+  }
+
+  /**
+   * Extracts specified pages from a document.
+   * Can return a single combined PDF or separate individual PDFs.
+   * Accurately preserves user rotation for each page.
+   */
+  public static async extractPages(
+    docModel: PdfDocumentModel,
+    pageIds: string[],
+    options: {
+      separateFiles?: boolean;
+      customBaseName?: string;
+    } = {}
+  ): Promise<
+    | { mode: 'single'; name: string; buffer: ArrayBuffer; pageCount: number }
+    | { mode: 'separate'; files: { name: string; buffer: ArrayBuffer; pageNumber: number }[] }
+  > {
+    const rawBuffer = binaryStore.get(docModel.id);
+    if (!rawBuffer) throw new Error('Döküman verisi bulunamadı.');
+
+    const srcDoc = await PDFDocument.load(rawBuffer.slice(0));
+    const baseName = options.customBaseName || docModel.name.replace(/\.pdf$/i, '');
+
+    // Map page IDs to page models in order
+    const pagesToExtract = pageIds
+      .map((id) => docModel.pages.find((p) => p.id === id))
+      .filter((p): p is NonNullable<typeof p> => Boolean(p));
+
+    if (pagesToExtract.length === 0) {
+      throw new Error('Ayıklanacak geçerli sayfa bulunamadı.');
+    }
+
+    if (options.separateFiles) {
+      const separateResults: { name: string; buffer: ArrayBuffer; pageNumber: number }[] = [];
+
+      for (let i = 0; i < pagesToExtract.length; i++) {
+        const page = pagesToExtract[i];
+        const singleDoc = await PDFDocument.create();
+        const [copiedPage] = await singleDoc.copyPages(srcDoc, [page.sourcePageIndex]);
+
+        const currentRot = copiedPage.getRotation().angle || 0;
+        const finalRot = (currentRot + (page.rotation || 0)) % 360;
+        copiedPage.setRotation(degrees(finalRot));
+        singleDoc.addPage(copiedPage);
+
+        const bytes = await singleDoc.save();
+        const buffer = bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ) as ArrayBuffer;
+
+        const fileName = `${baseName}_sayfa_${page.displayPageNumber}.pdf`;
+        separateResults.push({
+          name: fileName,
+          buffer,
+          pageNumber: page.displayPageNumber,
+        });
+      }
+
+      return { mode: 'separate', files: separateResults };
+    } else {
+      const combinedDoc = await PDFDocument.create();
+      const indices = pagesToExtract.map((p) => p.sourcePageIndex);
+      const copiedPages = await combinedDoc.copyPages(srcDoc, indices);
+
+      for (let i = 0; i < copiedPages.length; i++) {
+        const cp = copiedPages[i];
+        const page = pagesToExtract[i];
+        const currentRot = cp.getRotation().angle || 0;
+        const finalRot = (currentRot + (page.rotation || 0)) % 360;
+        cp.setRotation(degrees(finalRot));
+        combinedDoc.addPage(cp);
+      }
+
+      const bytes = await combinedDoc.save();
+      const buffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      ) as ArrayBuffer;
+
+      const fileName =
+        pagesToExtract.length === 1
+          ? `${baseName}_sayfa_${pagesToExtract[0].displayPageNumber}.pdf`
+          : `${baseName}_${pagesToExtract.length}_sayfa.pdf`;
+
+      return {
+        mode: 'single',
+        name: fileName,
+        buffer,
+        pageCount: pagesToExtract.length,
+      };
+    }
   }
 }
