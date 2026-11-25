@@ -10,6 +10,9 @@
     "build": "tsc && vite build && node -e \"require('fs').copyFileSync('manifest.json', 'dist/manifest.json')\"",
     "preview": "vite preview",
     "start": "electron .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
     "build:exe": "npm run build && electron-builder --win nsis portable --x64",
     "build:dir": "npm run build && electron-builder --win dir --x64",
     "release": "npm run build && electron-builder --win nsis --x64 --publish always"
@@ -32,8 +35,8 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "build/**/*",
-      "tools/thumbnail-provider/**/*",
+      "build/icon.ico",
+      "build/icon.png",
       "package.json"
     ],
     "win": {
@@ -59,10 +62,20 @@
     },
     "extraResources": [
       {
+        "from": "build",
+        "to": "build",
+        "filter": [
+          "icon.ico",
+          "icon.png"
+        ]
+      },
+      {
         "from": "tools/thumbnail-provider",
         "to": "tools/thumbnail-provider",
         "filter": [
-          "**/*"
+          "**/*",
+          "!PdfThumbHandler*.dll",
+          "!test_pdf.cs"
         ]
       }
     ],
@@ -81,6 +94,7 @@
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
+    "@pdfsmaller/pdf-encrypt-lite": "^1.2.0",
     "@tanstack/react-virtual": "^3.13.2",
     "clsx": "^2.1.1",
     "electron-updater": "^6.8.9",
@@ -88,6 +102,7 @@
     "immer": "^10.1.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.475.0",
+    "node-forge": "^1.4.4",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
@@ -98,19 +113,28 @@
   },
   "devDependencies": {
     "@electron/packager": "^18.4.4",
+    "@eslint/js": "^9.39.5",
+    "@testing-library/react": "^16.3.3",
     "@types/chrome": "^0.0.307",
     "@types/jszip": "^3.4.0",
     "@types/node": "^22.13.4",
+    "@types/node-forge": "^1.3.14",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^3.2.7",
     "autoprefixer": "^10.4.20",
     "electron": "^34.2.0",
     "electron-builder": "^25.1.8",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "jsdom": "^26.1.0",
     "postcss": "^8.5.2",
     "rcedit": "^4.0.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
-    "vite": "^6.1.0"
+    "typescript-eslint": "^8.74.0",
+    "vite": "^6.1.0",
+    "vitest": "^3.2.7"
   }
 }

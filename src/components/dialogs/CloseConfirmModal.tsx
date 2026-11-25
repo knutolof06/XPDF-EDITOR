@@ -30,18 +30,27 @@ export const CloseConfirmModal: React.FC = () => {
 
   const handleSaveAndClose = async () => {
     if (!targetTab) return;
-    const electron = (window as any).electronAPI;
+    const electron = window.electronAPI;
     try {
       addToast('Kaydediliyor...', 'info');
       const docToSave = (currentDocument && currentDocument.id === targetTab.id) ? currentDocument : targetTab.model;
       const rawOut = await PdfExporter.exportDocumentWithAnnotations(docToSave);
 
       if (electron?.saveFile && targetTab.model.filePath) {
-        await electron.saveFile(targetTab.model.filePath, rawOut);
+        const saveRes = await electron.saveFile(targetTab.model.filePath, rawOut);
+        if (!saveRes?.success) {
+          addToast('Kaydetme sırasında hata oluştu: ' + (saveRes?.error || ''), 'error');
+          return;
+        }
       } else if (electron?.showSaveDialog) {
-        const savePath = await electron.showSaveDialog({ defaultPath: targetTab.name });
-        if (savePath) {
-          await electron.saveFile(savePath, rawOut);
+        const dialogRes = await electron.showSaveDialog({ defaultPath: targetTab.name });
+        if (dialogRes.canceled || !dialogRes.filePath) {
+          return;
+        }
+        const saveRes = await electron.saveFile(dialogRes.filePath, rawOut);
+        if (!saveRes?.success) {
+          addToast('Kaydetme sırasında hata oluştu: ' + (saveRes?.error || ''), 'error');
+          return;
         }
       } else {
         const blob = new Blob([rawOut], { type: 'application/pdf' });

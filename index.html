@@ -2,30 +2,19 @@
 <html lang="tr">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon16.png" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon32.png" />
-    <link rel="icon" type="image/png" sizes="48x48" href="/icons/icon48.png" />
-    <link rel="icon" type="image/png" sizes="96x96" href="/icons/icon96.png" />
-    <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon192.png" />
-    <link rel="shortcut icon" href="/icons/icon48.png" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: 'sha256-y/Ig4mh5eVFc3WsTR6/wzNYe8H/7hHIgINhJ7LC2ckA='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*; frame-src 'self' blob:; object-src 'self' blob:; media-src 'self' blob: data:; base-uri 'self'; form-action 'self';"
+    />
+    <link rel="icon" type="image/png" sizes="16x16" href="./icons/icon16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./icons/icon32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="./icons/icon48.png" />
+    <link rel="icon" type="image/png" sizes="96x96" href="./icons/icon96.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="./icons/icon192.png" />
+    <link rel="shortcut icon" href="./icons/icon48.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>XPDF - Gelişmiş PDF Editör & Görüntüleyici</title>
-    <script>
-      (function () {
-        try {
-          var theme = localStorage.getItem('xpdf_theme') || 'dark';
-          if (
-            theme === 'dark' ||
-            (theme === 'system' &&
-              window.matchMedia('(prefers-color-scheme: dark)').matches)
-          ) {
-            document.documentElement.classList.add('dark');
-          } else {
-            document.documentElement.classList.remove('dark');
-          }
-        } catch (e) {}
-      })();
-    </script>
+    <script>(function(){try{var r=localStorage.getItem('xpdf_settings');var t=null;if(r){try{t=JSON.parse(r).theme;}catch(e){}}if(!t){t=localStorage.getItem('xpdf_theme')||'dark';}if(t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark');document.documentElement.classList.remove('light');}else{document.documentElement.classList.remove('dark');document.documentElement.classList.add('light');}}catch(e){}})();</script>
   </head>
   <body class="bg-slate-100 dark:bg-[#0f172a] text-slate-900 dark:text-slate-100 antialiased overflow-hidden">
     <div id="root" class="w-screen h-screen flex flex-col"></div>

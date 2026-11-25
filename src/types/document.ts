@@ -18,6 +18,17 @@ export type PageTransitionType =
   | 'zoom'
   | 'instant';
 
+export interface PageLink {
+  id: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  url?: string;
+  dest?: unknown;
+  title?: string;
+}
+
 export interface PdfPageModel {
   id: string;
   sourceDocId: string;
@@ -42,6 +53,9 @@ export interface PdfMetadata {
   modificationDate?: string;
   pdfVersion?: string;
   fileSizeFormatted?: string;
+  pageCount?: number;
+  isEncrypted?: boolean;
+  trapped?: string;
 }
 
 export interface PdfDocumentModel {

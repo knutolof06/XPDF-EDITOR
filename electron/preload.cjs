@@ -1,11 +1,21 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+const winrtOcrBindings =
+  process.platform === 'win32'
+    ? {
+        winrtOcrRegion: (imageDataUrl, lang) =>
+          ipcRenderer.invoke('winrt-ocr-region', { imageDataUrl, lang }),
+        winrtOcrGetLanguages: () => ipcRenderer.invoke('winrt-ocr-get-languages'),
+      }
+    : {};
+
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform: process.platform,
 
   // Event listeners
   onOpenFile: (callback) => {
+    if (typeof callback !== 'function') return () => {};
     const subscription = (_event, data) => callback(data);
     ipcRenderer.on('open-file', subscription);
     return () => ipcRenderer.removeListener('open-file', subscription);
@@ -21,25 +31,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Windows Integration & Native Drag
   registerPdfAssociation: () => ipcRenderer.invoke('register-pdf-association'),
-  enableThumbnailHandler: () => ipcRenderer.invoke('enable-thumbnail-handler'),
-  disableThumbnailHandler: () => ipcRenderer.invoke('disable-thumbnail-handler'),
-  getThumbnailHandlerStatus: () => ipcRenderer.invoke('get-thumbnail-handler-status'),
   prepareDragFile: (data) => ipcRenderer.invoke('prepare-drag-file', data),
   startDragFile: (data) => ipcRenderer.send('start-drag-file', data),
-  startDragPage: (data) => ipcRenderer.send('start-drag-page', data),
 
   // Auto Updater
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   installUpdateNow: () => ipcRenderer.invoke('install-update-now'),
   onUpdaterStatus: (callback) => {
+    if (typeof callback !== 'function') return () => {};
     const subscription = (_event, data) => callback(data);
     ipcRenderer.on('updater-status', subscription);
     return () => ipcRenderer.removeListener('updater-status', subscription);
   },
 
-  // Windows Bölge OCR (WinRT — Snipping Tool / PowerToys Text Extractor motoru)
-  winrtOcrRegion: (imageDataUrl, lang) => ipcRenderer.invoke('winrt-ocr-region', { imageDataUrl, lang }),
-  winrtOcrGetLanguages: () => ipcRenderer.invoke('winrt-ocr-get-languages'),
+  // Windows Region OCR (exposed only on Windows)
+  ...winrtOcrBindings,
 });
-

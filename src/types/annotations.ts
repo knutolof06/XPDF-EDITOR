@@ -77,10 +77,22 @@ export interface PageNumberConfig {
 }
 
 export interface HeaderFooterConfig {
+  /** @default false */
+  enabled?: boolean;
   headerText?: string;
   footerText?: string;
+  headerLeft?: string;
+  headerCenter?: string;
+  headerRight?: string;
+  footerLeft?: string;
+  footerCenter?: string;
+  footerRight?: string;
   fontSize: number;
   color: string;
+  marginX?: number;
+  marginY?: number;
+  startPage?: number;
+  endPage?: number;
 }
 
 export type AnyAnnotation =
@@ -111,6 +123,7 @@ export interface PdfNativeObject {
   originalHeight: number;
   // Text fields
   text?: string;
+  originalText?: string;
   fontSize?: number;
   fontName?: string;
   color?: string;

@@ -1,7 +1,7 @@
 import packager from '@electron/packager';
 import path from 'path';
 import fs from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,10 +11,19 @@ const rootDir = path.resolve(__dirname, '..');
 async function bundle() {
   console.log('Building standalone Windows Executable (.exe)...');
 
-  // Verify dist exists
   const distIndex = path.join(rootDir, 'dist', 'index.html');
   if (!fs.existsSync(distIndex)) {
     throw new Error('dist/index.html not found! Run npm run build first.');
+  }
+
+  let pkgVersion = '1.5.7';
+  let pkgDescription = 'XPDF Profesyonel PDF Düzenleyici & Yöneticisi';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+    if (pkg.version) pkgVersion = pkg.version;
+    if (pkg.description) pkgDescription = pkg.description;
+  } catch {
+    // use defaults
   }
 
   const appPaths = await packager({
@@ -22,20 +31,35 @@ async function bundle() {
     name: 'XPDF Editor',
     platform: 'win32',
     arch: 'x64',
+    appVersion: pkgVersion,
     icon: path.join(rootDir, 'build', 'icon.ico'),
     out: path.join(rootDir, 'release'),
     overwrite: true,
-    asar: false,
+    asar: true,
     prune: true,
     ignore: [
-      /^\/\.git/,
-      /^\/\.gemini/,
-      /^\/release/,
-      /\.md$/,
+      /^\/\.git($|\/)/,
+      /^\/\.github($|\/)/,
+      /^\/\.gemini($|\/)/,
+      /^\/release($|\/)/,
+      /^\/src($|\/)/,
+      /^\/scripts($|\/)/,
+      /^\/tools($|\/)/,
+      /^\/build($|\/)/,
+      /^\/scratch($|\/)/,
+      /^\/vitest\.config\.ts$/,
+      /^\/eslint\.config\.js$/,
+      /^\/tsconfig(\.node)?\.json$/,
+      /^\/vite\.config\.ts$/,
+      /^\/tailwind\.config\.js$/,
+      /^\/postcss\.config\.js$/,
+      /^\/index\.html$/,
+      /^\/manifest\.json$/,
+      /\.md$/i,
     ],
     win32metadata: {
       CompanyName: 'XPDF Team',
-      FileDescription: 'XPDF Profesyonel PDF Düzenleyici & Yöneticisi',
+      FileDescription: pkgDescription,
       OriginalFilename: 'XPDF Editor.exe',
       ProductName: 'XPDF Editor',
       InternalName: 'XPDF Editor',
@@ -45,106 +69,85 @@ async function bundle() {
   const appDir = appPaths[0];
   console.log(`Packaging complete! Output directory: ${appDir}`);
 
-  // Ensure dist is copied directly into resources/app/dist
-  const srcDist = path.join(rootDir, 'dist');
-  const targetDist = path.join(appDir, 'resources', 'app', 'dist');
-  if (fs.existsSync(srcDist)) {
-    fs.cpSync(srcDist, targetDist, { recursive: true });
-    console.log(`Verified dist copied to ${targetDist}`);
+  // Copy build icons outside ASAR so Windows Registry DefaultIcon and shell tools can read them
+  const targetBuildDir = path.join(appDir, 'resources', 'build');
+  fs.mkdirSync(targetBuildDir, { recursive: true });
+  for (const iconFile of ['icon.ico', 'icon.png']) {
+    const srcIcon = path.join(rootDir, 'build', iconFile);
+    if (fs.existsSync(srcIcon)) {
+      fs.copyFileSync(srcIcon, path.join(targetBuildDir, iconFile));
+    }
   }
 
-  // Ensure thumbnail provider tool is copied to appDir
+  // Copy thumbnail provider tool (excluding third-party PDF24 DLLs and personal test files)
   const toolsDir = path.join(rootDir, 'tools', 'thumbnail-provider');
-  const targetToolsDir = path.join(appDir, 'tools', 'thumbnail-provider');
+  const targetToolsDir = path.join(appDir, 'resources', 'tools', 'thumbnail-provider');
   if (fs.existsSync(toolsDir)) {
-    fs.cpSync(toolsDir, targetToolsDir, { recursive: true });
-    console.log(`Copied thumbnail provider to ${targetToolsDir}`);
+    fs.mkdirSync(targetToolsDir, { recursive: true });
+    fs.cpSync(toolsDir, targetToolsDir, {
+      recursive: true,
+      filter: (src) => {
+        const name = path.basename(src);
+        return !/^PdfThumbHandler.*\.dll$/i.test(name) && name !== 'test_pdf.cs';
+      },
+    });
+    console.log(`Copied thumbnail provider tools to ${targetToolsDir}`);
   }
 
-  // Patch XPDF Editor.exe PE icon with rcedit
+  // Patch XPDF Editor.exe PE icon & metadata with rcedit
   const rceditExe = path.join(rootDir, 'node_modules', 'rcedit', 'bin', 'rcedit-x64.exe');
   const targetExe = path.join(appDir, 'XPDF Editor.exe');
   const icoFile = path.join(rootDir, 'build', 'icon.ico');
   if (fs.existsSync(rceditExe) && fs.existsSync(targetExe) && fs.existsSync(icoFile)) {
     try {
-      execSync(`"${rceditExe}" "${targetExe}" --set-icon "${icoFile}"`, { stdio: 'ignore' });
+      execFileSync(
+        rceditExe,
+        [
+          targetExe,
+          '--set-icon', icoFile,
+          '--set-file-version', pkgVersion,
+          '--set-product-version', pkgVersion,
+        ],
+        { stdio: 'ignore' }
+      );
       console.log('Successfully embedded custom multi-res icon into XPDF Editor.exe');
     } catch (e) {
       console.warn('rcedit warning:', e.message);
     }
   }
 
-  // Create a 1-click Windows registry setup script in the output folder
-  const setupBat = `@echo off
-cd /d "%~dp0"
-echo ====================================================================
-echo  XPDF - Windows Varsayilan PDF ve Gezgin Entegrasyonu
-echo ====================================================================
-echo.
-set "EXE=%~dp0XPDF Editor.exe"
+  // Create a 1-click Windows registry setup script in the output folder (safe env-var passing, zero escaping bugs)
+  const setupBat = [
+    '@echo off',
+    'cd /d "%~dp0"',
+    'echo ====================================================================',
+    'echo  XPDF - Windows Varsayilan PDF ve Gezgin Entegrasyonu',
+    'echo ====================================================================',
+    'echo.',
+    'set "XPDF_EXE=%~dp0XPDF Editor.exe"',
+    'set "XPDF_ICON=%~dp0resources\\build\\icon.ico"',
+    '',
+    'echo [1/2] XPDF varsayilan PDF yoneticisi olarak kaydediliyor...',
+    'powershell -NoProfile -ExecutionPolicy Bypass -Command "$progId = \'XPDF.PDFDocument\'; $exe = $env:XPDF_EXE; $icon = if (Test-Path $env:XPDF_ICON) { $env:XPDF_ICON } else { $exe }; $q = [char]34; New-Item -Path (\'HKCU:\\Software\\Classes\\\' + $progId + \'\\DefaultIcon\') -Force | Out-Null; New-Item -Path (\'HKCU:\\Software\\Classes\\\' + $progId + \'\\shell\\open\\command\') -Force | Out-Null; Set-ItemProperty -Path (\'HKCU:\\Software\\Classes\\\' + $progId) -Name \'(Default)\' -Value \'PDF Document\'; Set-ItemProperty -Path (\'HKCU:\\Software\\Classes\\\' + $progId + \'\\DefaultIcon\') -Name \'(Default)\' -Value ($icon + \',0\'); Set-ItemProperty -Path (\'HKCU:\\Software\\Classes\\\' + $progId + \'\\shell\\open\\command\') -Name \'(Default)\' -Value ($q + $exe + $q + \' \' + $q + \'%%1\' + $q); New-Item -Path \'HKCU:\\Software\\Classes\\.pdf\\OpenWithProgids\' -Force | Out-Null; Set-ItemProperty -Path \'HKCU:\\Software\\Classes\\.pdf\\OpenWithProgids\' -Name $progId -Value ([byte[]]@())"',
+    '',
+    'echo [2/2] Kucuk resim (Thumbnail) onizlemeleri kontrol ediliyor...',
+    'if exist "%~dp0resources\\tools\\thumbnail-provider\\enable-thumbnails.bat" (',
+    '  call "%~dp0resources\\tools\\thumbnail-provider\\enable-thumbnails.bat"',
+    ')',
+    '',
+    'echo.',
+    'echo ====================================================================',
+    'echo  Tebrikler! XPDF artik tum PDF dosyalarinizla iliskilendirildi.',
+    'echo ====================================================================',
+    'pause',
+    '',
+  ].join('\r\n');
 
-echo [1/2] XPDF varsayilan PDF yoneticisi olarak kaydediliyor...
-powershell -NoProfile -Command "
-  \\$progId = 'XPDF.PDFDocument';
-  \\$exe = '$EXE'.Replace('\\\\', '\\\\');
-  New-Item -Path 'HKCU:\\Software\\Classes\\\\$progId' -Force | Out-Null;
-  Set-ItemProperty -Path 'HKCU:\\Software\\Classes\\\\$progId' -Name '(Default)' -Value 'PDF Document';
-  New-Item -Path 'HKCU:\\Software\\Classes\\\\$progId\\DefaultIcon' -Force | Out-Null;
-  Set-ItemProperty -Path 'HKCU:\\Software\\Classes\\\\$progId\\DefaultIcon' -Name '(Default)' -Value \\\"$EXE,0\\\";
-  New-Item -Path 'HKCU:\\Software\\Classes\\\\$progId\\shell\\open\\command' -Force | Out-Null;
-  Set-ItemProperty -Path 'HKCU:\\Software\\Classes\\\\$progId\\shell\\open\\command' -Name '(Default)' -Value \\\"\\\"\\\"$EXE\\\"\\\" \\\"\\\"%%1\\\"\\\"\\\";
-  New-Item -Path 'HKCU:\\Software\\Classes\\.pdf\\OpenWithProgids' -Force | Out-Null;
-  Set-ItemProperty -Path 'HKCU:\\Software\\Classes\\.pdf\\OpenWithProgids' -Name \\\"\\$progId\\\" -Value '';
-"
-
-echo [2/2] Kucuk resim (Thumbnail) onizlemeleri yukleniyor...
-if exist "%~dp0tools\\thumbnail-provider\\enable-thumbnails.bat" (
-  call "%~dp0tools\\thumbnail-provider\\enable-thumbnails.bat"
-)
-
-echo.
-echo ====================================================================
-echo  Tebrikler! XPDF artik tum PDF dosyalarinizla iliskilendirildi.
-echo ====================================================================
-pause
-`;
-  fs.writeFileSync(path.join(appDir, 'Varsayilan-PDF-Yap-Ve-Onizlemeleri-Ac.bat'), setupBat);
+  fs.writeFileSync(path.join(appDir, 'Varsayilan-PDF-Yap-Ve-Onizlemeleri-Ac.bat'), setupBat, 'utf8');
   console.log(`Created 1-click installer batch file in ${appDir}`);
 }
 
-bundle().then(() => {
-  pushToGitHub();
-}).catch((err) => {
+bundle().catch((err) => {
   console.error('Packaging failed:', err);
   process.exit(1);
 });
-
-function pushToGitHub() {
-  // Skip in CI environment
-  if (process.env.SKIP_GIT_PUSH === 'true' || process.env.CI === 'true') {
-    console.log('ℹ️  CI ortamı algılandı, GitHub push atlandı.');
-    return;
-  }
-
-  const GIT = 'C:\\Program Files\\Git\\bin\\git.exe';
-  if (!fs.existsSync(GIT)) {
-    console.log('⚠️  Git bulunamadı, GitHub güncellemesi atlandı.');
-    return;
-  }
-
-  try {
-    console.log('\n📤 GitHub\'a yükleniyor...');
-    const now = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
-    execSync(`"${GIT}" add -A`, { cwd: rootDir, stdio: 'inherit', timeout: 10000 });
-    execSync(`"${GIT}" diff --cached --quiet || "${GIT}" commit -m "Otomatik güncelleme: ${now}"`, {
-      cwd: rootDir,
-      stdio: 'inherit',
-      shell: true,
-      timeout: 10000,
-    });
-    execSync(`"${GIT}" push origin main`, { cwd: rootDir, stdio: 'inherit', timeout: 20000 });
-    console.log('✅ GitHub başarıyla güncellendi!');
-  } catch (err) {
-    console.warn('⚠️  GitHub push sırasında hata veya zaman aşımı (yerel build başarıyla tamamlandı):', err.message);
-  }
-}

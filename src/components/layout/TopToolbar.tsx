@@ -158,7 +158,7 @@ export const TopToolbar: React.FC = () => {
   // Kaydet: Orijinal dosyanın üzerine yaz (filePath varsa), yoksa Farklı Kaydet'e düşer
   const handleSave = async () => {
     if (!currentDocument) return;
-    const electron = (window as any).electronAPI;
+    const electron = window.electronAPI;
     try {
       addToast('Kaydediliyor...', 'info');
       const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
@@ -191,7 +191,7 @@ export const TopToolbar: React.FC = () => {
   // Farklı Kaydet: Her zaman kayıt konumu sor
   const handleSaveAs = async () => {
     if (!currentDocument) return;
-    const electron = (window as any).electronAPI;
+    const electron = window.electronAPI;
     try {
       addToast('Dışa aktarılıyor...', 'info');
       const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
@@ -199,11 +199,12 @@ export const TopToolbar: React.FC = () => {
       if (electron?.showSaveDialog) {
         // Electron: Yerel Windows kayıt diyaloğu
         const defaultName = currentDocument.name.replace(/\.pdf$/i, '') + '_edited.pdf';
-        const savePath = await electron.showSaveDialog({ defaultPath: defaultName });
-        if (!savePath) return; // İptal edildi
+        const dialogRes = await electron.showSaveDialog({ defaultPath: defaultName });
+        if (dialogRes.canceled || !dialogRes.filePath) return; // İptal edildi
+        const savePath = dialogRes.filePath;
         const result = await electron.saveFile(savePath, rawOut);
         if (result?.success) {
-          addToast(`"${savePath.split('\\').pop()}" kaydedildi!`, 'success');
+          addToast(`"${savePath.split(/[\\/]/).pop()}" kaydedildi!`, 'success');
         } else {
           addToast('Kaydetme hatası: ' + (result?.error || ''), 'error');
         }
@@ -227,7 +228,7 @@ export const TopToolbar: React.FC = () => {
   // Yazdır (Print: Tüm sayfaları vektör kalitesinde ve açıklamalarla birlikte yazdırır)
   const handlePrint = async () => {
     if (!currentDocument) return;
-    const electron = (window as any).electronAPI;
+    const electron = window.electronAPI;
     try {
       addToast('Yazdırma hazırlanıyor...', 'info', 2000);
       const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);

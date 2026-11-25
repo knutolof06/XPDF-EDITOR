@@ -13,19 +13,30 @@ class Program
     {
         try
         {
-            string pdfPath = @"C:\Users\burha\Desktop\analizler\65890.pdf";
+            if (args.Length == 0 || string.IsNullOrWhiteSpace(args[0]))
+            {
+                Console.WriteLine("Usage: test_pdf.exe <path-to-pdf> [output-png-path]");
+                return;
+            }
+
+            string pdfPath = Path.GetFullPath(args[0]);
             if (!File.Exists(pdfPath))
             {
-                var files = Directory.GetFiles(@"C:\Users\burha\Desktop", "*.pdf", SearchOption.AllDirectories);
-                if (files.Length > 0) pdfPath = files[0];
+                Console.Error.WriteLine("PDF file not found: " + pdfPath);
+                return;
             }
+
+            string outputPath = args.Length > 1 && !string.IsNullOrWhiteSpace(args[1])
+                ? Path.GetFullPath(args[1])
+                : Path.Combine(Path.GetTempPath(), "xpdf_test_thumb.png");
+
             Console.WriteLine("PDF: " + pdfPath);
-            RenderPdfFirstPage(pdfPath, @"C:\Users\burha\Desktop\test_thumb.png").Wait();
-            Console.WriteLine("Success: test_thumb.png generated!");
+            RenderPdfFirstPage(pdfPath, outputPath).Wait();
+            Console.WriteLine("Success: thumbnail generated at " + outputPath);
         }
         catch (Exception ex)
         {
-            Console.WriteLine("Error: " + ex);
+            Console.Error.WriteLine("Error: " + ex);
         }
     }
 
