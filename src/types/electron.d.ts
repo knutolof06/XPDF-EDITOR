@@ -82,6 +82,7 @@ export interface UpdaterStatusEvent {
 
 export interface UpdateCheckResult {
   status: 'checking' | 'dev-mode' | 'unsupported' | 'error';
+  isUpdateAvailable?: boolean;
   version?: string;
   message?: string;
 }

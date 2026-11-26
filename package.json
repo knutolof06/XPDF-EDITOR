@@ -1,6 +1,6 @@
 {
   "name": "xpdf-editor",
-  "version": "1.5.7",
+  "version": "1.6.0",
   "description": "XPDF - Profesyonel Windows PDF Düzenleyici & Yöneticisi",
   "private": true,
   "type": "module",
@@ -90,6 +90,9 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "include": "build/installer.nsh"
+    },
+    "portable": {
+      "artifactName": "XPDF-Editor-Portable.exe"
     }
   },
   "dependencies": {

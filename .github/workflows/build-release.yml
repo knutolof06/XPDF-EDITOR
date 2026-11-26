@@ -69,10 +69,13 @@ jobs:
       - name: Create Windows Portable ZIP
         run: |
           Compress-Archive -Path "release\win-unpacked\*" -DestinationPath "XPDF-Editor-Windows-x64-Portable.zip" -Force
-          $origExe = Get-Item "release\XPDF Editor *.exe" | Select-Object -First 1
-          if ($origExe) {
-            Copy-Item $origExe.FullName -Destination "release\XPDF-Editor-Portable.exe"
+          if (!(Test-Path "release\XPDF-Editor-Portable.exe")) {
+            $origExe = Get-Item "release\XPDF Editor *.exe" | Select-Object -First 1
+            if ($origExe) {
+              Copy-Item $origExe.FullName -Destination "release\XPDF-Editor-Portable.exe"
+            }
           }
+          Get-Content "release\latest.yml"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -213,3 +216,4 @@ jobs:
             XPDF-Editor-macOS-x64.zip
           draft: false
           prerelease: false
+          generate_release_notes: true

@@ -121,7 +121,7 @@ function writePersistedSettings(patch: PersistedExtraSettings): void {
 
 export const SettingsModal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('appearance');
-  const [appVersion, setAppVersion] = useState('1.5.7');
+  const [appVersion, setAppVersion] = useState('1.6.0');
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updaterStatus, setUpdaterStatus] = useState<{
     type: 'idle' | 'available' | 'progress' | 'downloaded' | 'error' | 'up-to-date';
@@ -241,7 +241,11 @@ export const SettingsModal: React.FC = () => {
         addToast(`Güncelleme hatası: ${res.message}`, 'error', 4000);
       } else {
         setIsCheckingUpdates(false);
-        if (res?.version && res.version !== appVersion) {
+        const hasUpdate =
+          typeof res?.isUpdateAvailable === 'boolean'
+            ? res.isUpdateAvailable
+            : Boolean(res?.version && res.version !== appVersion);
+        if (hasUpdate && res?.version) {
           addToast(`Yeni sürüm bulundu (v${res.version}), indiriliyor...`, 'info', 3500);
         } else {
           setUpdaterStatus({

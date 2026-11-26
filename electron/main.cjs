@@ -43,6 +43,7 @@ function runPowerShellScript(scriptText, extraEnv = {}) {
 
 // ─── Auto Updater (electron-updater) ────────────────────────────────────────
 let autoUpdater = null;
+let isManualUpdateCheck = false;
 try {
   autoUpdater = require('electron-updater').autoUpdater;
   autoUpdater.logger = {
@@ -53,6 +54,8 @@ try {
   };
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.disableWebInstaller = true;
 } catch (e) {
   console.warn('[Updater] electron-updater not available:', e.message);
 }
@@ -509,12 +512,13 @@ if (!gotTheLock) {
 
       autoUpdater.on('error', (err) => {
         console.error('[Updater] Error:', err.message);
-        if (mainWindow && !mainWindow.isDestroyed()) {
+        if (isManualUpdateCheck && mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('updater-status', {
             type: 'error',
             message: `Güncelleme hatası: ${err.message}`,
           });
         }
+        isManualUpdateCheck = false;
       });
     }
     // ────────────────────────────────────────────────────────────────────────
@@ -538,10 +542,20 @@ if (!gotTheLock) {
 ipcMain.handle('check-for-updates', async () => {
   if (!app.isPackaged) return { status: 'dev-mode' };
   if (!isAutoUpdateSupported()) return { status: 'unsupported' };
+  isManualUpdateCheck = true;
   try {
     const result = await autoUpdater.checkForUpdates();
-    return { status: 'checking', version: result?.updateInfo?.version };
+    const isUpdateAvailable = Boolean(result?.isUpdateAvailable);
+    if (!isUpdateAvailable) {
+      isManualUpdateCheck = false;
+    }
+    return {
+      status: 'checking',
+      isUpdateAvailable,
+      version: result?.updateInfo?.version,
+    };
   } catch (err) {
+    isManualUpdateCheck = false;
     return { status: 'error', message: err.message };
   }
 });
