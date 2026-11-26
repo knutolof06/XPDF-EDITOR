@@ -64,7 +64,7 @@ jobs:
         run: npm run build
 
       - name: Build Windows Installer & Portable EXE
-        run: npx electron-builder --win nsis portable --x64
+        run: npx electron-builder --win nsis portable --x64 --publish never
 
       - name: Create Windows Portable ZIP
         run: |
