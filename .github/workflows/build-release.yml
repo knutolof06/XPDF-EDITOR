@@ -68,7 +68,7 @@ jobs:
 
       - name: Create Windows Portable ZIP
         run: |
-          Compress-Archive -Path "release\win-unpacked\*" -DestinationPath "XPDF-Editor-Windows-x64-Portable.zip" -Force
+          Compress-Archive -Path "release\win-unpacked\*" -DestinationPath "release\XPDF-Editor-Windows-x64-Portable.zip" -Force
           if (!(Test-Path "release\XPDF-Editor-Portable.exe")) {
             $origExe = Get-Item "release\XPDF Editor *.exe" | Select-Object -First 1
             if ($origExe) {
@@ -86,7 +86,7 @@ jobs:
             release/XPDF-Editor-Kurulum-Setup.exe.blockmap
             release/XPDF-Editor-Portable.exe
             release/latest.yml
-            XPDF-Editor-Windows-x64-Portable.zip
+            release/XPDF-Editor-Windows-x64-Portable.zip
 
   build-macos:
     name: 🍎 macOS Build
@@ -173,11 +173,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: windows-build
+          path: artifacts
 
       - name: Download macOS build
         uses: actions/download-artifact@v4
         with:
           name: macos-build
+          path: artifacts
+
+      - name: Verify release files exist
+        run: |
+          find artifacts -maxdepth 3 -type f
+          find artifacts -name "latest.yml" -exec cat {} +
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -199,8 +206,8 @@ jobs:
             | 🍎 macOS | `XPDF-Editor-macOS-x64.zip` | macOS 64-bit Uygulama Paketi |
 
             ### 🪟 Windows Kurulumu
-            - **Kurulum paketi için:** `XPDF-Editor-Kurulum-Setup.exe` dosyasını çalıştırın.
-            - **Taşınabilir versiyon için:** `XPDF-Editor-Windows-x64-Portable.zip` dosyasını ayıklayın ve `XPDF Editor.exe` dosyasını çalıştırın.
+            - **Kurulum paketi için:** `XPDF-Editor-Kurulum-Setup.exe` dosyasını çalıştırın (otomatik güncelleme desteklidir).
+            - **Taşınabilir versiyon için:** `XPDF-Editor-Portable.exe` dosyasını doğrudan çalıştırabilir veya `XPDF-Editor-Windows-x64-Portable.zip` dosyasını ayıklayıp `XPDF Editor.exe` dosyasını açabilirsiniz.
             - Varsayılan PDF uygulaması yapmak için uygulama içinde **Belge Özellikleri** penceresindeki **"XPDF'i Varsayılan PDF Yöneticisi Yap"** düğmesini kullanabilirsiniz.
 
             ### 🍎 macOS Kurulumu
@@ -208,12 +215,13 @@ jobs:
             2. `XPDF Editor.app` dosyasını Uygulamalar klasörüne taşıyın
             3. İlk açılışta sağ tıklayıp "Aç" seçeneğini kullanın (Gatekeeper bypass)
           files: |
-            XPDF-Editor-Kurulum-Setup.exe
-            XPDF-Editor-Kurulum-Setup.exe.blockmap
-            XPDF-Editor-Portable.exe
-            latest.yml
-            XPDF-Editor-Windows-x64-Portable.zip
-            XPDF-Editor-macOS-x64.zip
+            artifacts/**/XPDF-Editor-Kurulum-Setup.exe
+            artifacts/**/XPDF-Editor-Kurulum-Setup.exe.blockmap
+            artifacts/**/XPDF-Editor-Portable.exe
+            artifacts/**/latest.yml
+            artifacts/**/XPDF-Editor-Windows-x64-Portable.zip
+            artifacts/**/XPDF-Editor-macOS-x64.zip
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
           generate_release_notes: true
