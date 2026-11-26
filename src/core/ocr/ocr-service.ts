@@ -1,6 +1,6 @@
 import { createWorker, Worker, PSM } from 'tesseract.js';
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { SearchablePdfEngine } from './searchable-pdf-engine';
 
 export type OcrLanguage = 'tur' | 'eng' | 'tur+eng' | 'deu' | 'fra';
 export type OcrPageSegMode = '3' | '6' | '11'; // '3': Auto, '6': Single Block, '11': Sparse Text
@@ -56,6 +56,7 @@ export interface OcrPageResult {
   paragraphs: OcrParagraph[];
   width: number;
   height: number;
+  renderScale?: number;
   previewUrl: string;
 }
 
@@ -74,6 +75,35 @@ export interface OcrProgress {
   pageProgress: number; // 0 to 100
   overallProgress: number; // 0 to 100
   statusText: string;
+}
+
+export interface OcrProcessOptions {
+  signal?: AbortSignal;
+  scale?: number;
+  includePreview?: boolean;
+}
+
+function getLocalTesseractAssetUrl(relativePath: string): string {
+  const clean = relativePath.replace(/^\/+/, '');
+  if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function') {
+    return chrome.runtime.getURL(clean);
+  }
+  return './' + clean;
+}
+
+function createAbortError(message = 'OCR işlemi iptal edildi.'): Error {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException(message, 'AbortError');
+  }
+  const err = new Error(message);
+  err.name = 'AbortError';
+  return err;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
 }
 
 export class OcrPostProcessor {
@@ -110,69 +140,122 @@ export class OcrService {
   private static activeWorker: Worker | null = null;
   private static currentLang: string | null = null;
   private static currentPsm: string | null = null;
+  private static workerOpMutex: Promise<void> = Promise.resolve();
+  private static progressCallback: ((progress: number, status: string) => void) | null = null;
+
+  private static runWithMutex<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.workerOpMutex.then(task, task);
+    this.workerOpMutex = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }
 
   /**
-   * Initializes or reuses a Tesseract.js worker with the requested language(s) and PSM.
+   * Initializes or reuses a Tesseract.js worker with local offline paths and mutex protection.
    */
   public static async getWorker(
     lang: OcrLanguage = 'tur+eng',
     psm: OcrPageSegMode = '3',
-    onProgress?: (progress: number, status: string) => void
+    onProgress?: (progress: number, status: string) => void,
+    signal?: AbortSignal
   ): Promise<Worker> {
-    if (this.activeWorker && this.currentLang === lang && this.currentPsm === psm) {
-      return this.activeWorker;
-    }
+    return this.runWithMutex(async () => {
+      throwIfAborted(signal);
+      this.progressCallback = onProgress || null;
 
-    if (this.activeWorker) {
-      try {
-        await this.activeWorker.terminate();
-      } catch (err) {
-        console.warn('Error terminating previous worker:', err);
-      }
-      this.activeWorker = null;
-      this.currentLang = null;
-      this.currentPsm = null;
-    }
-
-    // Languages can be combined like 'tur+eng'
-    const worker = await createWorker(lang, 1, {
-      logger: (m) => {
-        if (onProgress && typeof m.progress === 'number') {
-          onProgress(Math.round(m.progress * 100), m.status || 'İşleniyor');
+      if (this.activeWorker && this.currentLang === lang) {
+        if (this.currentPsm !== psm) {
+          try {
+            await this.activeWorker.setParameters({
+              tessedit_pageseg_mode: psm as PSM,
+            });
+            this.currentPsm = psm;
+          } catch (err) {
+            console.warn('Could not update tesseract PSM:', err);
+          }
         }
-      },
-    });
+        return this.activeWorker;
+      }
 
-    try {
-      await worker.setParameters({
-        user_defined_dpi: '300',
-        preserve_interword_spaces: '1',
-        tessedit_pageseg_mode: psm as PSM,
+      if (this.activeWorker) {
+        try {
+          await this.activeWorker.terminate();
+        } catch (err) {
+          console.warn('Error terminating previous worker:', err);
+        }
+        this.activeWorker = null;
+        this.currentLang = null;
+        this.currentPsm = null;
+      }
+
+      const workerPath = getLocalTesseractAssetUrl('tesseract/worker.min.js');
+      const corePath = getLocalTesseractAssetUrl('tesseract');
+
+      let workerError: Error | null = null;
+      const worker = await createWorker(lang, 1, {
+        workerPath,
+        corePath,
+        logger: (m) => {
+          if (this.progressCallback && typeof m.progress === 'number') {
+            this.progressCallback(Math.round(m.progress * 100), m.status || 'İşleniyor');
+          }
+        },
+        errorHandler: (err) => {
+          workerError = err instanceof Error ? err : new Error(String(err));
+        },
       });
-    } catch (err) {
-      console.warn('Could not set tesseract parameters:', err);
-    }
 
-    this.activeWorker = worker;
-    this.currentLang = lang;
-    this.currentPsm = psm;
-    return worker;
+      if (workerError) {
+        try {
+          await worker.terminate();
+        } catch {}
+        throw workerError;
+      }
+
+      if (signal?.aborted) {
+        try {
+          await worker.terminate();
+        } catch {}
+        throw createAbortError();
+      }
+
+      try {
+        await worker.setParameters({
+          user_defined_dpi: '300',
+          preserve_interword_spaces: '1',
+          tessedit_pageseg_mode: psm as PSM,
+        });
+      } catch (err) {
+        console.warn('Could not set tesseract parameters:', err);
+      }
+
+      this.activeWorker = worker;
+      this.currentLang = lang;
+      this.currentPsm = psm;
+      return worker;
+    });
   }
 
   /**
-   * Terminate active worker to free memory when studio is closed.
+   * Terminates active worker safely under mutex lock to free WASM/Worker memory.
    */
   public static async terminateWorker(): Promise<void> {
-    if (this.activeWorker) {
-      try {
-        await this.activeWorker.terminate();
-      } catch (err) {
-        console.warn('Worker terminate error:', err);
+    return this.runWithMutex(async () => {
+      this.progressCallback = null;
+      if (this.activeWorker) {
+        const worker = this.activeWorker;
+        this.activeWorker = null;
+        this.currentLang = null;
+        this.currentPsm = null;
+        try {
+          await worker.terminate();
+        } catch (err) {
+          console.warn('Worker terminate error:', err);
+        }
       }
-      this.activeWorker = null;
-      this.currentLang = null;
-      this.currentPsm = null;
-    }
+    });
   }
 
   /**
@@ -219,122 +302,128 @@ export class OcrService {
 
   /**
    * High-resolution offscreen canvas rendering with adaptive preprocessing.
+   * Skips generating heavy JPEG previewUrl unless explicitly requested.
    */
   public static async renderPageToCanvas(
     pdfDocProxy: PDFDocumentProxy,
     pageNumber: number,
     scale: number = 3.0,
-    enhanceMode: OcrEnhanceMode = 'smart'
+    enhanceMode: OcrEnhanceMode = 'smart',
+    includePreview: boolean = false
   ): Promise<{ canvas: HTMLCanvasElement; width: number; height: number; previewUrl: string }> {
     const page = await pdfDocProxy.getPage(pageNumber);
     const viewport = page.getViewport({ scale });
 
     const canvas = document.createElement('canvas');
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
+    canvas.width = Math.max(1, Math.floor(viewport.width));
+    canvas.height = Math.max(1, Math.floor(viewport.height));
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) {
+      canvas.width = 0;
+      canvas.height = 0;
       throw new Error('Canvas 2D context oluşturulamadı.');
     }
 
-    // Render page to canvas
-    // @ts-ignore
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    try {
+      await page.render({ canvasContext: ctx, viewport }).promise;
 
-    if (enhanceMode !== 'raw') {
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imgData.data;
-      const totalPixels = canvas.width * canvas.height;
-      const grayBuffer = new Uint8ClampedArray(totalPixels);
+      if (enhanceMode !== 'raw') {
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imgData.data;
+        const totalPixels = canvas.width * canvas.height;
+        const grayBuffer = new Uint8ClampedArray(totalPixels);
 
-      // Rec. 709 Luminance conversion
-      for (let i = 0; i < data.length; i += 4) {
-        const lum = Math.round(0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]);
-        grayBuffer[i / 4] = lum;
-      }
-
-      if (enhanceMode === 'otsu') {
-        const otsuThresh = this.computeOtsuThreshold(grayBuffer);
         for (let i = 0; i < data.length; i += 4) {
-          const lum = grayBuffer[i / 4];
-          const val = lum < otsuThresh ? 0 : 255;
-          data[i] = val;
-          data[i + 1] = val;
-          data[i + 2] = val;
+          grayBuffer[i >> 2] = Math.round(
+            0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+          );
         }
-      } else {
-        // 'smart' or 'enhanced': Dynamic histogram stretching + gentle gamma + antialiasing preservation
-        const hist = new Uint32Array(256);
-        for (let i = 0; i < totalPixels; i++) hist[grayBuffer[i]]++;
 
-        let count = 0;
-        let p5 = 0;
-        let p95 = 255;
-        const target5 = Math.floor(totalPixels * 0.05);
-        const target95 = Math.floor(totalPixels * 0.95);
+        if (enhanceMode === 'otsu') {
+          const otsuThresh = this.computeOtsuThreshold(grayBuffer);
+          for (let i = 0; i < data.length; i += 4) {
+            const val = grayBuffer[i >> 2] < otsuThresh ? 0 : 255;
+            data[i] = val;
+            data[i + 1] = val;
+            data[i + 2] = val;
+          }
+        } else {
+          const hist = new Uint32Array(256);
+          for (let i = 0; i < totalPixels; i++) hist[grayBuffer[i]]++;
 
-        for (let v = 0; v < 256; v++) {
-          count += hist[v];
-          if (p5 === 0 && count >= target5) p5 = v;
-          if (p95 === 255 && count >= target95) {
-            p95 = v;
-            break;
+          let count = 0;
+          let p5 = 0;
+          let p95 = 255;
+          const target5 = Math.floor(totalPixels * 0.05);
+          const target95 = Math.floor(totalPixels * 0.95);
+
+          for (let v = 0; v < 256; v++) {
+            count += hist[v];
+            if (p5 === 0 && count >= target5) p5 = v;
+            if (p95 === 255 && count >= target95) {
+              p95 = v;
+              break;
+            }
+          }
+
+          const blackPoint = enhanceMode === 'enhanced' ? Math.min(60, p5 + 15) : Math.min(45, p5);
+          const whitePoint = enhanceMode === 'enhanced' ? Math.max(180, p95 - 10) : Math.max(210, p95);
+          const range = Math.max(1, whitePoint - blackPoint);
+          const gamma = enhanceMode === 'enhanced' ? 0.8 : 0.92;
+
+          for (let i = 0; i < data.length; i += 4) {
+            const lum = grayBuffer[i >> 2];
+            let norm = (lum - blackPoint) / range;
+            if (norm < 0) norm = 0;
+            if (norm > 1) norm = 1;
+
+            const adjusted = Math.pow(norm, gamma) * 255;
+            const val = adjusted > 236 ? 255 : Math.round(adjusted);
+
+            data[i] = val;
+            data[i + 1] = val;
+            data[i + 2] = val;
           }
         }
 
-        const blackPoint = enhanceMode === 'enhanced' ? Math.min(60, p5 + 15) : Math.min(45, p5);
-        const whitePoint = enhanceMode === 'enhanced' ? Math.max(180, p95 - 10) : Math.max(210, p95);
-        const range = Math.max(1, whitePoint - blackPoint);
-        const gamma = enhanceMode === 'enhanced' ? 0.8 : 0.92;
-
-        for (let i = 0; i < data.length; i += 4) {
-          const lum = grayBuffer[i / 4];
-          let norm = (lum - blackPoint) / range;
-          if (norm < 0) norm = 0;
-          if (norm > 1) norm = 1;
-
-          const adjusted = Math.pow(norm, gamma) * 255;
-          const val = adjusted > 236 ? 255 : Math.round(adjusted);
-
-          data[i] = val;
-          data[i + 1] = val;
-          data[i + 2] = val;
-        }
+        ctx.putImageData(imgData, 0, 0);
       }
 
-      ctx.putImageData(imgData, 0, 0);
+      const previewUrl = includePreview ? canvas.toDataURL('image/jpeg', 0.88) : '';
+
+      return {
+        canvas,
+        width: canvas.width,
+        height: canvas.height,
+        previewUrl,
+      };
+    } catch (err) {
+      canvas.width = 0;
+      canvas.height = 0;
+      throw err;
     }
-
-    const previewUrl = canvas.toDataURL('image/jpeg', 0.88);
-
-    return {
-      canvas,
-      width: canvas.width,
-      height: canvas.height,
-      previewUrl,
-    };
   }
 
   /**
    * Spatial clustering algorithm that groups individual lines into coherent,
    * natural paragraph blocks with estimated font size and styling.
    */
-  private static clusterLinesIntoParagraphs(
+  public static clusterLinesIntoParagraphs(
     lines: OcrLine[],
     canvasWidth: number,
-    canvasHeight: number
+    canvasHeight: number,
+    renderScale: number = 3.0
   ): OcrParagraph[] {
-    if (lines.length === 0) return [];
+    if (lines.length === 0 || canvasWidth <= 0 || canvasHeight <= 0) return [];
+    const safeScale = renderScale > 0 ? renderScale : 3.0;
 
-    // Sort lines primarily top-to-bottom, then left-to-right
     const sortedLines = [...lines].sort((a, b) => {
       const yDiff = a.bbox.y0 - b.bbox.y0;
       if (Math.abs(yDiff) > 8) return yDiff;
       return a.bbox.x0 - b.bbox.x0;
     });
 
-    // Calculate median line height
     const lineHeights = sortedLines.map((l) => l.bbox.y1 - l.bbox.y0).filter((h) => h > 4);
     lineHeights.sort((a, b) => a - b);
     const medianLineHeight = lineHeights[Math.floor(lineHeights.length / 2)] || 18;
@@ -358,11 +447,9 @@ export class OcrService {
 
       const blockHeight = maxY - minY;
       const avgLineHeight = blockHeight / pLines.length;
-      // Estimate font size in PDF points (72 DPI reference)
-      // canvas is rendered at scale 3.0, so divide by 3.0
-      const pointLineHeight = avgLineHeight / 3.0;
+      const pointLineHeight = avgLineHeight / safeScale;
       const estimatedFontSize = Math.max(8, Math.min(48, Math.round(pointLineHeight * 0.75)));
-      const isBold = estimatedFontSize > (medianLineHeight / 3.0) * 1.35;
+      const isBold = estimatedFontSize > (medianLineHeight / safeScale) * 1.35;
 
       paragraphs.push({
         text,
@@ -394,16 +481,12 @@ export class OcrService {
       const verticalGap = line.bbox.y0 - prevLine.bbox.y1;
       const prevLineHeight = prevLine.bbox.y1 - prevLine.bbox.y0;
 
-      // Check horizontal overlap between lines
       const overlapStart = Math.max(prevLine.bbox.x0, line.bbox.x0);
       const overlapEnd = Math.min(prevLine.bbox.x1, line.bbox.x1);
       const overlap = Math.max(0, overlapEnd - overlapStart);
       const minWidth = Math.min(prevLine.bbox.x1 - prevLine.bbox.x0, line.bbox.x1 - line.bbox.x0);
       const hasHorizontalOverlap = minWidth > 0 && overlap / minWidth > 0.25;
 
-      // Consecutive lines in same paragraph criteria:
-      // 1. Vertical gap is within 1.65x line height
-      // 2. Lines overlap horizontally or indent is reasonable (< 60px)
       const isCloseVertical = verticalGap >= -4 && verticalGap <= prevLineHeight * 1.65;
       const isIndentedParagraph = Math.abs(line.bbox.x0 - prevLine.bbox.x0) < 60;
 
@@ -425,8 +508,10 @@ export class OcrService {
   public static synthesizeParagraphsFromText(
     text: string,
     canvasWidth: number,
-    canvasHeight: number
+    canvasHeight: number,
+    renderScale: number = 3.0
   ): OcrParagraph[] {
+    const safeScale = renderScale > 0 ? renderScale : 3.0;
     const rawParagraphs = text
       .split(/\n\s*\n+/)
       .map((p) => p.trim())
@@ -461,7 +546,7 @@ export class OcrService {
           height: (y1 - y0) / canvasHeight,
         },
         lines: [],
-        estimatedFontSize: Math.max(9, Math.round(estFontSize / 3.0)),
+        estimatedFontSize: Math.max(9, Math.round(estFontSize / safeScale)),
         isBold: false,
       });
 
@@ -483,11 +568,16 @@ export class OcrService {
     pageNumber: number,
     lang: OcrLanguage = 'tur+eng',
     psm: OcrPageSegMode = '3',
-    onProgress?: (progress: number, statusText: string) => void
+    onProgress?: (progress: number, statusText: string) => void,
+    signal?: AbortSignal,
+    renderScale: number = 3.0
   ): Promise<OcrPageResult> {
-    const worker = await this.getWorker(lang, psm, onProgress);
-    // Explicitly request blocks and text output formats from Tesseract!
+    throwIfAborted(signal);
+    const worker = await this.getWorker(lang, psm, onProgress, signal);
+    throwIfAborted(signal);
+
     const result = await worker.recognize(canvas, {}, { blocks: true, text: true });
+    throwIfAborted(signal);
 
     const canvasWidth = canvas.width;
     const canvasHeight = canvas.height;
@@ -538,15 +628,16 @@ export class OcrService {
       }
     }
 
-    // Spatial clustering into coherent paragraphs
-    let paragraphs = this.clusterLinesIntoParagraphs(lines, canvasWidth, canvasHeight);
-
-    // Clean full text with post-processor
+    let paragraphs = this.clusterLinesIntoParagraphs(lines, canvasWidth, canvasHeight, renderScale);
     const cleanedText = OcrPostProcessor.cleanText(pageData.text || '');
 
-    // Fallback: If no paragraphs were formed from blocks/lines, synthesize from cleanedText
     if (paragraphs.length === 0 && cleanedText.length > 0) {
-      paragraphs = this.synthesizeParagraphsFromText(cleanedText, canvasWidth, canvasHeight);
+      paragraphs = this.synthesizeParagraphsFromText(
+        cleanedText,
+        canvasWidth,
+        canvasHeight,
+        renderScale
+      );
     }
 
     return {
@@ -558,12 +649,14 @@ export class OcrService {
       paragraphs,
       width: canvasWidth,
       height: canvasHeight,
+      renderScale,
       previewUrl,
     };
   }
 
   /**
-   * Batch processes a list of page numbers with real-time progress callbacks.
+   * Batch processes a list of page numbers with real-time progress callbacks,
+   * AbortSignal cancellation, and automatic canvas cleanup.
    */
   public static async processDocumentPages(
     pdfDocProxy: PDFDocumentProxy,
@@ -571,17 +664,19 @@ export class OcrService {
     lang: OcrLanguage = 'tur+eng',
     enhanceMode: OcrEnhanceMode = 'smart',
     psm: OcrPageSegMode = '3',
-    onProgress?: (progress: OcrProgress) => void
+    onProgress?: (progress: OcrProgress) => void,
+    options: OcrProcessOptions = {}
   ): Promise<OcrDocumentResult> {
+    const { signal, scale = 3.0, includePreview = false } = options;
     const total = pageNumbers.length;
     const results: OcrPageResult[] = [];
     let totalConfidence = 0;
     let totalWords = 0;
 
     for (let i = 0; i < total; i++) {
+      throwIfAborted(signal);
       const pageNum = pageNumbers[i];
 
-      // 1. Rasterize with 3.0x high-DPI and adaptive preprocessing
       if (onProgress) {
         onProgress({
           stage: 'rasterizing',
@@ -596,37 +691,50 @@ export class OcrService {
       const { canvas, previewUrl } = await this.renderPageToCanvas(
         pdfDocProxy,
         pageNum,
-        3.0,
-        enhanceMode
+        scale,
+        enhanceMode,
+        includePreview
       );
 
-      // 2. Neural OCR Recognize
-      const pageResult = await this.recognizeCanvas(
-        canvas,
-        previewUrl,
-        pageNum,
-        lang,
-        psm,
-        (p, status) => {
-          if (onProgress) {
-            const pagePct = 10 + Math.round(p * 0.85);
-            const overall = Math.round(((i + p / 100) / total) * 100);
-            onProgress({
-              stage: 'recognizing',
-              currentPage: pageNum,
-              totalPages: total,
-              pageProgress: pagePct,
-              overallProgress: Math.min(99, overall),
-              statusText: `Sayfa ${pageNum}: LSTM Sinir Ağı (${status} %${p})`,
-            });
-          }
-        }
-      );
+      try {
+        throwIfAborted(signal);
 
-      results.push(pageResult);
-      totalConfidence += pageResult.confidence;
-      totalWords += pageResult.words.length;
+        const pageResult = await this.recognizeCanvas(
+          canvas,
+          previewUrl,
+          pageNum,
+          lang,
+          psm,
+          (p, status) => {
+            if (signal?.aborted) return;
+            if (onProgress) {
+              const pagePct = 10 + Math.round(p * 0.85);
+              const overall = Math.round(((i + p / 100) / total) * 100);
+              onProgress({
+                stage: 'recognizing',
+                currentPage: pageNum,
+                totalPages: total,
+                pageProgress: pagePct,
+                overallProgress: Math.min(99, overall),
+                statusText: `Sayfa ${pageNum}: LSTM Sinir Ağı (${status} %${p})`,
+              });
+            }
+          },
+          signal,
+          scale
+        );
+
+        results.push(pageResult);
+        totalConfidence += pageResult.confidence;
+        totalWords += pageResult.words.length;
+      } finally {
+        // Release temporary rasterization buffer immediately after OCR finishes/aborts
+        canvas.width = 0;
+        canvas.height = 0;
+      }
     }
+
+    throwIfAborted(signal);
 
     if (onProgress) {
       onProgress({
@@ -653,62 +761,12 @@ export class OcrService {
   }
 
   /**
-   * Generates a Searchable PDF by embedding an invisible text layer (opacity: 0)
-   * at exact word coordinates on top of the original document.
+   * Generates a standards-compliant Searchable PDF (delegated to SearchablePdfEngine).
    */
   public static async exportSearchablePdf(
-    originalBuffer: ArrayBuffer,
+    originalBuffer: ArrayBuffer | Uint8Array,
     ocrPages: OcrPageResult[]
   ): Promise<Uint8Array> {
-    const pdfDoc = await PDFDocument.load(originalBuffer);
-    const standardFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
-    for (const ocrPage of ocrPages) {
-      const pageIndex = ocrPage.pageNumber - 1;
-      if (pageIndex < 0 || pageIndex >= pdfDoc.getPageCount()) continue;
-
-      const page = pdfDoc.getPage(pageIndex);
-      const pageWidth = page.getWidth();
-      const pageHeight = page.getHeight();
-
-      for (const word of ocrPage.words) {
-        if (!word.text || word.text.trim().length === 0) continue;
-
-        // Convert normalized coordinates (top-left origin) to PDF coordinates (bottom-left origin)
-        const x = word.normBbox.x * pageWidth;
-        const height = word.normBbox.height * pageHeight;
-        const y = pageHeight - (word.normBbox.y * pageHeight + height);
-
-        // Calculate approximate font size fitting the height
-        const fontSize = Math.max(4, Math.min(48, height * 0.85));
-
-        try {
-          // Render invisible text overlay at the exact word location
-          page.drawText(word.text, {
-            x,
-            y: Math.max(0, y),
-            size: fontSize,
-            font: standardFont,
-            color: rgb(0, 0, 0),
-            opacity: 0.001, // Virtually transparent / invisible text layer
-          });
-        } catch {
-          // Fallback if some non-standard characters cannot be encoded in Helvetica
-          try {
-            const asciiText = word.text.replace(/[^\x00-\x7F]/g, '?');
-            page.drawText(asciiText, {
-              x,
-              y: Math.max(0, y),
-              size: fontSize,
-              font: standardFont,
-              color: rgb(0, 0, 0),
-              opacity: 0.001,
-            });
-          } catch {}
-        }
-      }
-    }
-
-    return await pdfDoc.save();
+    return SearchablePdfEngine.createSearchablePdf(originalBuffer, ocrPages);
   }
 }

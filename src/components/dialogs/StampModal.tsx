@@ -4,6 +4,7 @@ import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
 import { X, Stamp, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import { markCurrentDocumentModified, useModalEscape } from './modal-utils';
 
 interface StampPreset {
   id: string;
@@ -29,50 +30,89 @@ export const StampModal: React.FC = () => {
   const [selectedStamp, setSelectedStamp] = useState<StampPreset>(PRESET_STAMPS[0]);
   const [customText, setCustomText] = useState('');
 
+  useModalEscape(isStampModalOpen, () => setStampModalOpen(false));
+
   if (!isStampModalOpen || !currentDocument) return null;
 
-  const createStampDataUrl = (text: string, color: string): string => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 320;
-    canvas.height = 100;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return '';
+  const createStampImage = (
+    text: string,
+    color: string
+  ): { dataUrl: string; canvasWidth: number; canvasHeight: number } | null => {
+    const upper = text.toLocaleUpperCase('tr-TR');
+    const measureCanvas = document.createElement('canvas');
+    const measureCtx = measureCanvas.getContext('2d');
+    if (!measureCtx) return null;
 
-    ctx.translate(160, 50);
-    ctx.rotate((-8 * Math.PI) / 180);
-    ctx.translate(-160, -50);
+    const font = '900 22px system-ui, -apple-system, sans-serif';
+    measureCtx.font = font;
+    const textWidth = measureCtx.measureText(upper).width;
+
+    const canvasWidth = Math.max(320, Math.min(720, Math.ceil(textWidth + 88)));
+    const canvasHeight = 110;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    const cx = canvasWidth / 2;
+    const cy = canvasHeight / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate((-6 * Math.PI) / 180);
+    ctx.translate(-cx, -cy);
 
     ctx.strokeStyle = color;
     ctx.lineWidth = 4;
-    ctx.strokeRect(10, 10, 300, 80);
+    ctx.strokeRect(12, 14, canvasWidth - 24, canvasHeight - 28);
 
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(16, 16, 288, 68);
+    ctx.strokeRect(18, 20, canvasWidth - 36, canvasHeight - 40);
 
-    ctx.font = '900 20px system-ui, -apple-system, sans-serif';
+    ctx.font = font;
     ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text.toUpperCase(), 160, 50);
+    ctx.fillText(upper, cx, cy);
 
-    return canvas.toDataURL('image/png');
+    return {
+      dataUrl: canvas.toDataURL('image/png'),
+      canvasWidth,
+      canvasHeight,
+    };
   };
 
   const handleApply = () => {
     const text = customText.trim() || selectedStamp.text;
     const color = customText.trim() ? '#0284c7' : selectedStamp.color;
-    const dataUrl = createStampDataUrl(text, color);
+    const stampAsset = createStampImage(text, color);
 
-    const pageId = currentDocument.activePageId || currentDocument.pages[0].id;
+    if (!stampAsset || !stampAsset.dataUrl) {
+      addToast('Damga görseli oluşturulamadı.', 'error');
+      return;
+    }
+
+    const activePage =
+      currentDocument.pages[currentDocument.activePageIndex] || currentDocument.pages[0];
+    const pageId = currentDocument.activePageId || activePage.id;
+
+    const annHeight = 60;
+    const annWidth = Math.min(
+      Math.max(160, Math.round((stampAsset.canvasWidth / stampAsset.canvasHeight) * annHeight)),
+      Math.max(160, activePage.width - 40)
+    );
+    const x = Math.max(20, Math.round((activePage.width - annWidth) / 2));
+    const y = Math.max(20, Math.round((activePage.height - annHeight) / 2));
+
     const stampAnn = {
       id: 'stamp_' + Date.now(),
       pageId,
       type: 'stamp' as const,
-      x: 120,
-      y: 120,
-      width: 180,
-      height: 60,
-      dataUrl,
+      x,
+      y,
+      width: annWidth,
+      height: annHeight,
+      dataUrl: stampAsset.dataUrl,
       label: text,
       opacity: 0.85,
     };
@@ -80,13 +120,20 @@ export const StampModal: React.FC = () => {
     addAnnotation(pageId, stampAnn);
     setSelectedAnnotationId(stampAnn.id);
     setActiveTool('select');
+    markCurrentDocumentModified();
     addToast('Damga sayfaya eklendi!', 'success');
     setStampModalOpen(false);
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/60 dark:bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200 text-slate-800 dark:text-slate-100">
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/60 dark:bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+      onClick={() => setStampModalOpen(false)}
+    >
+      <div
+        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200 text-slate-800 dark:text-slate-100"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900">
           <div className="flex items-center gap-2.5">
@@ -95,11 +142,15 @@ export const StampModal: React.FC = () => {
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-900 dark:text-white">Damga / Stamp Ekle</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Hazır resmi damgalardan seçin veya özel damga yazın</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Hazır resmi damgalardan seçin veya özel damga yazın
+              </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={() => setStampModalOpen(false)}
+            aria-label="Kapat"
             className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -109,11 +160,14 @@ export const StampModal: React.FC = () => {
         {/* Content */}
         <div className="p-6 space-y-4 text-sm">
           <div>
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-2">Hazır Damgalar</label>
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-2">
+              Hazır Damgalar
+            </label>
             <div className="grid grid-cols-2 gap-2.5">
               {PRESET_STAMPS.map((stamp) => (
                 <button
                   key={stamp.id}
+                  type="button"
                   onClick={() => {
                     setSelectedStamp(stamp);
                     setCustomText('');
@@ -132,9 +186,10 @@ export const StampModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Custom stamp */}
           <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">Veya Özel Damga Metni Yazın</label>
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+              Veya Özel Damga Metni Yazın
+            </label>
             <input
               type="text"
               value={customText}
@@ -148,12 +203,14 @@ export const StampModal: React.FC = () => {
         {/* Footer */}
         <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900/90 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2">
           <button
+            type="button"
             onClick={() => setStampModalOpen(false)}
             className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors"
           >
             İptal
           </button>
           <button
+            type="button"
             onClick={handleApply}
             className="px-5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white transition-colors flex items-center gap-1.5 shadow-md shadow-sky-600/20"
           >

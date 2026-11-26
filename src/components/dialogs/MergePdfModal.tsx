@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useDocumentStore } from '@/store/document-store';
+import { useTabStore } from '@/store/tab-store';
 import { useUIStore } from '@/store/ui-store';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
@@ -13,6 +14,7 @@ import {
   FileText,
   CheckCircle2,
 } from 'lucide-react';
+import { useModalEscape } from './modal-utils';
 
 interface SelectedMergeFile {
   id: string;
@@ -27,17 +29,27 @@ export const MergePdfModal: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
 
   const { setDocument, addRecentDocument } = useDocumentStore();
+  const { addTab } = useTabStore();
   const { isMergeModalOpen, setMergeModalOpen, addToast } = useUIStore();
+
+  const handleClose = () => {
+    if (isProcessing) return;
+    setFiles([]);
+    setMergeModalOpen(false);
+  };
+
+  useModalEscape(isMergeModalOpen, handleClose, isProcessing);
 
   if (!isMergeModalOpen) return null;
 
   const handleAddFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(e.target.files || []);
+    e.target.value = '';
     if (selected.length === 0) return;
 
     const newItems: SelectedMergeFile[] = [];
     for (const f of selected) {
-      if (f.type === 'application/pdf' || f.name.endsWith('.pdf')) {
+      if (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')) {
         const buffer = await f.arrayBuffer();
         newItems.push({
           id: 'file_' + Math.random().toString(36).substring(2, 7),
@@ -48,8 +60,12 @@ export const MergePdfModal: React.FC = () => {
       }
     }
 
+    if (newItems.length === 0) {
+      addToast('Lütfen geçerli .pdf dosyaları seçin.', 'warning');
+      return;
+    }
+
     setFiles((prev) => [...prev, ...newItems]);
-    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleMove = (index: number, direction: 'up' | 'down') => {
@@ -84,6 +100,7 @@ export const MergePdfModal: React.FC = () => {
 
       const { model, pdfDoc } = await PdfLoader.loadDocument(result.name, result.buffer);
       setDocument(model, pdfDoc);
+      addTab(model, pdfDoc);
       addRecentDocument({
         id: model.id,
         name: model.name,
@@ -92,29 +109,36 @@ export const MergePdfModal: React.FC = () => {
         lastOpened: Date.now(),
       });
 
-      addToast(`Başarılı! ${files.length} döküman tek PDF olarak açıldı.`, 'success');
-      setMergeModalOpen(false);
+      addToast(`Başarılı! ${files.length} döküman tek PDF olarak yeni sekmede açıldı.`, 'success');
       setFiles([]);
-    } catch (err: any) {
+      setMergeModalOpen(false);
+    } catch (err: unknown) {
       console.error(err);
-      addToast(err?.message || 'Birleştirme sırasında hata oluştu.', 'error');
+      const msg = err instanceof Error ? err.message : 'Birleştirme sırasında hata oluştu.';
+      addToast(msg, 'error');
     } finally {
       setIsProcessing(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/60 dark:bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/60 dark:bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+      onClick={handleClose}
+    >
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleAddFiles}
-        accept="application/pdf"
+        accept=".pdf,application/pdf"
         multiple
         className="hidden"
       />
 
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200 text-slate-800 dark:text-slate-100">
+      <div
+        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200 text-slate-800 dark:text-slate-100"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900">
           <div className="flex items-center gap-2.5">
@@ -122,13 +146,20 @@ export const MergePdfModal: React.FC = () => {
               <Layers className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">PDF Birleştirici (Merge)</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Dosyaları ekleyin, sıralayın ve tek bir PDF yapın</p>
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                PDF Birleştirici (Merge)
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Dosyaları ekleyin, sıralayın ve tek bir PDF yapın
+              </p>
             </div>
           </div>
           <button
-            onClick={() => setMergeModalOpen(false)}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            type="button"
+            onClick={handleClose}
+            disabled={isProcessing}
+            aria-label="Kapat"
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-40"
           >
             <X className="w-5 h-5" />
           </button>
@@ -142,14 +173,19 @@ export const MergePdfModal: React.FC = () => {
               className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-sky-500/70 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer bg-slate-50 dark:bg-slate-800/30 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors text-center"
             >
               <FilePlus className="w-10 h-10 text-sky-500 dark:text-sky-400 mb-2" />
-              <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Birleştirilecek PDF Dosyalarını Seçin</h4>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Birden fazla dosya seçebilir veya buraya tıklayabilirsiniz</p>
+              <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                Birleştirilecek PDF Dosyalarını Seçin
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Birden fazla dosya seçebilir veya buraya tıklayabilirsiniz
+              </p>
             </div>
           ) : (
             <div className="space-y-2">
               <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
                 <span>Sıralama ({files.length} dosya)</span>
                 <button
+                  type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="text-sky-600 dark:text-sky-400 hover:text-sky-500 font-medium flex items-center gap-1"
                 >
@@ -168,13 +204,18 @@ export const MergePdfModal: React.FC = () => {
                     </span>
                     <FileText className="w-4 h-4 text-sky-500 dark:text-sky-400 shrink-0" />
                     <div className="truncate">
-                      <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{file.name}</p>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">{file.sizeFormatted}</span>
+                      <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
+                        {file.name}
+                      </p>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {file.sizeFormatted}
+                      </span>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0 ml-2">
                     <button
+                      type="button"
                       onClick={() => handleMove(idx, 'up')}
                       disabled={idx === 0}
                       className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-20"
@@ -183,6 +224,7 @@ export const MergePdfModal: React.FC = () => {
                       <ArrowUp className="w-3.5 h-3.5" />
                     </button>
                     <button
+                      type="button"
                       onClick={() => handleMove(idx, 'down')}
                       disabled={idx === files.length - 1}
                       className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-20"
@@ -191,6 +233,7 @@ export const MergePdfModal: React.FC = () => {
                       <ArrowDown className="w-3.5 h-3.5" />
                     </button>
                     <button
+                      type="button"
                       onClick={() => handleRemove(file.id)}
                       className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-500/20 text-rose-500 ml-1"
                       title="Listeden Çıkar"
@@ -207,26 +250,30 @@ export const MergePdfModal: React.FC = () => {
         {/* Footer */}
         <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900/90 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <button
+            type="button"
             onClick={() => setFiles([])}
-            disabled={files.length === 0}
+            disabled={files.length === 0 || isProcessing}
             className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 disabled:opacity-30 font-medium"
           >
             Temizle
           </button>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setMergeModalOpen(false)}
-              className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors"
+              type="button"
+              onClick={handleClose}
+              disabled={isProcessing}
+              className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors disabled:opacity-40"
             >
               İptal
             </button>
             <button
+              type="button"
               onClick={handleMerge}
               disabled={files.length < 2 || isProcessing}
               className="px-5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-xs font-semibold text-white transition-colors flex items-center gap-1.5 shadow-md shadow-sky-600/20"
             >
               <CheckCircle2 className="w-4 h-4" />
-              {isProcessing ? 'Birleştiriliyor...' : 'PDF leri Birleştir'}
+              {isProcessing ? 'Birleştiriliyor...' : "PDF'leri Birleştir"}
             </button>
           </div>
         </div>

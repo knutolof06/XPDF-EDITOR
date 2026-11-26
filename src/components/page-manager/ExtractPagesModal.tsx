@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
 import { useTabStore } from '@/store/tab-store';
@@ -20,58 +20,52 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import {
+  parsePageRange,
+  saveBinaryOrBlobFile,
+  useModalEscape,
+} from '@/components/dialogs/modal-utils';
 
 export const ExtractPagesModal: React.FC = () => {
   const { currentDocument, setDocument } = useDocumentStore();
   const { isExtractPagesModalOpen, setExtractPagesModalOpen, addToast } = useUIStore();
   const { setPageManagerOpen } = useViewerStore();
-  const { addTab } = useTabStore();
+  const { addTab, updateTabModel } = useTabStore();
 
   const selectedCount = currentDocument?.selectedPageIds.length || 0;
   const totalPages = currentDocument?.pages.length || 0;
 
-  // Extraction Scope: 'selected' | 'all' | 'custom'
   const [scope, setScope] = useState<'selected' | 'all' | 'custom'>(
     selectedCount > 0 ? 'selected' : 'all'
   );
   const [customRangeText, setCustomRangeText] = useState<string>('');
-
-  // Mode: 'single' | 'separate'
   const [mode, setMode] = useState<'single' | 'separate'>('single');
-
-  // Delete after extraction option
   const [deleteAfter, setDeleteAfter] = useState<boolean>(false);
-
-  // Processing indicator
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
-  // Parse custom range text (e.g., "1-3, 5, 8-10")
-  const parsedCustomPageNumbers = useMemo(() => {
-    if (!currentDocument || scope !== 'custom' || !customRangeText.trim()) return [];
-    const nums = new Set<number>();
-    const parts = customRangeText.split(/[,;\s]+/).filter(Boolean);
-
-    for (const part of parts) {
-      if (part.includes('-') || part.includes('–')) {
-        const [rawStart, rawEnd] = part.split(/[-–]/);
-        const s = parseInt(rawStart, 10);
-        const e = parseInt(rawEnd, 10);
-        if (!isNaN(s) && !isNaN(e)) {
-          const from = Math.max(1, Math.min(s, e, totalPages));
-          const to = Math.max(from, Math.min(Math.max(s, e), totalPages));
-          for (let p = from; p <= to; p++) nums.add(p);
-        }
-      } else {
-        const n = parseInt(part, 10);
-        if (!isNaN(n) && n >= 1 && n <= totalPages) {
-          nums.add(n);
-        }
-      }
+  // Reset modal controls cleanly every time the modal opens
+  useEffect(() => {
+    if (isExtractPagesModalOpen) {
+      setScope(selectedCount > 0 ? 'selected' : 'all');
+      setCustomRangeText('');
+      setMode('single');
+      setDeleteAfter(false);
     }
-    return Array.from(nums).sort((a, b) => a - b);
+  }, [isExtractPagesModalOpen, selectedCount]);
+
+  useModalEscape(
+    isExtractPagesModalOpen,
+    () => setExtractPagesModalOpen(false),
+    isProcessing
+  );
+
+  const customRangeValidation = useMemo(() => {
+    if (!currentDocument || scope !== 'custom') {
+      return { pages: [] as number[], isValid: true, error: undefined as string | undefined };
+    }
+    return parsePageRange(customRangeText, totalPages);
   }, [currentDocument, scope, customRangeText, totalPages]);
 
-  // Resolve target page IDs based on chosen scope
   const targetPageIds = useMemo(() => {
     if (!currentDocument) return [];
     if (scope === 'selected') {
@@ -80,26 +74,50 @@ export const ExtractPagesModal: React.FC = () => {
     if (scope === 'all') {
       return currentDocument.pages.map((p) => p.id);
     }
-    if (scope === 'custom') {
-      return parsedCustomPageNumbers
+    if (scope === 'custom' && customRangeValidation.isValid) {
+      return customRangeValidation.pages
         .map((num) => currentDocument.pages[num - 1]?.id)
-        .filter(Boolean);
+        .filter((id): id is string => Boolean(id));
     }
     return [];
-  }, [currentDocument, scope, parsedCustomPageNumbers]);
+  }, [currentDocument, scope, customRangeValidation]);
 
   const targetCount = targetPageIds.length;
   const isDeletingAllPages = targetCount >= totalPages && deleteAfter;
 
   if (!isExtractPagesModalOpen || !currentDocument) return null;
 
-  // Core execution helper
+  const executeSourceDeletionIfRequested = () => {
+    if (!deleteAfter || targetCount >= totalPages) return;
+    const sourceDoc = useDocumentStore.getState().currentDocument;
+    if (!sourceDoc) return;
+
+    const deleted = sourceDoc.pages
+      .map((p, idx) => ({ page: p, index: idx }))
+      .filter((item) => targetPageIds.includes(item.page.id));
+
+    if (deleted.length > 0) {
+      historyManager.execute(new DeletePageCommand(deleted));
+      const updatedSource = useDocumentStore.getState().currentDocument;
+      if (updatedSource) {
+        updateTabModel(updatedSource);
+      }
+      addToast(
+        `${deleted.length} sayfa orijinal dökümandan kaldırıldı. (Geri almak için Ctrl+Z)`,
+        'info'
+      );
+    }
+  };
+
   const executeExtraction = async (destination: 'new-tab' | 'download') => {
+    if (scope === 'custom' && !customRangeValidation.isValid) {
+      addToast(customRangeValidation.error || 'Lütfen geçerli bir sayfa aralığı girin.', 'warning');
+      return;
+    }
     if (targetCount === 0) {
       addToast('Lütfen ayıklamak için en az bir sayfa belirleyin.', 'warning');
       return;
     }
-
     if (isDeletingAllPages) {
       addToast('Dökümandaki tüm sayfalar silinemez. Belgede en az bir sayfa kalmalıdır.', 'error');
       return;
@@ -109,120 +127,83 @@ export const ExtractPagesModal: React.FC = () => {
       setIsProcessing(true);
       addToast('Sayfalar ayıklanıyor...', 'info');
 
-      const baseName = currentDocument.name.replace(/\.pdf$/i, '');
-      const extractResult = await PdfAssembler.extractPages(currentDocument, targetPageIds, {
+      const sourceDoc = currentDocument;
+      const baseName = sourceDoc.name.replace(/\.pdf$/i, '');
+      const extractResult = await PdfAssembler.extractPages(sourceDoc, targetPageIds, {
         separateFiles: mode === 'separate',
         customBaseName: baseName,
       });
 
-      // Handle Destination
       if (destination === 'new-tab') {
-        if (extractResult.mode === 'single') {
-          const loaded = await PdfLoader.loadDocument(extractResult.name, extractResult.buffer);
+        const target =
+          extractResult.mode === 'single' ? extractResult : extractResult.files[0];
+
+        if (target) {
+          const loaded = await PdfLoader.loadDocument(target.name, target.buffer);
+
+          // Delete from SOURCE document BEFORE switching active document/tab to the extracted PDF
+          executeSourceDeletionIfRequested();
+
           setDocument(loaded.model, loaded.pdfDoc);
           addTab(loaded.model, loaded.pdfDoc);
           setPageManagerOpen(false);
           setExtractPagesModalOpen(false);
-          addToast(`${targetCount} sayfa yeni sekmede açıldı!`, 'success');
-        } else {
-          // If separate files and new-tab chosen, open first file and notify
-          const first = extractResult.files[0];
-          if (first) {
-            const loaded = await PdfLoader.loadDocument(first.name, first.buffer);
-            setDocument(loaded.model, loaded.pdfDoc);
-            addTab(loaded.model, loaded.pdfDoc);
-            setPageManagerOpen(false);
-            setExtractPagesModalOpen(false);
-            addToast(`İlk sayfa (${first.name}) yeni sekmede açıldı.`, 'success');
-          }
+          addToast(
+            extractResult.mode === 'single'
+              ? `${targetCount} sayfa yeni sekmede açıldı!`
+              : `İlk sayfa (${target.name}) yeni sekmede açıldı.`,
+            'success'
+          );
         }
-      } else if (destination === 'download') {
-        if (extractResult.mode === 'single') {
-          // Check if Electron save dialog is available
-          const electron = (window as any).electronAPI;
-          let saved = false;
-
-          if (electron?.showSaveDialog && electron?.saveFile) {
-            const dialogRes = await electron.showSaveDialog({
-              title: 'Ayıklanan PDF Dosyasını Kaydet',
-              defaultPath: extractResult.name,
-              filters: [{ name: 'PDF Dökümanı', extensions: ['pdf'] }],
-            });
-
-            if (!dialogRes.canceled && dialogRes.filePath) {
-              await electron.saveFile(dialogRes.filePath, extractResult.buffer);
-              saved = true;
-              addToast(`PDF başarıyla kaydedildi: ${extractResult.name}`, 'success');
-            }
-          }
-
-          if (!saved) {
-            // Web fallback download
-            const blob = new Blob([extractResult.buffer], { type: 'application/pdf' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = extractResult.name;
-            a.click();
-            URL.revokeObjectURL(url);
-            addToast(`${extractResult.name} başarıyla indirildi!`, 'success');
-          }
-        } else {
-          // Multiple separate PDFs: Package into ZIP
-          addToast('Ayrı PDF dosyaları ZIP olarak paketleniyor...', 'info');
-          const zip = new JSZip();
-          for (const f of extractResult.files) {
-            zip.file(f.name, f.buffer);
-          }
-          const zipBlob = await zip.generateAsync({ type: 'blob' });
-          const zipFileName = `${baseName}_ayiklanan_${extractResult.files.length}_sayfa.zip`;
-
-          const electron = (window as any).electronAPI;
-          let saved = false;
-
-          if (electron?.showSaveDialog && electron?.saveFile) {
-            const dialogRes = await electron.showSaveDialog({
-              title: 'Ayıklanan Sayfaları ZIP Olarak Kaydet',
-              defaultPath: zipFileName,
-              filters: [{ name: 'ZIP Arşivi', extensions: ['zip'] }],
-            });
-
-            if (!dialogRes.canceled && dialogRes.filePath) {
-              const zipArrayBuffer = await zipBlob.arrayBuffer();
-              await electron.saveFile(dialogRes.filePath, zipArrayBuffer);
-              saved = true;
-              addToast(`ZIP arşivi başarıyla kaydedildi: ${zipFileName}`, 'success');
-            }
-          }
-
-          if (!saved) {
-            const url = URL.createObjectURL(zipBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = zipFileName;
-            a.click();
-            URL.revokeObjectURL(url);
-            addToast(`${zipFileName} başarıyla indirildi!`, 'success');
-          }
-        }
+        return;
       }
 
-      // Handle Option: Delete pages after extraction (Cut/Move)
-      if (deleteAfter && targetCount < totalPages) {
-        const deleted = currentDocument.pages
-          .map((p, idx) => ({ page: p, index: idx }))
-          .filter((item) => targetPageIds.includes(item.page.id));
+      if (extractResult.mode === 'single') {
+        const saveRes = await saveBinaryOrBlobFile({
+          data: extractResult.buffer,
+          defaultName: extractResult.name,
+          dialogTitle: 'Ayıklanan PDF Dosyasını Kaydet',
+          filters: [{ name: 'PDF Dökümanı', extensions: ['pdf'] }],
+          mimeType: 'application/pdf',
+        });
 
-        if (deleted.length > 0) {
-          historyManager.execute(new DeletePageCommand(deleted));
-          addToast(`${deleted.length} sayfa orijinal dökümandan kaldırıldı. (Geri almak için Ctrl+Z)`, 'info');
+        if (saveRes.status === 'canceled') {
+          addToast('Kaydetme iptal edildi.', 'info');
+          return;
         }
+
+        addToast(`PDF başarıyla kaydedildi: ${extractResult.name}`, 'success');
+      } else {
+        addToast('Ayrı PDF dosyaları ZIP olarak paketleniyor...', 'info');
+        const zip = new JSZip();
+        for (const f of extractResult.files) {
+          zip.file(f.name, f.buffer);
+        }
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        const zipFileName = `${baseName}_ayiklanan_${extractResult.files.length}_sayfa.zip`;
+
+        const saveRes = await saveBinaryOrBlobFile({
+          data: zipBlob,
+          defaultName: zipFileName,
+          dialogTitle: 'Ayıklanan Sayfaları ZIP Olarak Kaydet',
+          filters: [{ name: 'ZIP Arşivi', extensions: ['zip'] }],
+          mimeType: 'application/zip',
+        });
+
+        if (saveRes.status === 'canceled') {
+          addToast('Kaydetme iptal edildi.', 'info');
+          return;
+        }
+
+        addToast(`ZIP arşivi başarıyla kaydedildi: ${zipFileName}`, 'success');
       }
 
+      executeSourceDeletionIfRequested();
       setExtractPagesModalOpen(false);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Extract error:', err);
-      addToast(err?.message || 'Ayıklama sırasında hata oluştu.', 'error');
+      const message = err instanceof Error ? err.message : 'Ayıklama sırasında hata oluştu.';
+      addToast(message, 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -231,7 +212,7 @@ export const ExtractPagesModal: React.FC = () => {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200"
-      onClick={() => setExtractPagesModalOpen(false)}
+      onClick={() => !isProcessing && setExtractPagesModalOpen(false)}
     >
       <div
         className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150"
@@ -253,8 +234,11 @@ export const ExtractPagesModal: React.FC = () => {
             </div>
           </div>
           <button
-            onClick={() => setExtractPagesModalOpen(false)}
-            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            type="button"
+            onClick={() => !isProcessing && setExtractPagesModalOpen(false)}
+            disabled={isProcessing}
+            aria-label="Kapat"
+            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-40"
           >
             <X className="w-5 h-5" />
           </button>
@@ -318,16 +302,22 @@ export const ExtractPagesModal: React.FC = () => {
               </button>
             </div>
 
-            {/* Custom Range Input Field */}
             {scope === 'custom' && (
               <div className="mt-3 p-3 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
                 <div className="flex items-center justify-between text-xs mb-1.5">
                   <span className="font-semibold text-slate-700 dark:text-slate-300">
                     Sayfa Numaralarını Girin:
                   </span>
-                  <span className="text-sky-600 dark:text-sky-400 font-bold">
-                    {parsedCustomPageNumbers.length > 0
-                      ? `${parsedCustomPageNumbers.length} sayfa geçerli`
+                  <span
+                    className={cn(
+                      'font-bold',
+                      customRangeValidation.isValid
+                        ? 'text-sky-600 dark:text-sky-400'
+                        : 'text-rose-500'
+                    )}
+                  >
+                    {customRangeValidation.isValid
+                      ? `${customRangeValidation.pages.length} sayfa geçerli`
                       : 'Geçersiz aralık'}
                   </span>
                 </div>
@@ -338,9 +328,13 @@ export const ExtractPagesModal: React.FC = () => {
                   placeholder="Örnek: 1-3, 5, 8-10"
                   className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
-                <p className="text-[11px] text-slate-400 mt-1.5">
-                  Virgül veya tire ile birden fazla sayfa aralığı belirtebilirsiniz. (1 ile {totalPages} arasında)
-                </p>
+                {!customRangeValidation.isValid && customRangeValidation.error ? (
+                  <p className="text-[11px] text-rose-500 mt-1.5">{customRangeValidation.error}</p>
+                ) : (
+                  <p className="text-[11px] text-slate-400 mt-1.5">
+                    Virgül veya tire ile birden fazla sayfa aralığı belirtebilirsiniz. (1 ile {totalPages} arasında)
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -398,7 +392,7 @@ export const ExtractPagesModal: React.FC = () => {
                     <span>Her Sayfayı Ayrı PDF Yap (ZIP)</span>
                   </div>
                   <p className="text-[11px] text-slate-400 mt-1 leading-snug">
-                    Her sayfayı bağımsız bir dosya yapar, ZIP arşivi olarak indirir.
+                    Her sayfayı bağımsız bir dosya yapar, ZIP arşivi olarak kaydeder.
                   </p>
                 </div>
               </label>
@@ -426,7 +420,7 @@ export const ExtractPagesModal: React.FC = () => {
                 />
                 <span className="flex items-center gap-1.5 text-slate-700 dark:text-slate-200">
                   <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                  <span>Ayıkladıktan sonra bu sayfaları orijinal dökümandan sil (Taşı / Cut)</span>
+                  <span>Ayıkladıktan sonra bu sayfaları orijinal dökümandan sil (Taşı)</span>
                 </span>
               </label>
               {targetCount >= totalPages && (
@@ -455,7 +449,8 @@ export const ExtractPagesModal: React.FC = () => {
             <button
               type="button"
               onClick={() => setExtractPagesModalOpen(false)}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors"
+              disabled={isProcessing}
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors disabled:opacity-40"
             >
               Vazgeç
             </button>
@@ -464,7 +459,7 @@ export const ExtractPagesModal: React.FC = () => {
               <button
                 type="button"
                 onClick={() => executeExtraction('new-tab')}
-                disabled={targetCount === 0 || isProcessing}
+                disabled={targetCount === 0 || isProcessing || !customRangeValidation.isValid}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-800 hover:bg-sky-100 dark:hover:bg-sky-900 disabled:opacity-40 transition-all shadow-xs"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
@@ -475,7 +470,7 @@ export const ExtractPagesModal: React.FC = () => {
             <button
               type="button"
               onClick={() => executeExtraction('download')}
-              disabled={targetCount === 0 || isProcessing}
+              disabled={targetCount === 0 || isProcessing || !customRangeValidation.isValid}
               className="flex items-center gap-1.5 px-4.5 py-2 rounded-xl text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-40 transition-all shadow-md shadow-sky-600/25 active:scale-95"
             >
               <Download className="w-3.5 h-3.5" />

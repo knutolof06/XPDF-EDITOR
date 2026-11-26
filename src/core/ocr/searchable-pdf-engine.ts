@@ -1,30 +1,215 @@
-import { PDFDocument, rgb, StandardFonts, PDFFont } from 'pdf-lib';
+import {
+  PDFDocument,
+  PDFFont,
+  StandardFonts,
+  TextRenderingMode,
+  pushGraphicsState,
+  popGraphicsState,
+  beginText,
+  endText,
+  setTextRenderingMode,
+  setFontAndSize,
+  setCharacterSqueeze,
+  rotateAndSkewTextDegreesAndTranslate,
+  showText,
+} from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import { OcrPageResult } from './ocr-service';
+import type { OcrPageResult } from './ocr-service';
 
 export interface SearchablePdfOptions {
-  invisibleOpacity?: number; // default 0.001
+  /** Optional raw TTF/OTF bytes (useful in headless environments or custom fonts) */
+  fontBytes?: ArrayBuffer | Uint8Array;
 }
 
-function toArrayBuffer(input: any): ArrayBuffer {
-  if (input instanceof ArrayBuffer) {
-    return input;
+let cachedFontBytes: ArrayBuffer | null = null;
+let fontLoadPromise: Promise<ArrayBuffer | null> | null = null;
+
+function toArrayBuffer(input: ArrayBuffer | Uint8Array): ArrayBuffer {
+  if (
+    input instanceof ArrayBuffer ||
+    Object.prototype.toString.call(input) === '[object ArrayBuffer]'
+  ) {
+    const src = new Uint8Array(input as ArrayBuffer);
+    const copy = new Uint8Array(src.byteLength);
+    copy.set(src);
+    return copy.buffer;
   }
-  if (ArrayBuffer.isView(input)) {
-    return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
+  if (
+    ArrayBuffer.isView(input) ||
+    (input &&
+      typeof input === 'object' &&
+      'buffer' in input &&
+      typeof (input as Uint8Array).byteLength === 'number')
+  ) {
+    const view = input as ArrayBufferView & Uint8Array;
+    const src = new Uint8Array(view.buffer, view.byteOffset ?? 0, view.byteLength);
+    const copy = new Uint8Array(src.byteLength);
+    copy.set(src);
+    return copy.buffer;
   }
-  if (input && input.buffer instanceof ArrayBuffer) {
-    const offset = input.byteOffset || 0;
-    const length = input.byteLength || input.buffer.byteLength;
-    return input.buffer.slice(offset, offset + length);
+  throw new Error('Geçersiz PDF ikili verisi.');
+}
+
+async function loadCachedUnicodeFontBytes(): Promise<ArrayBuffer | null> {
+  if (cachedFontBytes) return cachedFontBytes;
+  if (fontLoadPromise) return fontLoadPromise;
+
+  fontLoadPromise = (async () => {
+    const candidates: string[] = [];
+
+    if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function') {
+      candidates.push(chrome.runtime.getURL('fonts/font-regular.ttf'));
+    }
+
+    candidates.push(
+      './fonts/font-regular.ttf',
+      'fonts/font-regular.ttf',
+      '/fonts/font-regular.ttf'
+    );
+
+    if (
+      typeof window !== 'undefined' &&
+      window.location?.origin &&
+      window.location.origin !== 'null' &&
+      !window.location.origin.startsWith('file://')
+    ) {
+      candidates.push(`${window.location.origin}/fonts/font-regular.ttf`);
+    }
+
+    if (typeof fetch === 'function') {
+      for (const url of candidates) {
+        try {
+          const res = await fetch(url);
+          if (res.ok) {
+            const buf = await res.arrayBuffer();
+            if (buf.byteLength > 0) {
+              cachedFontBytes = buf;
+              return cachedFontBytes;
+            }
+          }
+        } catch {
+          // Try next candidate
+        }
+      }
+    }
+
+    // Node / Vitest fallback
+    if (typeof process !== 'undefined' && process.versions?.node) {
+      try {
+        const fsMod = await import(/* @vite-ignore */ 'node:fs/promises');
+        const pathMod = await import(/* @vite-ignore */ 'node:path');
+        const fsPath = pathMod.resolve(process.cwd(), 'public/fonts/font-regular.ttf');
+        const nodeBuf = await fsMod.readFile(fsPath);
+        const copy = new Uint8Array(nodeBuf.byteLength);
+        copy.set(nodeBuf);
+        cachedFontBytes = copy.buffer;
+        return cachedFontBytes;
+      } catch {
+        // Fallback to standard font below
+      }
+    }
+
+    return null;
+  })();
+
+  try {
+    return await fontLoadPromise;
+  } finally {
+    fontLoadPromise = null;
   }
-  return input;
+}
+
+function clamp01(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+
+function mapNormalizedBoxToPdf(
+  normBbox: { x: number; y: number; width: number; height: number },
+  cropBox: { x: number; y: number; width: number; height: number },
+  rotationDeg: number
+): {
+  x: number;
+  y: number;
+  boxWidthPt: number;
+  boxHeightPt: number;
+  angleDeg: number;
+} {
+  const nx = clamp01(normBbox.x);
+  const ny = clamp01(normBbox.y);
+  const nw = Math.max(0.001, Math.min(1 - nx, normBbox.width));
+  const nh = Math.max(0.001, Math.min(1 - ny, normBbox.height));
+
+  // Typical glyph baseline sits ~15% above the bottom of the word bounding box
+  const nyBaseline = Math.min(1, ny + nh * 0.85);
+  const { x: cx, y: cy, width: cw, height: ch } = cropBox;
+  const rot = ((rotationDeg % 360) + 360) % 360;
+
+  if (rot === 90) {
+    return {
+      x: cx + nyBaseline * cw,
+      y: cy + nx * ch,
+      boxWidthPt: nw * ch,
+      boxHeightPt: nh * cw,
+      angleDeg: 90,
+    };
+  }
+  if (rot === 180) {
+    return {
+      x: cx + (1 - nx) * cw,
+      y: cy + nyBaseline * ch,
+      boxWidthPt: nw * cw,
+      boxHeightPt: nh * ch,
+      angleDeg: 180,
+    };
+  }
+  if (rot === 270) {
+    return {
+      x: cx + (1 - nyBaseline) * cw,
+      y: cy + (1 - nx) * ch,
+      boxWidthPt: nw * ch,
+      boxHeightPt: nh * cw,
+      angleDeg: 270,
+    };
+  }
+
+  return {
+    x: cx + nx * cw,
+    y: cy + (1 - nyBaseline) * ch,
+    boxWidthPt: nw * cw,
+    boxHeightPt: nh * ch,
+    angleDeg: 0,
+  };
+}
+
+function transliterateTurkishFallback(text: string): string {
+  return text
+    .replace(/ğ/g, 'g')
+    .replace(/Ğ/g, 'G')
+    .replace(/ş/g, 's')
+    .replace(/Ş/g, 'S')
+    .replace(/ı/g, 'i')
+    .replace(/İ/g, 'I')
+    .replace(/ç/g, 'c')
+    .replace(/Ç/g, 'C')
+    .replace(/ö/g, 'o')
+    .replace(/Ö/g, 'O')
+    .replace(/ü/g, 'u')
+    .replace(/Ü/g, 'U');
 }
 
 export class SearchablePdfEngine {
   /**
-   * Embeds invisible searchable text layer into the original PDF buffer matching exact word coordinates.
-   * Follows PDF24 Creator and Adobe Acrobat Pro "Searchable PDF" standards.
+   * Clears cached font bytes (primarily useful in tests).
+   */
+  public static clearFontCache(): void {
+    cachedFontBytes = null;
+    fontLoadPromise = null;
+  }
+
+  /**
+   * Embeds a standards-compliant invisible searchable text layer (PDF `3 Tr` mode)
+   * matching exact word coordinates, CropBox offsets, page /Rotate, and horizontal width (Tz).
    */
   public static async createSearchablePdf(
     originalBuffer: ArrayBuffer | Uint8Array,
@@ -38,28 +223,16 @@ export class SearchablePdfEngine {
     let font: PDFFont | null = null;
     let isUnicodeFont = false;
 
-    // Try loading Unicode font for full Turkish & Latin glyph fidelity
-    const fontCandidates = [
-      './fonts/font-regular.ttf',
-      'fonts/font-regular.ttf',
-      '/fonts/font-regular.ttf',
-    ];
+    const fontBuffer = options.fontBytes
+      ? toArrayBuffer(options.fontBytes)
+      : await loadCachedUnicodeFontBytes();
 
-    if (typeof window !== 'undefined' && window.location?.origin) {
-      fontCandidates.unshift(`${window.location.origin}/fonts/font-regular.ttf`);
-    }
-
-    for (const url of fontCandidates) {
+    if (fontBuffer) {
       try {
-        const res = await fetch(url);
-        if (res.ok) {
-          const fontBuffer = await res.arrayBuffer();
-          font = await pdfDoc.embedFont(fontBuffer, { subset: true });
-          isUnicodeFont = true;
-          break;
-        }
-      } catch {
-        // continue to next candidate
+        font = await pdfDoc.embedFont(new Uint8Array(fontBuffer), { subset: true });
+        isUnicodeFont = true;
+      } catch (err) {
+        console.warn('Unicode font embedding failed, falling back to Helvetica:', err);
       }
     }
 
@@ -71,17 +244,14 @@ export class SearchablePdfEngine {
       }
     }
 
-    const opacity = options.invisibleOpacity ?? 0.001;
-
     for (const ocrPage of ocrPages) {
       const pageIndex = ocrPage.pageNumber - 1;
       if (pageIndex < 0 || pageIndex >= pdfDoc.getPageCount()) continue;
 
       const page = pdfDoc.getPage(pageIndex);
-      const pageWidth = page.getWidth();
-      const pageHeight = page.getHeight();
+      const cropBox = page.getCropBox();
+      const rotationAngle = page.getRotation().angle;
 
-      // Collect items to draw: prioritize word-level bounding boxes for exact word selection
       const itemsToDraw: {
         text: string;
         normBbox: { x: number; y: number; width: number; height: number };
@@ -89,75 +259,72 @@ export class SearchablePdfEngine {
 
       if (ocrPage.words && ocrPage.words.length > 0) {
         for (const w of ocrPage.words) {
-          if (w.text && w.normBbox && w.text.trim().length > 0) {
-            itemsToDraw.push({ text: w.text.trim(), normBbox: w.normBbox });
+          const clean = w.text?.trim();
+          if (clean && w.normBbox) {
+            itemsToDraw.push({ text: clean, normBbox: w.normBbox });
           }
         }
       } else if (ocrPage.lines && ocrPage.lines.length > 0) {
-        // Fallback to lines if words are not granularly available
-        const cWidth = ocrPage.width || pageWidth;
-        const cHeight = ocrPage.height || pageHeight;
+        const cWidth = ocrPage.width || cropBox.width;
+        const cHeight = ocrPage.height || cropBox.height;
         for (const l of ocrPage.lines) {
-          if (l.text && l.text.trim().length > 0 && l.bbox) {
+          const clean = l.text?.trim();
+          if (clean && l.bbox && cWidth > 0 && cHeight > 0) {
             itemsToDraw.push({
-              text: l.text.trim(),
+              text: clean,
               normBbox: {
                 x: l.bbox.x0 / cWidth,
                 y: l.bbox.y0 / cHeight,
-                width: Math.max(0.01, (l.bbox.x1 - l.bbox.x0) / cWidth),
-                height: Math.max(0.01, (l.bbox.y1 - l.bbox.y0) / cHeight),
+                width: Math.max(0.005, (l.bbox.x1 - l.bbox.x0) / cWidth),
+                height: Math.max(0.005, (l.bbox.y1 - l.bbox.y0) / cHeight),
               },
             });
           }
         }
       }
 
+      if (itemsToDraw.length === 0) continue;
+
+      // Register font resource once per page instead of once per word
+      const fontKey = page.node.newFontDictionary(font.name, font.ref);
+
       for (const item of itemsToDraw) {
-        const text = item.text;
-        if (!text) continue;
+        const mapped = mapNormalizedBoxToPdf(item.normBbox, cropBox, rotationAngle);
+        const fontSize = Math.max(4, Math.min(72, mapped.boxHeightPt * 0.82));
 
-        const normBbox = item.normBbox;
-        const x = normBbox.x * pageWidth;
-        const boxHeight = normBbox.height * pageHeight;
-        // Text baseline in PDF coordinates (origin at bottom-left):
-        // Standard typography baseline is ~15% above the bottom of the bounding box
-        const y = Math.max(0, pageHeight - (normBbox.y * pageHeight + boxHeight) + (boxHeight * 0.15));
-        const fontSize = Math.max(4, Math.min(60, boxHeight * 0.82));
+        let textToDraw = isUnicodeFont ? item.text : transliterateTurkishFallback(item.text);
 
-        const textToDraw = isUnicodeFont
-          ? text
-          : text
-              .replace(/ğ/g, 'g')
-              .replace(/Ğ/g, 'G')
-              .replace(/ş/g, 's')
-              .replace(/Ş/g, 'S')
-              .replace(/ı/g, 'i')
-              .replace(/İ/g, 'I');
-
+        let encoded;
+        let measuredWidth = 0;
         try {
-          page.drawText(textToDraw, {
-            x: Math.max(0, x),
-            y: Math.max(0, y),
-            size: fontSize,
-            font: font!,
-            color: rgb(0, 0, 0),
-            opacity,
-          });
+          encoded = font.encodeText(textToDraw);
+          measuredWidth = font.widthOfTextAtSize(textToDraw, fontSize);
         } catch {
           try {
-            const asciiText = textToDraw.replace(/[^\x00-\x7F]/g, '?');
-            page.drawText(asciiText, {
-              x: Math.max(0, x),
-              y: Math.max(0, y),
-              size: fontSize,
-              font: font!,
-              color: rgb(0, 0, 0),
-              opacity,
-            });
+            textToDraw = transliterateTurkishFallback(item.text).replace(/[^\x20-\x7E]/g, '?');
+            encoded = font.encodeText(textToDraw);
+            measuredWidth = font.widthOfTextAtSize(textToDraw, fontSize);
           } catch {
-            // ignore non-renderable characters to avoid breaking document creation
+            continue;
           }
         }
+
+        const tzScale =
+          measuredWidth > 0 && mapped.boxWidthPt > 0
+            ? Math.max(10, Math.min(400, (mapped.boxWidthPt / measuredWidth) * 100))
+            : 100;
+
+        page.pushOperators(
+          pushGraphicsState(),
+          beginText(),
+          setTextRenderingMode(TextRenderingMode.Invisible),
+          setFontAndSize(fontKey, fontSize),
+          setCharacterSqueeze(tzScale),
+          rotateAndSkewTextDegreesAndTranslate(mapped.angleDeg, 0, 0, mapped.x, mapped.y),
+          showText(encoded),
+          endText(),
+          popGraphicsState()
+        );
       }
     }
 

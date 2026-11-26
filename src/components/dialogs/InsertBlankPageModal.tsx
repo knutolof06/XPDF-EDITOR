@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
-import { useViewerStore } from '@/store/viewer-store';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
 import { historyManager, DocumentStateSnapshotCommand } from '@/core/history/command-manager';
 import {
@@ -12,6 +11,11 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import {
+  syncReplacedActiveDocument,
+  useModalEscape,
+  useResolvedDarkMode,
+} from './modal-utils';
 
 export const InsertBlankPageModal: React.FC = () => {
   const {
@@ -20,11 +24,10 @@ export const InsertBlankPageModal: React.FC = () => {
     setInsertBlankPageModalOpen,
     addToast,
   } = useUIStore();
-  const { currentDocument, pdfDocProxy, setDocument } = useDocumentStore();
-  const theme = useViewerStore((s) => s.theme);
-  const isDark = theme === 'dark';
+  const { currentDocument, pdfDocProxy } = useDocumentStore();
+  const isDark = useResolvedDarkMode();
 
-  const [positionType, setPositionType] = useState<'after_selected' | 'start' | 'end'>('after_selected');
+  const [positionType, setPositionType] = useState<'custom_index' | 'after_selected' | 'start' | 'end'>('after_selected');
   const [pageSize, setPageSize] = useState<'a4' | 'letter' | 'match'>('a4');
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [pageCount, setPageCount] = useState<number>(1);
@@ -32,18 +35,26 @@ export const InsertBlankPageModal: React.FC = () => {
 
   const totalPages = currentDocument?.pages.length || 1;
   const activePageIndex = currentDocument?.activePageIndex ?? 0;
+  const hasExplicitPendingIndex =
+    pendingBlankPageInsertIndex !== null && pendingBlankPageInsertIndex !== undefined;
 
   useEffect(() => {
-    if (pendingBlankPageInsertIndex !== null && pendingBlankPageInsertIndex !== undefined) {
-      setPositionType('after_selected');
-    }
-  }, [pendingBlankPageInsertIndex, isInsertBlankPageModalOpen]);
+    if (!isInsertBlankPageModalOpen) return;
+    setPositionType(hasExplicitPendingIndex ? 'custom_index' : 'after_selected');
+    setPageCount(1);
+  }, [isInsertBlankPageModalOpen, hasExplicitPendingIndex]);
+
+  useModalEscape(
+    isInsertBlankPageModalOpen,
+    () => setInsertBlankPageModalOpen(false, null),
+    isProcessing
+  );
 
   if (!isInsertBlankPageModalOpen || !currentDocument) return null;
 
   const calculateTargetIndex = (): number => {
-    if (pendingBlankPageInsertIndex !== null && pendingBlankPageInsertIndex !== undefined) {
-      return pendingBlankPageInsertIndex;
+    if (positionType === 'custom_index' && hasExplicitPendingIndex) {
+      return Math.max(0, Math.min(totalPages, pendingBlankPageInsertIndex!));
     }
     if (positionType === 'start') return 0;
     if (positionType === 'end') return totalPages;
@@ -66,24 +77,26 @@ export const InsertBlankPageModal: React.FC = () => {
         pageCount
       );
 
-      // Register into historyManager for Undo/Redo support!
+      const synced = syncReplacedActiveDocument(result.model, result.pdfDoc, prevDocModel, {
+        isModified: true,
+      });
+
       historyManager.push(
         new DocumentStateSnapshotCommand(
           `${pageCount} adet boş sayfa eklendi`,
           prevDocModel,
           prevPdfProxy,
-          result.model,
+          synced,
           result.pdfDoc
         )
       );
 
-      setDocument(result.model, result.pdfDoc);
       addToast(
         pageCount === 1 ? '1 adet boş sayfa eklendi.' : `${pageCount} adet boş sayfa eklendi.`,
         'success'
       );
-      setInsertBlankPageModalOpen(false);
-    } catch (err: any) {
+      setInsertBlankPageModalOpen(false, null);
+    } catch (err: unknown) {
       console.error('Insert blank page error:', err);
       addToast('Boş sayfa eklenirken hata oluştu.', 'error');
     } finally {
@@ -91,13 +104,22 @@ export const InsertBlankPageModal: React.FC = () => {
     }
   };
 
+  const targetIdxPreview = calculateTargetIndex();
+  const middleLabel = hasExplicitPendingIndex
+    ? `${pendingBlankPageInsertIndex}. Sayfa Sonrasına`
+    : `Sayfa ${activePageIndex + 1} Sonrasına`;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+      onClick={() => !isProcessing && setInsertBlankPageModalOpen(false, null)}
+    >
       <div
         className={cn(
           'w-full max-w-md rounded-2xl border shadow-2xl flex flex-col overflow-hidden transition-colors',
           isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900'
         )}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div
@@ -119,8 +141,11 @@ export const InsertBlankPageModal: React.FC = () => {
           </div>
 
           <button
-            onClick={() => setInsertBlankPageModalOpen(false)}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
+            type="button"
+            onClick={() => !isProcessing && setInsertBlankPageModalOpen(false, null)}
+            disabled={isProcessing}
+            aria-label="Kapat"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors disabled:opacity-40"
           >
             <X className="w-5 h-5" />
           </button>
@@ -149,15 +174,17 @@ export const InsertBlankPageModal: React.FC = () => {
 
               <button
                 type="button"
-                onClick={() => setPositionType('after_selected')}
+                onClick={() =>
+                  setPositionType(hasExplicitPendingIndex ? 'custom_index' : 'after_selected')
+                }
                 className={cn(
                   'p-2.5 rounded-xl border text-center font-semibold transition-all',
-                  positionType === 'after_selected'
+                  positionType === 'after_selected' || positionType === 'custom_index'
                     ? 'border-sky-500 bg-sky-500/10 text-sky-600 dark:text-sky-400'
                     : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                 )}
               >
-                Sayfa {activePageIndex + 1} Sonrasına
+                {middleLabel}
               </button>
 
               <button
@@ -183,7 +210,7 @@ export const InsertBlankPageModal: React.FC = () => {
               </label>
               <select
                 value={pageSize}
-                onChange={(e) => setPageSize(e.target.value as any)}
+                onChange={(e) => setPageSize(e.target.value as 'a4' | 'letter' | 'match')}
                 className={cn(
                   'w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500 font-medium',
                   isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-900'
@@ -252,6 +279,7 @@ export const InsertBlankPageModal: React.FC = () => {
           {/* Action button */}
           <div className="pt-2">
             <button
+              type="button"
               onClick={handleInsert}
               disabled={isProcessing}
               className="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all"
@@ -261,7 +289,9 @@ export const InsertBlankPageModal: React.FC = () => {
               ) : (
                 <Check className="w-4 h-4" />
               )}
-              <span>Boş Sayfa Ekle</span>
+              <span>
+                {pageCount > 1 ? `${pageCount} Boş Sayfa Ekle` : 'Boş Sayfa Ekle'} (Konum: {targetIdxPreview + 1}. sıra)
+              </span>
             </button>
           </div>
         </div>

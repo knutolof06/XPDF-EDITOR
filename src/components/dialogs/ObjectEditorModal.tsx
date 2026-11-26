@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
-import { useViewerStore } from '@/store/viewer-store';
 import { useNativeObjectStore } from '@/store/native-object-store';
 import { PdfNativeObject } from '@/types/annotations';
 import { extractAllNativeObjects } from '@/core/pdf/pdf-native-extractor';
+import { historyManager, GenericCommand } from '@/core/history/command-manager';
 import { cn } from '@/utils/cn';
 import {
   X,
@@ -19,45 +19,114 @@ import {
   Trash2,
   Edit3,
 } from 'lucide-react';
+import {
+  useResolvedDarkMode,
+  useModalEscape,
+  markCurrentDocumentModified,
+} from './modal-utils';
+
+function cloneObjectsMap(
+  source: Record<string, PdfNativeObject[]>
+): Record<string, PdfNativeObject[]> {
+  const copy: Record<string, PdfNativeObject[]> = {};
+  for (const [k, list] of Object.entries(source)) {
+    copy[k] = list.map((item) => ({
+      ...item,
+      transform: item.transform ? [...item.transform] : undefined,
+    }));
+  }
+  return copy;
+}
+
+interface DisplayBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function toDisplayBox(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  rotation: number,
+  unrotatedW: number,
+  unrotatedH: number
+): DisplayBox {
+  const normRot = ((rotation % 360) + 360) % 360;
+  if (normRot === 90) {
+    return {
+      x: unrotatedH - (y + height),
+      y: x,
+      width: height,
+      height: width,
+    };
+  }
+  if (normRot === 180) {
+    return {
+      x: unrotatedW - (x + width),
+      y: unrotatedH - (y + height),
+      width,
+      height,
+    };
+  }
+  if (normRot === 270) {
+    return {
+      x: y,
+      y: unrotatedW - (x + width),
+      width: height,
+      height: width,
+    };
+  }
+  return { x, y, width, height };
+}
+
+function toPdfDelta(drx: number, dry: number, rotation: number): { dx: number; dy: number } {
+  const normRot = ((rotation % 360) + 360) % 360;
+  if (normRot === 90) return { dx: dry, dy: -drx };
+  if (normRot === 180) return { dx: -drx, dy: -dry };
+  if (normRot === 270) return { dx: -dry, dy: drx };
+  return { dx: drx, dy: dry };
+}
 
 export const ObjectEditorModal: React.FC = () => {
   const { isObjectEditorOpen, setObjectEditorOpen, addToast } = useUIStore();
   const { currentDocument, pdfDocProxy } = useDocumentStore();
-  const theme = useViewerStore((s) => s.theme);
-  const {
-    objectsByPage,
-    setObjects,
-    moveMultipleObjects,
-    resetObject,
-    resetMultipleObjects,
-    updateObjectText,
-    deleteMultipleObjects,
-    restoreObject,
-    resetAllOnPage,
-  } = useNativeObjectStore();
+  const isDark = useResolvedDarkMode();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
-  const renderTaskRef = useRef<any>(null);
+  const renderTaskRef = useRef<{ cancel?: () => void; promise: Promise<void> } | null>(null);
+  const extractedPagesRef = useRef<Set<string>>(new Set());
+  const cancelledEditRef = useRef<boolean>(false);
+  const dragRafRef = useRef<number | null>(null);
+  const marqueeRafRef = useRef<number | null>(null);
+  const activeListenersRef = useRef<Array<{ type: 'mousemove' | 'mouseup'; fn: (ev: MouseEvent) => void }>>([]);
 
+  // Transactional draft store per pageId (discarded on Cancel / Esc)
+  const [draftByPage, setDraftByPage] = useState<Record<string, PdfNativeObject[]>>({});
   const [pageIndex, setPageIndex] = useState(0);
   const [scale, setScale] = useState(1.25);
   const [isLoading, setIsLoading] = useState(false);
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
+  const [unrotatedSize, setUnrotatedSize] = useState<{ width: number; height: number }>({
+    width: 595.28,
+    height: 841.89,
+  });
 
-  // Multi-selection state: Set of selected object IDs
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  // Filter for sidebar list ('all' | 'text' | 'image' | 'moved')
   const [sidebarFilter, setSidebarFilter] = useState<'all' | 'text' | 'image' | 'moved'>('all');
 
-  // Dragging group state
   const dragRef = useRef<{
     startMouseX: number;
     startMouseY: number;
     startPositions: Map<string, { x: number; y: number }>;
   } | null>(null);
 
-  // Marquee (Area Selection) state
   const [marquee, setMarquee] = useState<{
     startX: number;
     startY: number;
@@ -65,39 +134,208 @@ export const ObjectEditorModal: React.FC = () => {
     currentY: number;
   } | null>(null);
 
-  // Inline text editing state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTextValue, setEditTextValue] = useState<string>('');
 
+  const clearWindowDragListeners = useCallback(() => {
+    for (const item of activeListenersRef.current) {
+      window.removeEventListener(item.type, item.fn);
+    }
+    activeListenersRef.current = [];
+    if (dragRafRef.current) {
+      cancelAnimationFrame(dragRafRef.current);
+      dragRafRef.current = null;
+    }
+    if (marqueeRafRef.current) {
+      cancelAnimationFrame(marqueeRafRef.current);
+      marqueeRafRef.current = null;
+    }
+  }, []);
+
+  // Initialize local draft snapshot and sync pageIndex on modal open or document switch
+  const docId = currentDocument?.id;
+
+  useEffect(() => {
+    if (!isObjectEditorOpen || !docId) return;
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+
+    const initialStoreObjects = useNativeObjectStore.getState().objectsByPage;
+    setDraftByPage(cloneObjectsMap(initialStoreObjects));
+
+    const preExtracted = new Set<string>();
+    for (const pg of doc.pages) {
+      if (pg.id in initialStoreObjects) {
+        preExtracted.add(pg.id);
+      }
+    }
+    extractedPagesRef.current = preExtracted;
+
+    const clampedPageIdx = Math.max(
+      0,
+      Math.min(doc.activePageIndex || 0, Math.max(0, doc.pages.length - 1))
+    );
+    setPageIndex(clampedPageIdx);
+    setSelectedIds(new Set());
+    setEditingId(null);
+    setMarquee(null);
+    setSidebarFilter('all');
+
+    return () => {
+      clearWindowDragListeners();
+    };
+  }, [isObjectEditorOpen, docId, clearWindowDragListeners]);
+
   const totalPages = currentDocument?.pages.length || 0;
-  const activePage = currentDocument?.pages[pageIndex];
+  const safePageIndex = totalPages > 0 ? Math.max(0, Math.min(pageIndex, totalPages - 1)) : 0;
+  const activePage = currentDocument?.pages[safePageIndex];
   const pageId = activePage?.id || '';
-  const objects: PdfNativeObject[] = objectsByPage[pageId] ?? [];
+  const pageRotation = activePage?.rotation || 0;
+  const objects = useMemo<PdfNativeObject[]>(
+    () => draftByPage[pageId] ?? [],
+    [draftByPage, pageId]
+  );
+
   const movedCount = objects.filter((o) => o.moved).length;
   const deletedCount = objects.filter((o) => o.deleted).length;
   const editedCount = objects.filter((o) => o.isEdited).length;
-  const modifiedCount = objects.filter((o) => o.moved || o.deleted || o.isEdited).length;
 
-  const isDark = theme === 'dark';
+  const totalModifiedAcrossDoc = Object.values(draftByPage).reduce(
+    (sum, list) => sum + list.filter((o) => o.moved || o.deleted || o.isEdited).length,
+    0
+  );
 
-  const handleDeleteSelected = () => {
-    if (selectedIds.size === 0) return;
-    deleteMultipleObjects(pageId, Array.from(selectedIds));
-    addToast(`${selectedIds.size} nesne silindi (kalıcı olarak maskelenecek).`, 'info');
-  };
+  // Draft mutation helpers
+  const draftMoveMultiple = useCallback(
+    (targetPageId: string, updates: { id: string; x: number; y: number }[]) => {
+      const updateMap = new Map(updates.map((u) => [u.id, u]));
+      setDraftByPage((prev) => {
+        const list = prev[targetPageId];
+        if (!list) return prev;
+        return {
+          ...prev,
+          [targetPageId]: list.map((obj) => {
+            const u = updateMap.get(obj.id);
+            return u ? { ...obj, x: u.x, y: u.y, moved: true } : obj;
+          }),
+        };
+      });
+    },
+    []
+  );
 
-  const handleStartEdit = (obj: PdfNativeObject) => {
+  const draftUpdateText = useCallback(
+    (targetPageId: string, id: string, newText: string) => {
+      setDraftByPage((prev) => {
+        const list = prev[targetPageId];
+        if (!list) return prev;
+        return {
+          ...prev,
+          [targetPageId]: list.map((obj) =>
+            obj.id === id
+              ? {
+                  ...obj,
+                  text: newText,
+                  originalText: obj.originalText ?? obj.text,
+                  moved: true,
+                  isEdited: true,
+                }
+              : obj
+          ),
+        };
+      });
+    },
+    []
+  );
+
+  const draftDeleteMultiple = useCallback((targetPageId: string, ids: string[]) => {
+    const idSet = new Set(ids);
+    setDraftByPage((prev) => {
+      const list = prev[targetPageId];
+      if (!list) return prev;
+      return {
+        ...prev,
+        [targetPageId]: list.map((obj) =>
+          idSet.has(obj.id) ? { ...obj, deleted: true } : obj
+        ),
+      };
+    });
+  }, []);
+
+  const draftRestoreObject = useCallback((targetPageId: string, id: string) => {
+    setDraftByPage((prev) => {
+      const list = prev[targetPageId];
+      if (!list) return prev;
+      return {
+        ...prev,
+        [targetPageId]: list.map((obj) =>
+          obj.id === id ? { ...obj, deleted: false } : obj
+        ),
+      };
+    });
+  }, []);
+
+  const draftResetObjects = useCallback((targetPageId: string, ids: string[] | 'all') => {
+    const idSet = ids === 'all' ? null : new Set(ids);
+    setDraftByPage((prev) => {
+      const list = prev[targetPageId];
+      if (!list) return prev;
+      return {
+        ...prev,
+        [targetPageId]: list.map((obj) =>
+          idSet === null || idSet.has(obj.id)
+            ? {
+                ...obj,
+                x: obj.originalX,
+                y: obj.originalY,
+                text: obj.originalText ?? obj.text,
+                moved: false,
+                deleted: false,
+                isEdited: false,
+              }
+            : obj
+        ),
+      };
+    });
+  }, []);
+
+  const handleClose = useCallback(() => {
+    clearWindowDragListeners();
+    setEditingId(null);
+    setObjectEditorOpen(false);
+  }, [clearWindowDragListeners, setObjectEditorOpen]);
+
+  // Capture-phase Escape: cancel inline edit first, otherwise cleanly discard draft and close modal
+  useModalEscape(isObjectEditorOpen, handleClose, {
+    onInterceptEscape: () => {
+      if (editingId) {
+        cancelledEditRef.current = true;
+        setEditingId(null);
+        return true;
+      }
+      return false;
+    },
+  });
+
+  const handleDeleteSelected = useCallback(() => {
+    if (selectedIds.size === 0 || !pageId) return;
+    draftDeleteMultiple(pageId, Array.from(selectedIds));
+    addToast(`${selectedIds.size} nesne silindi (Uygula ile kalıcı olarak maskelenecek).`, 'info');
+  }, [selectedIds, pageId, draftDeleteMultiple, addToast]);
+
+  const handleStartEdit = useCallback((obj: PdfNativeObject) => {
     if (obj.type === 'native-text') {
+      cancelledEditRef.current = false;
       setEditingId(obj.id);
       setEditTextValue(obj.text || '');
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!isObjectEditorOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
+      const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
         return;
       }
@@ -106,7 +344,7 @@ export const ObjectEditorModal: React.FC = () => {
         e.preventDefault();
         handleDeleteSelected();
       } else if (e.key.toLowerCase() === 'e' && selectedIds.size === 1) {
-        const selObj = objects.find((o) => selectedIds.has(o.id));
+        const selObj = objects.find((o) => selectedIds.has(o.id) && !o.deleted);
         if (selObj && selObj.type === 'native-text') {
           e.preventDefault();
           handleStartEdit(selObj);
@@ -116,9 +354,9 @@ export const ObjectEditorModal: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isObjectEditorOpen, selectedIds, objects, pageId]);
+  }, [isObjectEditorOpen, selectedIds, objects, handleDeleteSelected, handleStartEdit]);
 
-  // Render canvas when page or scale changes
+  // Render canvas & extract objects once per pageId (never loop on 0-object scanned pages)
   useEffect(() => {
     if (!isObjectEditorOpen || !pdfDocProxy || !activePage || !canvasRef.current) return;
 
@@ -127,26 +365,36 @@ export const ObjectEditorModal: React.FC = () => {
     const render = async () => {
       setIsLoading(true);
       setSelectedIds(new Set());
+      setEditingId(null);
 
       try {
-        if (renderTaskRef.current) {
+        if (renderTaskRef.current?.cancel) {
           try {
             renderTaskRef.current.cancel();
-          } catch {}
+          } catch {
+            // ignore
+          }
         }
 
         const pdfPage = await pdfDocProxy.getPage(activePage.sourcePageIndex + 1);
         if (isCancelled) return;
 
+        const baseUnrotated = pdfPage.getViewport({ scale: 1, rotation: 0 });
+        setUnrotatedSize({ width: baseUnrotated.width, height: baseUnrotated.height });
+
         const viewport = pdfPage.getViewport({ scale, rotation: activePage.rotation });
-        const canvas = canvasRef.current!;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
         const ctx = canvas.getContext('2d', { alpha: false });
         if (!ctx) return;
 
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        const vpW = Math.floor(viewport.width);
+        const vpH = Math.floor(viewport.height);
+        canvas.width = vpW;
+        canvas.height = vpH;
+        canvas.style.width = `${vpW}px`;
+        canvas.style.height = `${vpH}px`;
+        setViewportSize({ width: vpW, height: vpH });
 
         const task = pdfPage.render({ canvasContext: ctx, viewport });
         renderTaskRef.current = task;
@@ -155,13 +403,23 @@ export const ObjectEditorModal: React.FC = () => {
 
         setIsLoading(false);
 
-        // Extract objects for this page if not done yet
-        if (!objectsByPage[pageId] || objectsByPage[pageId].length === 0) {
+        if (!extractedPagesRef.current.has(pageId)) {
+          extractedPagesRef.current.add(pageId);
           const objs = await extractAllNativeObjects(pdfPage, pageId);
-          if (!isCancelled) setObjects(pageId, objs);
+          if (!isCancelled) {
+            const withOriginals = objs.map((o) => ({
+              ...o,
+              originalText: o.originalText ?? o.text,
+            }));
+            setDraftByPage((prev) => {
+              if (pageId in prev) return prev;
+              return { ...prev, [pageId]: withOriginals };
+            });
+          }
         }
-      } catch (err: any) {
-        if (err?.name !== 'RenderingCancelledException') {
+      } catch (err: unknown) {
+        const errObj = err as { name?: string };
+        if (errObj?.name !== 'RenderingCancelledException') {
           console.error('ObjectEditor render error:', err);
           setIsLoading(false);
         }
@@ -173,37 +431,29 @@ export const ObjectEditorModal: React.FC = () => {
     return () => {
       isCancelled = true;
     };
-  }, [isObjectEditorOpen, pageIndex, pdfDocProxy, activePage, scale]);
+  }, [isObjectEditorOpen, safePageIndex, pdfDocProxy, activePage, pageId, scale]);
 
-  // Object Selection Handler
   const handleObjectClick = (e: React.MouseEvent, obj: PdfNativeObject) => {
     e.stopPropagation();
 
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
-      // Toggle selection in multi-select mode
       setSelectedIds((prev) => {
         const next = new Set(prev);
-        if (next.has(obj.id)) {
-          next.delete(obj.id);
-        } else {
-          next.add(obj.id);
-        }
+        if (next.has(obj.id)) next.delete(obj.id);
+        else next.add(obj.id);
         return next;
       });
     } else {
-      // Single select
       setSelectedIds(new Set([obj.id]));
     }
   };
 
-  // Group Dragging Handler
   const handleDragStart = useCallback(
     (e: React.MouseEvent, obj: PdfNativeObject) => {
       e.stopPropagation();
       e.preventDefault();
 
       let currentSelected = selectedIds;
-      // If clicked object is not in current selection, select it exclusively (unless shift/ctrl)
       if (!selectedIds.has(obj.id)) {
         if (e.ctrlKey || e.metaKey || e.shiftKey) {
           currentSelected = new Set(selectedIds).add(obj.id);
@@ -214,10 +464,9 @@ export const ObjectEditorModal: React.FC = () => {
         }
       }
 
-      // Record starting positions for all selected objects
       const startPositions = new Map<string, { x: number; y: number }>();
       for (const id of currentSelected) {
-        const targetObj = objects.find((o) => o.id === id);
+        const targetObj = objects.find((o) => o.id === id && !o.deleted);
         if (targetObj) {
           startPositions.set(id, { x: targetObj.x, y: targetObj.y });
         }
@@ -229,110 +478,158 @@ export const ObjectEditorModal: React.FC = () => {
         startPositions,
       };
 
+      let pendingMouse: { clientX: number; clientY: number } | null = null;
+
       const onMouseMove = (me: MouseEvent) => {
-        if (!dragRef.current) return;
-        const dx = (me.clientX - dragRef.current.startMouseX) / scale;
-        const dy = (me.clientY - dragRef.current.startMouseY) / scale;
+        pendingMouse = { clientX: me.clientX, clientY: me.clientY };
+        if (dragRafRef.current) return;
 
-        const updates: { id: string; x: number; y: number }[] = [];
-        dragRef.current.startPositions.forEach((startPos, id) => {
-          updates.push({
-            id,
-            x: Math.max(0, startPos.x + dx),
-            y: Math.max(0, startPos.y + dy),
+        dragRafRef.current = requestAnimationFrame(() => {
+          dragRafRef.current = null;
+          if (!dragRef.current || !pendingMouse) return;
+
+          const drx = (pendingMouse.clientX - dragRef.current.startMouseX) / scale;
+          const dry = (pendingMouse.clientY - dragRef.current.startMouseY) / scale;
+          const { dx, dy } = toPdfDelta(drx, dry, pageRotation);
+
+          const updates: { id: string; x: number; y: number }[] = [];
+          dragRef.current.startPositions.forEach((startPos, id) => {
+            updates.push({
+              id,
+              x: Math.max(0, startPos.x + dx),
+              y: Math.max(0, startPos.y + dy),
+            });
           });
-        });
 
-        moveMultipleObjects(pageId, updates);
+          draftMoveMultiple(pageId, updates);
+        });
       };
 
       const onMouseUp = () => {
         dragRef.current = null;
-        window.removeEventListener('mousemove', onMouseMove);
-        window.removeEventListener('mouseup', onMouseUp);
+        clearWindowDragListeners();
       };
 
+      clearWindowDragListeners();
+      activeListenersRef.current = [
+        { type: 'mousemove', fn: onMouseMove },
+        { type: 'mouseup', fn: onMouseUp },
+      ];
       window.addEventListener('mousemove', onMouseMove);
       window.addEventListener('mouseup', onMouseUp);
     },
-    [scale, pageId, selectedIds, objects, moveMultipleObjects]
+    [scale, pageId, pageRotation, selectedIds, objects, draftMoveMultiple, clearWindowDragListeners]
   );
 
-  // Marquee Area Selection on Workspace / Canvas
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    // Clicking on canvas clears selection unless ctrl/shift is pressed
+    if (e.button !== 0 || !canvasRef.current) return;
     if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
       setSelectedIds(new Set());
     }
 
-    if (!canvasRef.current) return;
-    const canvasRect = canvasRef.current.getBoundingClientRect();
-    const startX = (e.clientX - canvasRect.left) / scale;
-    const startY = (e.clientY - canvasRect.top) / scale;
+    const initialRect = canvasRef.current.getBoundingClientRect();
+    const startX = (e.clientX - initialRect.left) / scale;
+    const startY = (e.clientY - initialRect.top) / scale;
 
     setMarquee({ startX, startY, currentX: startX, currentY: startY });
 
+    let pendingEvent: { clientX: number; clientY: number; multi: boolean } | null = null;
+
     const onMouseMove = (me: MouseEvent) => {
-      const currentX = (me.clientX - canvasRect.left) / scale;
-      const currentY = (me.clientY - canvasRect.top) / scale;
-      setMarquee((m) => (m ? { ...m, currentX, currentY } : null));
+      pendingEvent = {
+        clientX: me.clientX,
+        clientY: me.clientY,
+        multi: me.ctrlKey || me.metaKey || me.shiftKey,
+      };
+      if (marqueeRafRef.current) return;
 
-      // Calculate bounding box in PDF points
-      const minX = Math.min(startX, currentX);
-      const maxX = Math.max(startX, currentX);
-      const minY = Math.min(startY, currentY);
-      const maxY = Math.max(startY, currentY);
+      marqueeRafRef.current = requestAnimationFrame(() => {
+        marqueeRafRef.current = null;
+        if (!pendingEvent || !canvasRef.current) return;
 
-      // Find all objects inside or intersecting the marquee
-      const enclosed = objects.filter((o) => {
-        const oMaxX = o.x + o.width;
-        const oMaxY = o.y + o.height;
-        return o.x < maxX && oMaxX > minX && o.y < maxY && oMaxY > minY;
-      });
+        // Read fresh canvas rect inside rAF so scroll never makes it stale
+        const liveRect = canvasRef.current.getBoundingClientRect();
+        const currentX = (pendingEvent.clientX - liveRect.left) / scale;
+        const currentY = (pendingEvent.clientY - liveRect.top) / scale;
+        setMarquee((m) => (m ? { ...m, currentX, currentY } : null));
 
-      setSelectedIds((prev) => {
-        const next = me.ctrlKey || me.shiftKey ? new Set(prev) : new Set<string>();
-        enclosed.forEach((o) => next.add(o.id));
-        return next;
+        const minX = Math.min(startX, currentX);
+        const maxX = Math.max(startX, currentX);
+        const minY = Math.min(startY, currentY);
+        const maxY = Math.max(startY, currentY);
+
+        const enclosed = objects.filter((o) => {
+          if (o.deleted) return false;
+          const box = toDisplayBox(
+            o.x,
+            o.y,
+            o.width,
+            o.height,
+            pageRotation,
+            unrotatedSize.width,
+            unrotatedSize.height
+          );
+          return (
+            box.x < maxX &&
+            box.x + box.width > minX &&
+            box.y < maxY &&
+            box.y + box.height > minY
+          );
+        });
+
+        setSelectedIds((prev) => {
+          const next = pendingEvent?.multi ? new Set(prev) : new Set<string>();
+          enclosed.forEach((o) => next.add(o.id));
+          return next;
+        });
       });
     };
 
     const onMouseUp = () => {
       setMarquee(null);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+      clearWindowDragListeners();
     };
 
+    clearWindowDragListeners();
+    activeListenersRef.current = [
+      { type: 'mousemove', fn: onMouseMove },
+      { type: 'mouseup', fn: onMouseUp },
+    ];
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   };
 
   const handleApply = () => {
-    if (modifiedCount > 0) {
-      useDocumentStore.setState((state) => {
-        if (!state.currentDocument) return state;
-        return {
-          currentDocument: {
-            ...state.currentDocument,
-            isModified: true,
-          },
-        };
-      });
+    const prevSnapshot = cloneObjectsMap(useNativeObjectStore.getState().objectsByPage);
+    const nextSnapshot = cloneObjectsMap(draftByPage);
+
+    const applySnapshot = (snapshot: Record<string, PdfNativeObject[]>) => {
+      useNativeObjectStore.setState({ objectsByPage: cloneObjectsMap(snapshot) });
+      markCurrentDocumentModified();
+    };
+
+    if (totalModifiedAcrossDoc > 0) {
+      historyManager.execute(
+        new GenericCommand(
+          `${totalModifiedAcrossDoc} nesne düzenlemesi uygulandı`,
+          () => applySnapshot(nextSnapshot),
+          () => applySnapshot(prevSnapshot)
+        )
+      );
+      addToast(`${totalModifiedAcrossDoc} nesne değişikliği dökümana uygulandı.`, 'success');
+    } else {
+      useNativeObjectStore.setState({ objectsByPage: nextSnapshot });
+      addToast('Değişiklik yapılmadı.', 'info');
     }
-    addToast(`${modifiedCount} nesne değişikliği dökümana uygulandı.`, 'success');
+
+    clearWindowDragListeners();
     setObjectEditorOpen(false);
   };
 
-  const handleClose = () => {
-    setObjectEditorOpen(false);
-  };
-
-  // Filtered sidebar objects
   const filteredObjects = objects.filter((o) => {
     if (sidebarFilter === 'text') return o.type === 'native-text';
     if (sidebarFilter === 'image') return o.type === 'native-image';
-    if (sidebarFilter === 'moved') return o.moved;
+    if (sidebarFilter === 'moved') return o.moved || o.isEdited || o.deleted;
     return true;
   });
 
@@ -347,10 +644,10 @@ export const ObjectEditorModal: React.FC = () => {
         isDark ? 'bg-slate-950/95 text-slate-100' : 'bg-slate-900/60 text-slate-800'
       )}
     >
-      {/* ── Top Header Toolbar ── */}
+      {/* Top Header Toolbar */}
       <div
         className={cn(
-          'h-13 shrink-0 border-b flex items-center px-4 gap-3 z-30 transition-colors',
+          'h-14 shrink-0 border-b flex items-center px-4 gap-3 z-30 transition-colors',
           isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'
         )}
       >
@@ -363,15 +660,14 @@ export const ObjectEditorModal: React.FC = () => {
 
         <div className={cn('h-5 w-[1px] mx-1', isDark ? 'bg-slate-800' : 'bg-slate-200')} />
 
-        <span className={cn('text-xs truncate max-w-[200px]', isDark ? 'text-slate-400' : 'text-slate-500')}>
+        <span className={cn('text-xs truncate max-w-[180px]', isDark ? 'text-slate-400' : 'text-slate-500')}>
           {currentDocument.name}
         </span>
 
-        {/* Selected / Moved status badges */}
         {selectedIds.size > 0 && (
           <div className="flex items-center gap-1.5 bg-sky-500/15 text-sky-600 dark:text-sky-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-sky-500/30">
             <CheckSquare className="w-3.5 h-3.5" />
-            {selectedIds.size} nesne seçili
+            {selectedIds.size} seçili
           </div>
         )}
 
@@ -398,12 +694,12 @@ export const ObjectEditorModal: React.FC = () => {
 
         {/* Action Controls */}
         <div className="ml-auto flex items-center gap-2">
-          {/* Edit Text Button (if 1 text object selected) */}
           {selectedIds.size === 1 && (() => {
-            const selObj = objects.find((o) => selectedIds.has(o.id));
+            const selObj = objects.find((o) => selectedIds.has(o.id) && !o.deleted);
             if (selObj?.type === 'native-text') {
               return (
                 <button
+                  type="button"
                   onClick={() => handleStartEdit(selObj)}
                   className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-medium shadow-sm transition-colors"
                   title="Metni Düzenle (E tuşu veya çift tık)"
@@ -416,9 +712,9 @@ export const ObjectEditorModal: React.FC = () => {
             return null;
           })()}
 
-          {/* Delete Button */}
           {selectedIds.size > 0 && (
             <button
+              type="button"
               onClick={handleDeleteSelected}
               className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium shadow-sm transition-colors"
               title="Seçili nesneleri sil (Delete tuşu)"
@@ -436,6 +732,7 @@ export const ObjectEditorModal: React.FC = () => {
             )}
           >
             <button
+              type="button"
               onClick={() => setScale((s) => Math.max(0.6, Number((s - 0.2).toFixed(2))))}
               className="px-1.5 hover:text-sky-500 transition-colors font-bold"
             >
@@ -443,6 +740,7 @@ export const ObjectEditorModal: React.FC = () => {
             </button>
             <span className="w-12 text-center font-mono">{Math.round(scale * 100)}%</span>
             <button
+              type="button"
               onClick={() => setScale((s) => Math.min(3, Number((s + 0.2).toFixed(2))))}
               className="px-1.5 hover:text-sky-500 transition-colors font-bold"
             >
@@ -450,10 +748,10 @@ export const ObjectEditorModal: React.FC = () => {
             </button>
           </div>
 
-          {/* Reset Selected or All */}
           {selectedIds.size > 0 ? (
             <button
-              onClick={() => resetMultipleObjects(pageId, Array.from(selectedIds))}
+              type="button"
+              onClick={() => draftResetObjects(pageId, Array.from(selectedIds))}
               className={cn(
                 'flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors font-medium',
                 isDark
@@ -467,7 +765,8 @@ export const ObjectEditorModal: React.FC = () => {
             </button>
           ) : (
             <button
-              onClick={() => resetAllOnPage(pageId)}
+              type="button"
+              onClick={() => draftResetObjects(pageId, 'all')}
               className={cn(
                 'flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors font-medium',
                 isDark
@@ -481,9 +780,9 @@ export const ObjectEditorModal: React.FC = () => {
             </button>
           )}
 
-          {/* Select All */}
           <button
-            onClick={() => setSelectedIds(new Set(objects.map((o) => o.id)))}
+            type="button"
+            onClick={() => setSelectedIds(new Set(objects.filter((o) => !o.deleted).map((o) => o.id)))}
             className={cn(
               'flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors font-medium',
               isDark
@@ -496,8 +795,21 @@ export const ObjectEditorModal: React.FC = () => {
             Tümünü Seç
           </button>
 
-          {/* Apply & Close */}
           <button
+            type="button"
+            onClick={handleClose}
+            className={cn(
+              'px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border',
+              isDark
+                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+            )}
+          >
+            İptal
+          </button>
+
+          <button
+            type="button"
             onClick={handleApply}
             className="flex items-center gap-1.5 text-xs font-semibold px-4 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors shadow-md hover:shadow-lg"
           >
@@ -506,21 +818,23 @@ export const ObjectEditorModal: React.FC = () => {
           </button>
 
           <button
+            type="button"
             onClick={handleClose}
+            aria-label="Kapat"
             className={cn(
               'p-1.5 rounded-lg transition-colors',
               isDark ? 'hover:bg-slate-800 text-slate-400 hover:text-white' : 'hover:bg-slate-100 text-slate-500 hover:text-slate-800'
             )}
-            title="Kapat (Esc)"
+            title="İptal Et ve Kapat (Esc)"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
       </div>
 
-      {/* ── Main Workspace Body ── */}
+      {/* Main Workspace Body */}
       <div className="flex-1 flex overflow-hidden">
-        {/* ── Left: Page Navigator ── */}
+        {/* Left: Page Navigator */}
         <div
           className={cn(
             'w-48 shrink-0 border-r flex flex-col overflow-y-auto py-3 gap-1 px-2.5 transition-colors',
@@ -531,13 +845,14 @@ export const ObjectEditorModal: React.FC = () => {
             Sayfalar ({totalPages})
           </p>
           {currentDocument.pages.map((pg, i) => {
-            const pgObjs = objectsByPage[pg.id] ?? [];
-            const pgMoved = pgObjs.filter((o) => o.moved).length;
-            const isActive = pageIndex === i;
+            const pgObjs = draftByPage[pg.id] ?? [];
+            const pgMoved = pgObjs.filter((o) => o.moved || o.isEdited || o.deleted).length;
+            const isActive = safePageIndex === i;
 
             return (
               <button
                 key={pg.id}
+                type="button"
                 onClick={() => setPageIndex(i)}
                 className={cn(
                   'flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all text-left font-medium',
@@ -571,7 +886,7 @@ export const ObjectEditorModal: React.FC = () => {
           })}
         </div>
 
-        {/* ── Center: Canvas & Interactive Overlays ── */}
+        {/* Center: Canvas & Interactive Overlays */}
         <div
           ref={workspaceRef}
           onMouseDown={handleCanvasMouseDown}
@@ -582,15 +897,13 @@ export const ObjectEditorModal: React.FC = () => {
         >
           <div
             style={{
-              width: canvasRef.current?.style.width || 'auto',
-              height: canvasRef.current?.style.height || 'auto',
+              width: viewportSize.width > 0 ? `${viewportSize.width}px` : 'auto',
+              height: viewportSize.height > 0 ? `${viewportSize.height}px` : 'auto',
             }}
             className="relative inline-block shadow-2xl rounded-sm transition-all"
           >
-            {/* Base PDF Canvas */}
             <canvas ref={canvasRef} className="block bg-white rounded-sm pointer-events-none" />
 
-            {/* Loading Indicator */}
             {isLoading && (
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/70 dark:bg-slate-900/70 rounded-sm z-40 backdrop-blur-sm">
                 <Loader2 className="w-8 h-8 text-sky-500 animate-spin mb-2" />
@@ -600,20 +913,28 @@ export const ObjectEditorModal: React.FC = () => {
               </div>
             )}
 
-            {/* Interactive Object Layer */}
             {!isLoading && (
               <div className="absolute inset-0 pointer-events-none overflow-visible">
-                {/* 1. Whiteout Masks for Original Spots of Moved, Edited, or Deleted Objects */}
+                {/* 1. Whiteout Masks for Original Spots */}
                 {objects.map((obj) => {
                   if (!obj.moved && !obj.deleted && !obj.isEdited) return null;
+                  const origBox = toDisplayBox(
+                    obj.originalX,
+                    obj.originalY,
+                    obj.originalWidth,
+                    obj.originalHeight,
+                    pageRotation,
+                    unrotatedSize.width,
+                    unrotatedSize.height
+                  );
                   return (
                     <div
                       key={`mask_${obj.id}`}
                       style={{
-                        left: `${obj.originalX * scale - 1}px`,
-                        top: `${obj.originalY * scale - 1}px`,
-                        width: `${obj.originalWidth * scale + 2}px`,
-                        height: `${obj.originalHeight * scale + 2}px`,
+                        left: `${origBox.x * scale - 1}px`,
+                        top: `${origBox.y * scale - 1}px`,
+                        width: `${origBox.width * scale + 2}px`,
+                        height: `${origBox.height * scale + 2}px`,
                       }}
                       className={cn(
                         'absolute bg-white z-10 border border-dashed rounded-[2px]',
@@ -624,25 +945,43 @@ export const ObjectEditorModal: React.FC = () => {
                   );
                 })}
 
-                {/* 2. Interactive Objects (Draggable, Editable, Deletable) */}
+                {/* 2. Interactive Objects */}
                 {objects.map((obj) => {
                   const isSelected = selectedIds.has(obj.id);
                   const isText = obj.type === 'native-text';
                   const isEditing = editingId === obj.id;
-                  const x = obj.x * scale;
-                  const y = obj.y * scale;
-                  const w = Math.max(obj.width * scale, 14);
-                  const h = Math.max(obj.height * scale, 14);
+                  const dispBox = toDisplayBox(
+                    obj.x,
+                    obj.y,
+                    obj.width,
+                    obj.height,
+                    pageRotation,
+                    unrotatedSize.width,
+                    unrotatedSize.height
+                  );
+                  const origDispBox = toDisplayBox(
+                    obj.originalX,
+                    obj.originalY,
+                    obj.originalWidth,
+                    obj.originalHeight,
+                    pageRotation,
+                    unrotatedSize.width,
+                    unrotatedSize.height
+                  );
+                  const x = dispBox.x * scale;
+                  const y = dispBox.y * scale;
+                  const w = Math.max(dispBox.width * scale, 14);
+                  const h = Math.max(dispBox.height * scale, 14);
 
                   if (obj.deleted) {
                     return (
                       <div
                         key={obj.id}
                         style={{
-                          left: `${obj.originalX * scale}px`,
-                          top: `${obj.originalY * scale}px`,
-                          width: `${w}px`,
-                          height: `${h}px`,
+                          left: `${origDispBox.x * scale}px`,
+                          top: `${origDispBox.y * scale}px`,
+                          width: `${Math.max(origDispBox.width * scale, 40)}px`,
+                          height: `${Math.max(origDispBox.height * scale, 20)}px`,
                         }}
                         className="absolute pointer-events-auto z-20 border-2 border-dashed border-rose-500/70 bg-rose-500/10 rounded flex items-center justify-between px-2 text-[10px] text-rose-600 dark:text-rose-400 font-bold"
                       >
@@ -650,9 +989,10 @@ export const ObjectEditorModal: React.FC = () => {
                           {isText ? obj.text : 'Görsel'}
                         </span>
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            restoreObject(pageId, obj.id);
+                            draftRestoreObject(pageId, obj.id);
                           }}
                           className="ml-1 px-1.5 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold transition-colors text-[9px] shadow"
                           title="Silmeyi geri al"
@@ -680,17 +1020,14 @@ export const ObjectEditorModal: React.FC = () => {
                       }}
                       className={cn(
                         'absolute pointer-events-auto cursor-move select-none transition-all duration-75 flex items-center overflow-visible',
-                        // Unselected styling
                         !isSelected && !obj.moved && !obj.isEdited && (isText
                           ? 'hover:bg-sky-500/10 hover:ring-1 hover:ring-sky-500/60'
                           : 'hover:bg-emerald-500/15 hover:ring-1 hover:ring-emerald-500/80 bg-emerald-500/5'
                         ),
-                        // Selected styling
                         isSelected && (isText
                           ? 'bg-sky-500/20 ring-2 ring-sky-500 z-30 shadow-lg'
                           : 'bg-emerald-500/25 ring-2 ring-emerald-500 z-30 shadow-lg'
                         ),
-                        // Moved/Edited styling
                         (obj.moved || obj.isEdited) && 'ring-2 ring-amber-500 bg-amber-500/10 z-20 shadow-md'
                       )}
                       title={
@@ -699,10 +1036,9 @@ export const ObjectEditorModal: React.FC = () => {
                           : `Görsel / QR Kod (${Math.round(obj.width)}x${Math.round(obj.height)})`
                       }
                     >
-                      {/* Inline Input when editing */}
                       {isEditing ? (
                         <div
-                          className="absolute inset-0 z-50 flex items-center bg-white rounded shadow-xl p-0.5"
+                          className="absolute inset-0 z-50 flex items-center bg-white rounded shadow-xl p-0.5 min-w-[140px] min-h-[26px]"
                           onMouseDown={(e) => e.stopPropagation()}
                         >
                           <input
@@ -713,15 +1049,23 @@ export const ObjectEditorModal: React.FC = () => {
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                 e.preventDefault();
-                                updateObjectText(pageId, obj.id, editTextValue);
+                                e.stopPropagation();
+                                cancelledEditRef.current = false;
+                                draftUpdateText(pageId, obj.id, editTextValue);
                                 setEditingId(null);
                                 addToast('Metin güncellendi.', 'success', 1500);
                               } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                cancelledEditRef.current = true;
                                 setEditingId(null);
                               }
                             }}
                             onBlur={() => {
-                              updateObjectText(pageId, obj.id, editTextValue);
+                              if (!cancelledEditRef.current) {
+                                draftUpdateText(pageId, obj.id, editTextValue);
+                              }
+                              cancelledEditRef.current = false;
                               setEditingId(null);
                             }}
                             className="w-full h-full text-xs font-medium border border-sky-500 rounded px-1.5 py-0.5 text-slate-900 bg-sky-50/50 focus:outline-none"
@@ -729,7 +1073,6 @@ export const ObjectEditorModal: React.FC = () => {
                         </div>
                       ) : (
                         <>
-                          {/* Live moving preview for text if moved or selected */}
                           {isText && (obj.moved || obj.isEdited) && (
                             <div
                               style={{
@@ -744,7 +1087,6 @@ export const ObjectEditorModal: React.FC = () => {
                             </div>
                           )}
 
-                          {/* Live moving preview for image/QR if moved */}
                           {!isText && obj.moved && (
                             <div className="w-full h-full bg-emerald-50 border border-emerald-400 rounded flex flex-col items-center justify-center p-1 text-emerald-800 shadow-sm">
                               <QrCode className="w-4 h-4 text-emerald-600 mb-0.5" />
@@ -752,7 +1094,6 @@ export const ObjectEditorModal: React.FC = () => {
                             </div>
                           )}
 
-                          {/* Moved or Edited Badge */}
                           {(obj.moved || obj.isEdited) && (
                             <div
                               className="absolute -top-6 left-0 flex items-center gap-1 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-lg z-40 whitespace-nowrap pointer-events-auto"
@@ -760,9 +1101,10 @@ export const ObjectEditorModal: React.FC = () => {
                             >
                               <span>{obj.isEdited ? 'Düzenlendi' : 'Taşındı'}</span>
                               <button
+                                type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  resetObject(pageId, obj.id);
+                                  draftResetObjects(pageId, [obj.id]);
                                 }}
                                 className="hover:bg-amber-600 rounded px-1 transition-colors flex items-center gap-0.5"
                                 title="Orijinal haline sıfırla"
@@ -777,7 +1119,6 @@ export const ObjectEditorModal: React.FC = () => {
                   );
                 })}
 
-                {/* 3. Marquee Selection Rubber-Band */}
                 {marquee && (
                   <div
                     style={{
@@ -794,7 +1135,7 @@ export const ObjectEditorModal: React.FC = () => {
           </div>
         </div>
 
-        {/* ── Right: Properties & Object List Panel ── */}
+        {/* Right: Properties & Object List Panel */}
         <div
           className={cn(
             'w-72 shrink-0 border-l flex flex-col p-4 gap-3 overflow-y-auto transition-colors',
@@ -805,14 +1146,11 @@ export const ObjectEditorModal: React.FC = () => {
             <p className={cn('text-[11px] font-bold uppercase tracking-wider', isDark ? 'text-slate-400' : 'text-slate-500')}>
               Nesneler ({objects.length})
             </p>
-
-            {/* Multi-selection count */}
             {selectedIds.size > 0 && (
               <span className="text-xs font-semibold text-sky-500">{selectedIds.size} Seçili</span>
             )}
           </div>
 
-          {/* Filter Pills */}
           <div
             className={cn(
               'flex items-center p-0.5 rounded-lg border text-[11px]',
@@ -823,11 +1161,12 @@ export const ObjectEditorModal: React.FC = () => {
               { id: 'all', label: 'Tümü' },
               { id: 'text', label: 'Metin' },
               { id: 'image', label: 'Görsel/QR' },
-              { id: 'moved', label: 'Taşınan' },
+              { id: 'moved', label: 'Değişen' },
             ].map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setSidebarFilter(tab.id as any)}
+                type="button"
+                onClick={() => setSidebarFilter(tab.id as 'all' | 'text' | 'image' | 'moved')}
                 className={cn(
                   'flex-1 py-1 rounded-md transition-all font-medium text-center',
                   sidebarFilter === tab.id
@@ -844,7 +1183,6 @@ export const ObjectEditorModal: React.FC = () => {
             ))}
           </div>
 
-          {/* Selected Object Info Card */}
           {selectedList.length === 1 ? (
             <div
               className={cn(
@@ -879,7 +1217,6 @@ export const ObjectEditorModal: React.FC = () => {
                 )}
               </div>
 
-              {/* Text preview */}
               {selectedList[0].text && (
                 <div>
                   <p className={cn('text-[10px] font-semibold mb-0.5', isDark ? 'text-slate-400' : 'text-slate-500')}>
@@ -896,7 +1233,6 @@ export const ObjectEditorModal: React.FC = () => {
                 </div>
               )}
 
-              {/* Coordinates */}
               <div className="grid grid-cols-2 gap-1.5 text-[11px]">
                 <div className={cn('p-1.5 rounded-md border', isDark ? 'bg-slate-900/60 border-slate-700/60' : 'bg-white border-slate-200')}>
                   <span className="text-slate-400 block text-[10px]">X Konumu:</span>
@@ -916,13 +1252,14 @@ export const ObjectEditorModal: React.FC = () => {
                 </div>
               </div>
 
-              {selectedList[0].moved && (
+              {(selectedList[0].moved || selectedList[0].isEdited || selectedList[0].deleted) && (
                 <button
-                  onClick={() => resetObject(pageId, selectedList[0].id)}
+                  type="button"
+                  onClick={() => draftResetObjects(pageId, [selectedList[0].id])}
                   className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 rounded-lg text-xs font-semibold border border-amber-500/30 transition-colors"
                 >
                   <RotateCcw className="w-3 h-3" />
-                  Orijinal Konuma Geri Al
+                  Orijinal Haline Al
                 </button>
               )}
             </div>
@@ -941,7 +1278,8 @@ export const ObjectEditorModal: React.FC = () => {
                 Herhangi birini tutup sürüklediğinizde <strong>tümü grup halinde birlikte taşınır</strong>.
               </p>
               <button
-                onClick={() => resetMultipleObjects(pageId, Array.from(selectedIds))}
+                type="button"
+                onClick={() => draftResetObjects(pageId, Array.from(selectedIds))}
                 className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 rounded-lg text-xs font-semibold border border-amber-500/30 transition-colors"
               >
                 <RotateCcw className="w-3 h-3" />
@@ -957,12 +1295,11 @@ export const ObjectEditorModal: React.FC = () => {
             >
               <Info className="w-4 h-4 shrink-0 text-sky-500" />
               <span>
-                Sayfadaki nesneleri tek tek tıklayarak veya <strong>fareyle alan çizerek</strong> çoklu seçebilirsiniz.
+                Değişiklikler <strong>Uygula & Kapat</strong> basılana kadar taslak olarak tutulur; İptal veya Esc ile geri alınır.
               </span>
             </div>
           )}
 
-          {/* List of Objects on Current Page */}
           <div className="flex-1 overflow-y-auto space-y-1 pr-1 min-h-[120px]">
             {filteredObjects.map((obj) => {
               const isSelected = selectedIds.has(obj.id);
@@ -985,21 +1322,29 @@ export const ObjectEditorModal: React.FC = () => {
                     className={cn(
                       'w-2 h-2 rounded-full shrink-0',
                       isText ? 'bg-sky-500' : 'bg-emerald-500',
-                      obj.moved && 'ring-2 ring-amber-400'
+                      (obj.moved || obj.isEdited) && 'ring-2 ring-amber-400'
                     )}
                   />
 
                   <div className="flex-1 truncate">
                     {isText ? (
-                      <span>"{obj.text}"</span>
+                      <span className={obj.deleted ? 'line-through opacity-50' : ''}>
+                        "{obj.text}"
+                      </span>
                     ) : (
-                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">Görsel / QR</span>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                        Görsel / QR
+                      </span>
                     )}
                   </div>
 
-                  {obj.moved && (
+                  {obj.deleted ? (
+                    <span className="text-[10px] bg-rose-500/20 text-rose-500 font-bold px-1.5 py-0.5 rounded shrink-0">
+                      Silindi
+                    </span>
+                  ) : (obj.moved || obj.isEdited) && (
                     <span className="text-[10px] bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.5 rounded shrink-0">
-                      Taşındı
+                      {obj.isEdited ? 'Düzenlendi' : 'Taşındı'}
                     </span>
                   )}
                 </div>
@@ -1007,7 +1352,6 @@ export const ObjectEditorModal: React.FC = () => {
             })}
           </div>
 
-          {/* Quick Legend & Help */}
           <div
             className={cn(
               'border-t pt-3 space-y-1.5 text-[11px]',
@@ -1024,13 +1368,13 @@ export const ObjectEditorModal: React.FC = () => {
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-              <span>Taşınmış Öğeler</span>
+              <span>Taşınmış / Düzenlenmiş Öğeler</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Bottom Status Bar ── */}
+      {/* Bottom Status Bar */}
       <div
         className={cn(
           'h-8 shrink-0 border-t flex items-center px-4 gap-4 text-xs select-none transition-colors',
@@ -1038,20 +1382,22 @@ export const ObjectEditorModal: React.FC = () => {
         )}
       >
         <span>
-          Sayfa {pageIndex + 1} / {totalPages}
+          Sayfa {safePageIndex + 1} / {totalPages}
         </span>
         <span>•</span>
         <span>{objects.length} nesne algılandı</span>
         <span>•</span>
         <span className="text-sky-600 dark:text-sky-400 font-medium">{selectedIds.size} seçili</span>
-        {movedCount > 0 && (
+        {totalModifiedAcrossDoc > 0 && (
           <>
             <span>•</span>
-            <span className="text-amber-600 dark:text-amber-400 font-bold">{movedCount} nesne taşındı</span>
+            <span className="text-amber-600 dark:text-amber-400 font-bold">
+              {totalModifiedAcrossDoc} taslak değişiklik
+            </span>
           </>
         )}
         <span className={cn('ml-auto text-[11px]', isDark ? 'text-slate-500' : 'text-slate-400')}>
-          💡 İpucu: Boşluğa tıklayıp kutu çizerek veya Ctrl/Shift ile iç içe ve çoklu nesneleri birlikte taşıyabilirsiniz.
+          İpucu: Boşluğa tıklayıp kutu çizerek çoklu seçebilir, metne çift tıklayarak düzenleyebilirsiniz.
         </span>
       </div>
     </div>
