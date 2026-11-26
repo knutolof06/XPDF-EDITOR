@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
-import { binaryStore } from '@/core/storage/binary-store';
+import { PdfExporter } from '@/core/engine/pdf-exporter';
 import {
   X,
   Scissors,
@@ -10,8 +12,16 @@ import {
   Split,
   FileText,
   Layers,
+  CheckSquare,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import {
+  parseSplitRanges,
+  readAuthorizedDocBuffer,
+  saveBinaryOrBlobFile,
+  useModalEscape,
+} from './modal-utils';
 
 export const SplitPdfModal: React.FC = () => {
   const { currentDocument } = useDocumentStore();
@@ -21,111 +31,192 @@ export const SplitPdfModal: React.FC = () => {
   const [rangeInput, setRangeInput] = useState('1-5, 6-10');
   const [isProcessing, setIsProcessing] = useState(false);
 
+  const totalPages = currentDocument?.totalPages || 0;
+  const selectedCount = currentDocument?.selectedPageIds.length || 0;
+
+  const docId = currentDocument?.id;
+
+  useEffect(() => {
+    if (!isSplitModalOpen || !docId) return;
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+    setRangeInput(doc.totalPages > 1 ? `1-${Math.ceil(doc.totalPages / 2)}` : '1');
+    setSplitMode((prev) => (prev === 'selected' && doc.selectedPageIds.length === 0 ? 'range' : prev));
+  }, [isSplitModalOpen, docId]);
+
+  useModalEscape(isSplitModalOpen, () => setSplitModalOpen(false), isProcessing);
+
+  const rangeValidation = useMemo(() => {
+    if (!currentDocument || splitMode !== 'range') {
+      return { ranges: [] as { from: number; to: number }[], isValid: true, error: undefined as string | undefined };
+    }
+    return parseSplitRanges(rangeInput, totalPages);
+  }, [currentDocument, splitMode, rangeInput, totalPages]);
+
   if (!isSplitModalOpen || !currentDocument) return null;
 
-  const totalPages = currentDocument.totalPages;
-
   const handleSplit = async () => {
-    const rawBuffer = binaryStore.get(currentDocument.id);
-    if (!rawBuffer) {
-      addToast('Döküman verisi bulunamadı.', 'error');
-      return;
-    }
-
     try {
       setIsProcessing(true);
       addToast('PDF bölünüyor...', 'info');
 
-      let rangesToSplit: { from: number; to: number; label?: string }[] = [];
+      const baseName = currentDocument.name.replace(/\.pdf$/i, '');
 
-      if (splitMode === 'range') {
-        const parts = rangeInput.split(',').map((p) => p.trim()).filter(Boolean);
-        for (const part of parts) {
-          if (part.includes('-')) {
-            const [startStr, endStr] = part.split('-').map((s) => s.trim());
-            const from = parseInt(startStr, 10);
-            const to = parseInt(endStr, 10);
-            if (!isNaN(from) && !isNaN(to)) {
-              rangesToSplit.push({ from, to });
-            }
-          } else {
-            const single = parseInt(part, 10);
-            if (!isNaN(single)) {
-              rangesToSplit.push({ from: single, to: single });
-            }
-          }
-        }
-      } else if (splitMode === 'all-single') {
-        for (let i = 1; i <= totalPages; i++) {
-          rangesToSplit.push({ from: i, to: i, label: `Sayfa_${i}` });
-        }
-      } else if (splitMode === 'odd-even') {
-        addToast('Tek ve Çift sayfalar ayrılıyor...', 'info');
-        const { PDFDocument } = await import('pdf-lib');
-        const srcDoc = await PDFDocument.load(rawBuffer.slice(0));
+      // Honor in-memory modifications (rotations, reorder, annotations) when document is dirty
+      const workingBuffer = currentDocument.isModified
+        ? await PdfExporter.exportDocumentWithAnnotations(currentDocument)
+        : await readAuthorizedDocBuffer(currentDocument.id, currentDocument.filePath);
 
+      if (splitMode === 'selected') {
+        if (selectedCount === 0) {
+          addToast('Seçili sayfa bulunmuyor.', 'warning');
+          return;
+        }
+        const selectedNumbers = currentDocument.pages
+          .map((p, idx) => (currentDocument.selectedPageIds.includes(p.id) ? idx + 1 : -1))
+          .filter((n) => n !== -1);
+
+        const srcDoc = await PDFDocument.load(workingBuffer.slice(0));
+        const outDoc = await PDFDocument.create();
+        const copied = await outDoc.copyPages(
+          srcDoc,
+          selectedNumbers.map((n) => n - 1)
+        );
+        copied.forEach((p) => outDoc.addPage(p));
+        const bytes = await outDoc.save();
+        const defaultName = `${baseName}_secili_${selectedNumbers.length}_sayfa.pdf`;
+
+        const saveRes = await saveBinaryOrBlobFile({
+          data: bytes,
+          defaultName,
+          dialogTitle: 'Seçili Sayfaları Kaydet',
+          filters: [{ name: 'PDF Dökümanı', extensions: ['pdf'] }],
+          mimeType: 'application/pdf',
+        });
+
+        if (saveRes.status === 'canceled') {
+          addToast('Kaydetme iptal edildi.', 'info');
+          return;
+        }
+
+        addToast(`${selectedNumbers.length} seçili sayfa PDF olarak kaydedildi!`, 'success');
+        setSplitModalOpen(false);
+        return;
+      }
+
+      let results: { name: string; buffer: ArrayBuffer }[] = [];
+
+      if (splitMode === 'odd-even') {
+        const srcDoc = await PDFDocument.load(workingBuffer.slice(0));
         const oddIndices = srcDoc.getPageIndices().filter((i) => i % 2 === 0);
         const evenIndices = srcDoc.getPageIndices().filter((i) => i % 2 === 1);
 
-        const oddDoc = await PDFDocument.create();
-        const oddPages = await oddDoc.copyPages(srcDoc, oddIndices);
-        oddPages.forEach((p) => oddDoc.addPage(p));
+        if (oddIndices.length > 0) {
+          const oddDoc = await PDFDocument.create();
+          const oddPages = await oddDoc.copyPages(srcDoc, oddIndices);
+          oddPages.forEach((p) => oddDoc.addPage(p));
+          const bytes = await oddDoc.save();
+          results.push({
+            name: `${baseName}_Tek_Sayfalar.pdf`,
+            buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+          });
+        }
 
-        const evenDoc = await PDFDocument.create();
-        const evenPages = await evenDoc.copyPages(srcDoc, evenIndices);
-        evenPages.forEach((p) => evenDoc.addPage(p));
+        if (evenIndices.length > 0) {
+          const evenDoc = await PDFDocument.create();
+          const evenPages = await evenDoc.copyPages(srcDoc, evenIndices);
+          evenPages.forEach((p) => evenDoc.addPage(p));
+          const bytes = await evenDoc.save();
+          results.push({
+            name: `${baseName}_Cift_Sayfalar.pdf`,
+            buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+          });
+        }
+      } else {
+        let rangesToSplit: { from: number; to: number; label?: string }[] = [];
 
-        const downloadBlob = (bytes: Uint8Array, suffix: string) => {
-          const raw = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-          const blob = new Blob([raw], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${currentDocument.name.replace(/\.pdf$/i, '')}_${suffix}.pdf`;
-          a.click();
-          URL.revokeObjectURL(url);
-        };
+        if (splitMode === 'range') {
+          if (!rangeValidation.isValid || rangeValidation.ranges.length === 0) {
+            addToast(rangeValidation.error || 'Geçerli bir sayfa aralığı girin.', 'warning');
+            return;
+          }
+          rangesToSplit = rangeValidation.ranges;
+        } else {
+          for (let i = 1; i <= totalPages; i++) {
+            rangesToSplit.push({ from: i, to: i, label: `Sayfa_${i}` });
+          }
+        }
 
-        if (oddIndices.length > 0) downloadBlob(await oddDoc.save(), 'Tek_Sayfalar');
-        if (evenIndices.length > 0) downloadBlob(await evenDoc.save(), 'Cift_Sayfalar');
+        results = await PdfAssembler.splitPdf(workingBuffer.slice(0), currentDocument.name, rangesToSplit);
+      }
 
-        addToast('Tek ve Çift sayfalar başarıyla indirildi!', 'success');
-        setSplitModalOpen(false);
-        setIsProcessing(false);
+      if (results.length === 0) {
+        addToast('Bölünecek geçerli sayfa bulunamadı.', 'warning');
         return;
       }
 
-      if (rangesToSplit.length === 0) {
-        addToast('Geçerli bir sayfa aralığı girin.', 'warning');
-        setIsProcessing(false);
-        return;
+      if (results.length === 1) {
+        const saveRes = await saveBinaryOrBlobFile({
+          data: results[0].buffer,
+          defaultName: results[0].name,
+          dialogTitle: 'Bölünen PDF Dosyasını Kaydet',
+          filters: [{ name: 'PDF Dökümanı', extensions: ['pdf'] }],
+          mimeType: 'application/pdf',
+        });
+
+        if (saveRes.status === 'canceled') {
+          addToast('Kaydetme iptal edildi.', 'info');
+          return;
+        }
+        addToast(`${results[0].name} başarıyla kaydedildi!`, 'success');
+      } else {
+        // Bundle multiple split PDFs into a single clean ZIP archive
+        const zip = new JSZip();
+        results.forEach((res) => {
+          zip.file(res.name, res.buffer);
+        });
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        const zipName = `${baseName}_bolunmus_${results.length}_parca.zip`;
+
+        const saveRes = await saveBinaryOrBlobFile({
+          data: zipBlob,
+          defaultName: zipName,
+          dialogTitle: 'Bölünen PDF Parçalarını ZIP Olarak Kaydet',
+          filters: [{ name: 'ZIP Arşivi', extensions: ['zip'] }],
+          mimeType: 'application/zip',
+        });
+
+        if (saveRes.status === 'canceled') {
+          addToast('Kaydetme iptal edildi.', 'info');
+          return;
+        }
+        addToast(`${results.length} adet PDF parçası ZIP arşivi olarak kaydedildi!`, 'success');
       }
 
-      const results = await PdfAssembler.splitPdf(rawBuffer.slice(0), currentDocument.name, rangesToSplit);
-
-      results.forEach((res) => {
-        const blob = new Blob([res.buffer], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = res.name;
-        a.click();
-        URL.revokeObjectURL(url);
-      });
-
-      addToast(`${results.length} adet PDF parçası başarıyla oluşturuldu ve indirildi!`, 'success');
       setSplitModalOpen(false);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Split error:', err);
-      addToast(err?.message || 'Bölme sırasında hata oluştu.', 'error');
+      const msg = err instanceof Error ? err.message : 'Bölme sırasında hata oluştu.';
+      addToast(msg, 'error');
     } finally {
       setIsProcessing(false);
     }
   };
 
+  const canSubmit =
+    !isProcessing &&
+    (splitMode !== 'range' || rangeValidation.isValid) &&
+    (splitMode !== 'selected' || selectedCount > 0);
+
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/60 dark:bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200 text-slate-800 dark:text-slate-100">
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/60 dark:bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+      onClick={() => !isProcessing && setSplitModalOpen(false)}
+    >
+      <div
+        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200 text-slate-800 dark:text-slate-100"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900">
           <div className="flex items-center gap-2.5">
@@ -133,13 +224,20 @@ export const SplitPdfModal: React.FC = () => {
               <Scissors className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">PDF Bölme & Sayfa Ayırma (Split)</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Dökümanı istediğiniz sayfa aralıklarına göre parçalayın</p>
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                PDF Bölme & Sayfa Ayırma (Split)
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Dökümanı istediğiniz sayfa aralıklarına göre parçalayın
+              </p>
             </div>
           </div>
           <button
-            onClick={() => setSplitModalOpen(false)}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            type="button"
+            onClick={() => !isProcessing && setSplitModalOpen(false)}
+            disabled={isProcessing}
+            aria-label="Kapat"
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-40"
           >
             <X className="w-5 h-5" />
           </button>
@@ -147,9 +245,19 @@ export const SplitPdfModal: React.FC = () => {
 
         {/* Content */}
         <div className="p-6 space-y-4 text-sm">
-          {/* Mode Selector */}
-          <div className="grid grid-cols-3 gap-2">
+          {currentDocument.isModified && (
+            <div className="p-2.5 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800/60 flex items-center gap-2 text-[11px] text-sky-700 dark:text-sky-300">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>
+                Belgedeki kaydedilmemiş düzenlemeler (döndürme, sıralama, notlar) bölme çıktısına yansıtılacaktır.
+              </span>
+            </div>
+          )}
+
+          {/* Mode Selector (4 modes) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <button
+              type="button"
               onClick={() => setSplitMode('range')}
               className={cn(
                 'p-3 rounded-xl border text-center transition-all flex flex-col items-center gap-1.5',
@@ -163,6 +271,7 @@ export const SplitPdfModal: React.FC = () => {
             </button>
 
             <button
+              type="button"
               onClick={() => setSplitMode('all-single')}
               className={cn(
                 'p-3 rounded-xl border text-center transition-all flex flex-col items-center gap-1.5',
@@ -172,10 +281,11 @@ export const SplitPdfModal: React.FC = () => {
               )}
             >
               <FileText className="w-4 h-4" />
-              <span className="text-xs">Her Sayfa Ayrı</span>
+              <span className="text-xs">Her Sayfa (ZIP)</span>
             </button>
 
             <button
+              type="button"
               onClick={() => setSplitMode('odd-even')}
               className={cn(
                 'p-3 rounded-xl border text-center transition-all flex flex-col items-center gap-1.5',
@@ -187,14 +297,38 @@ export const SplitPdfModal: React.FC = () => {
               <Layers className="w-4 h-4" />
               <span className="text-xs">Tek / Çift</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setSplitMode('selected')}
+              disabled={selectedCount === 0}
+              className={cn(
+                'p-3 rounded-xl border text-center transition-all flex flex-col items-center gap-1.5',
+                splitMode === 'selected'
+                  ? 'bg-sky-500/10 border-sky-500 text-sky-600 dark:text-sky-300 font-semibold'
+                  : 'bg-slate-50 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200',
+                selectedCount === 0 && 'opacity-40 cursor-not-allowed'
+              )}
+            >
+              <CheckSquare className="w-4 h-4" />
+              <span className="text-xs">Seçili ({selectedCount})</span>
+            </button>
           </div>
 
-          {/* Mode Specific Inputs */}
           {splitMode === 'range' && (
             <div className="space-y-2 pt-2">
-              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
-                Sayfa Aralıkları (Toplam {totalPages} sayfa)
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Sayfa Aralıkları (Toplam {totalPages} sayfa)
+                </label>
+                {rangeValidation.isValid ? (
+                  <span className="text-[11px] font-bold text-sky-600 dark:text-sky-400">
+                    {rangeValidation.ranges.length} parça
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-bold text-rose-500">Geçersiz aralık</span>
+                )}
+              </div>
               <input
                 type="text"
                 value={rangeInput}
@@ -202,25 +336,35 @@ export const SplitPdfModal: React.FC = () => {
                 placeholder="Örn: 1-5, 6-10, 15"
                 className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs focus:outline-none focus:border-sky-500 font-mono"
               />
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Virgülle ayırarak birden fazla aralık veya tek sayfa belirtebilirsiniz. Her aralık için ayrı bir PDF oluşturulacaktır.
-              </p>
+              {!rangeValidation.isValid && rangeValidation.error ? (
+                <p className="text-[11px] text-rose-500">{rangeValidation.error}</p>
+              ) : (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Virgülle ayırarak birden fazla aralık belirtebilirsiniz. Birden fazla parça ZIP olarak kaydedilir.
+                </p>
+              )}
             </div>
           )}
 
           {splitMode === 'all-single' && (
             <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
-              Bu dökümandaki <strong>{totalPages} sayfanın her biri</strong> ayrı birer PDF dosyası olarak dışa aktarılacaktır.
+              Bu dökümandaki <strong>{totalPages} sayfanın her biri</strong> ayrı birer PDF dosyası yapılıp tek bir ZIP arşivi olarak kaydedilecektir.
             </div>
           )}
 
           {splitMode === 'odd-even' && (
             <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
-              Döküman iki ayrı PDF'e bölünecektir:
+              Döküman iki ayrı PDF&apos;e bölünüp ZIP arşivi (veya tek dosya) olarak kaydedilecektir:
               <ul className="list-disc list-inside mt-1 text-slate-500 dark:text-slate-400 space-y-0.5">
-                <li>1, 3, 5, 7... sayfalar (Tek Sayfalar PDF'i)</li>
-                <li>2, 4, 6, 8... sayfalar (Çift Sayfalar PDF'i)</li>
+                <li>1, 3, 5, 7... sayfalar (Tek Sayfalar PDF&apos;i)</li>
+                <li>2, 4, 6, 8... sayfalar (Çift Sayfalar PDF&apos;i)</li>
               </ul>
+            </div>
+          )}
+
+          {splitMode === 'selected' && (
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
+              Seçili <strong>{selectedCount} sayfa</strong> ayrı bir PDF dosyası olarak kaydedilecektir.
             </div>
           )}
         </div>
@@ -228,18 +372,21 @@ export const SplitPdfModal: React.FC = () => {
         {/* Footer */}
         <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900/90 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2">
           <button
+            type="button"
             onClick={() => setSplitModalOpen(false)}
-            className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors"
+            disabled={isProcessing}
+            className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors disabled:opacity-40"
           >
             İptal
           </button>
           <button
+            type="button"
             onClick={handleSplit}
-            disabled={isProcessing}
+            disabled={!canSubmit}
             className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-xs font-semibold text-white transition-colors flex items-center gap-1.5 shadow-md shadow-rose-600/20"
           >
             <Download className="w-4 h-4" />
-            {isProcessing ? 'Bölünüyor...' : 'Böl ve İndir'}
+            {isProcessing ? 'Bölünüyor...' : 'Böl ve Kaydet'}
           </button>
         </div>
       </div>

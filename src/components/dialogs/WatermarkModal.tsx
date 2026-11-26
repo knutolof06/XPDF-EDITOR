@@ -1,49 +1,77 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useUIStore } from '@/store/ui-store';
-import { useViewerStore } from '@/store/viewer-store';
 import { WatermarkEngine, WatermarkConfig } from '@/core/engine/watermark-engine';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
+import { historyManager, DocumentStateSnapshotCommand } from '@/core/history/command-manager';
 import { X, Stamp, Sparkles, Loader2 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import {
+  parsePageRange,
+  syncReplacedActiveDocument,
+  useModalEscape,
+  useResolvedDarkMode,
+} from './modal-utils';
 
 const PRESETS = ['GİZLİDİR', 'TASLAK', 'ÖZEL', 'KOPYALANAMAZ', 'ONAYLANDI'];
 const WATERMARK_COLORS = [
-  '#64748b', // Slate Gray
-  '#ef4444', // Red
-  '#0284c7', // Sky Blue
-  '#f59e0b', // Amber
-  '#10b981', // Emerald
-  '#0f172a', // Black
+  '#64748b',
+  '#ef4444',
+  '#0284c7',
+  '#f59e0b',
+  '#10b981',
+  '#0f172a',
 ];
 
 export const WatermarkModal: React.FC = () => {
   const { isWatermarkModalOpen, setWatermarkModalOpen, addToast } = useUIStore();
-  const { currentDocument, setDocument } = useDocumentStore();
-  const theme = useViewerStore((s) => s.theme);
+  const { currentDocument, pdfDocProxy } = useDocumentStore();
+  const isDark = useResolvedDarkMode();
 
   const [text, setText] = useState('GİZLİDİR');
   const [fontSize, setFontSize] = useState(54);
   const [color, setColor] = useState('#64748b');
-  const [opacity, setOpacity] = useState(0.20);
+  const [opacity, setOpacity] = useState(0.2);
   const [rotation, setRotation] = useState(45);
   const [layout, setLayout] = useState<'center' | 'tiled'>('center');
   const [pages, setPages] = useState<'all' | 'first' | 'custom'>('all');
   const [customPages, setCustomPages] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  if (!isWatermarkModalOpen || !currentDocument) return null;
+  const totalPages = currentDocument?.totalPages || 1;
 
-  const isDark = theme === 'dark';
+  useEffect(() => {
+    if (isWatermarkModalOpen) {
+      setCustomPages('');
+    }
+  }, [isWatermarkModalOpen, currentDocument?.id]);
+
+  useModalEscape(isWatermarkModalOpen, () => setWatermarkModalOpen(false), isProcessing);
+
+  const customValidation = useMemo(() => {
+    if (pages !== 'custom') {
+      return { pages: [] as number[], isValid: true, error: undefined as string | undefined };
+    }
+    return parsePageRange(customPages, totalPages);
+  }, [pages, customPages, totalPages]);
+
+  if (!isWatermarkModalOpen || !currentDocument) return null;
 
   const handleApply = async () => {
     if (!text.trim()) {
       addToast('Lütfen filigran metni girin.', 'warning');
       return;
     }
+    if (pages === 'custom' && !customValidation.isValid) {
+      addToast(customValidation.error || 'Geçerli bir sayfa aralığı girin.', 'warning');
+      return;
+    }
 
     try {
       setIsProcessing(true);
+      const prevDoc = currentDocument;
+      const prevProxy = pdfDocProxy;
+
       const config: WatermarkConfig = {
         text: text.trim(),
         fontSize,
@@ -56,34 +84,49 @@ export const WatermarkModal: React.FC = () => {
       };
 
       const updatedBuffer = await WatermarkEngine.applyWatermark(currentDocument.id, config);
-      const loaded = await PdfLoader.loadDocument(currentDocument.name, updatedBuffer);
+      const loaded = await PdfLoader.loadDocument(
+        currentDocument.name,
+        updatedBuffer,
+        currentDocument.filePath
+      );
 
-      setDocument(
-        {
-          ...loaded.model,
-          isModified: true,
-          filePath: currentDocument.filePath,
-        },
-        loaded.pdfDoc
+      const synced = syncReplacedActiveDocument(loaded.model, loaded.pdfDoc, prevDoc, {
+        isModified: true,
+        preserveActivePage: true,
+      });
+
+      historyManager.push(
+        new DocumentStateSnapshotCommand(
+          `Filigran uygulandı: "${text.trim()}"`,
+          prevDoc,
+          prevProxy,
+          synced,
+          loaded.pdfDoc
+        )
       );
 
       setWatermarkModalOpen(false);
       addToast('Filigran dökümana başarıyla uygulandı!', 'success');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Watermark apply error:', err);
-      addToast('Filigran eklenirken hata oluştu: ' + (err?.message || ''), 'error');
+      const msg = err instanceof Error ? err.message : '';
+      addToast('Filigran eklenirken hata oluştu: ' + msg, 'error');
     } finally {
       setIsProcessing(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+      onClick={() => !isProcessing && setWatermarkModalOpen(false)}
+    >
       <div
         className={cn(
           'w-full max-w-lg rounded-2xl shadow-2xl border flex flex-col overflow-hidden transition-all',
           isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-800'
         )}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div
@@ -104,9 +147,11 @@ export const WatermarkModal: React.FC = () => {
             </div>
           </div>
           <button
+            type="button"
             onClick={() => !isProcessing && setWatermarkModalOpen(false)}
             disabled={isProcessing}
-            className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 transition-colors"
+            aria-label="Kapat"
+            className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 transition-colors disabled:opacity-40"
           >
             <X className="w-4 h-4" />
           </button>
@@ -114,7 +159,6 @@ export const WatermarkModal: React.FC = () => {
 
         {/* Form Body */}
         <div className="p-6 flex flex-col gap-4 max-h-[75vh] overflow-y-auto">
-          {/* Preset Buttons */}
           <div>
             <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block mb-1.5">
               Hazır Şablonlar:
@@ -140,7 +184,6 @@ export const WatermarkModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Custom Text Input */}
           <div>
             <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block mb-1">
               Filigran Metni:
@@ -157,7 +200,6 @@ export const WatermarkModal: React.FC = () => {
             />
           </div>
 
-          {/* Sliders: Size & Opacity */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <div className="flex justify-between text-[11px] font-semibold mb-1 text-slate-500 dark:text-slate-400">
@@ -183,7 +225,7 @@ export const WatermarkModal: React.FC = () => {
               <input
                 type="range"
                 min={0.05}
-                max={0.80}
+                max={0.8}
                 step={0.05}
                 value={opacity}
                 onChange={(e) => setOpacity(Number(e.target.value))}
@@ -192,7 +234,6 @@ export const WatermarkModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Layout & Angle */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block mb-1">
@@ -200,7 +241,7 @@ export const WatermarkModal: React.FC = () => {
               </label>
               <select
                 value={layout}
-                onChange={(e) => setLayout(e.target.value as any)}
+                onChange={(e) => setLayout(e.target.value as 'center' | 'tiled')}
                 className={cn(
                   'w-full text-xs p-2 rounded-xl border font-medium focus:outline-none focus:ring-2 focus:ring-sky-500',
                   isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-800'
@@ -231,7 +272,6 @@ export const WatermarkModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Color Palette */}
           <div>
             <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block mb-1.5">
               Filigran Rengi:
@@ -243,6 +283,7 @@ export const WatermarkModal: React.FC = () => {
                   type="button"
                   onClick={() => setColor(c)}
                   style={{ backgroundColor: c }}
+                  aria-label={`Renk ${c}`}
                   className={cn(
                     'w-6 h-6 rounded-full border transition-all',
                     color === c ? 'ring-2 ring-sky-500 ring-offset-2 scale-110' : 'border-slate-300 dark:border-slate-700'
@@ -252,7 +293,6 @@ export const WatermarkModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Target Pages */}
           <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
             <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block mb-1.5">
               Hedef Sayfalar:
@@ -293,16 +333,21 @@ export const WatermarkModal: React.FC = () => {
             </div>
 
             {pages === 'custom' && (
-              <input
-                type="text"
-                value={customPages}
-                onChange={(e) => setCustomPages(e.target.value)}
-                placeholder="Örn: 1-3, 5"
-                className={cn(
-                  'w-full text-xs px-3 py-1.5 rounded-xl border mt-2 focus:outline-none focus:ring-2 focus:ring-sky-500',
-                  isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+              <div className="mt-2 space-y-1">
+                <input
+                  type="text"
+                  value={customPages}
+                  onChange={(e) => setCustomPages(e.target.value)}
+                  placeholder={`Örn: 1-3, 5 (1–${totalPages})`}
+                  className={cn(
+                    'w-full text-xs px-3 py-1.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono',
+                    isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                  )}
+                />
+                {!customValidation.isValid && customValidation.error && (
+                  <p className="text-[11px] text-rose-500">{customValidation.error}</p>
                 )}
-              />
+              </div>
             )}
           </div>
         </div>
@@ -315,16 +360,18 @@ export const WatermarkModal: React.FC = () => {
           )}
         >
           <button
+            type="button"
             onClick={() => setWatermarkModalOpen(false)}
             disabled={isProcessing}
-            className="px-4 py-2 text-xs font-semibold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors"
+            className="px-4 py-2 text-xs font-semibold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors disabled:opacity-40"
           >
             Vazgeç
           </button>
 
           <button
+            type="button"
             onClick={handleApply}
-            disabled={isProcessing || !text.trim()}
+            disabled={isProcessing || !text.trim() || !customValidation.isValid}
             className="flex items-center gap-1.5 px-5 py-2 text-xs font-bold rounded-xl bg-sky-600 hover:bg-sky-500 text-white shadow-lg shadow-sky-600/20 transition-all disabled:opacity-50"
           >
             {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}

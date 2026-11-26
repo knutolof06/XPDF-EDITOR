@@ -32,6 +32,10 @@ import {
   FileUp,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import {
+  saveBinaryOrBlobFile,
+  syncReplacedActiveDocument,
+} from '@/components/dialogs/modal-utils';
 
 interface CachedPageBound {
   id: string;
@@ -47,6 +51,8 @@ export const PageManagerModal: React.FC = () => {
   const selectionBoxRef = useRef<HTMLDivElement>(null);
   const addFileInputRef = useRef<HTMLInputElement>(null);
   const preparedMultiDragPathRef = useRef<string | null>(null);
+  const preparedSignatureRef = useRef<string>('');
+  const isPreparingDragRef = useRef<boolean>(false);
 
   const isSelectingRef = useRef(false);
   const isMultiSelectModeRef = useRef(false);
@@ -58,6 +64,10 @@ export const PageManagerModal: React.FC = () => {
   const pendingMousePosRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const autoScrollSpeedRef = useRef(0);
   const autoScrollRafRef = useRef<number | null>(null);
+  const marqueeListenersRef = useRef<{
+    move: (ev: MouseEvent) => void;
+    up: () => void;
+  } | null>(null);
 
   const [thumbnailSize, setThumbnailSize] = useState<'small' | 'medium' | 'large'>('medium');
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
@@ -89,42 +99,57 @@ export const PageManagerModal: React.FC = () => {
     pageIndex: number;
   } | null>(null);
 
-  // Subscribe to historyManager mutations to force re-render
   useEffect(() => {
     return historyManager.subscribe(() => forceUpdate());
   }, []);
 
-  // Keyboard shortcut listener for Ctrl+Z, Ctrl+Y, Delete, Ctrl+A and Escape
+  const handleDeleteSelected = useCallback(() => {
+    const doc = useDocumentStore.getState().currentDocument;
+    if (!doc) return;
+    const selectedCount = doc.selectedPageIds.length;
+    if (selectedCount === 0) return;
+    if (selectedCount >= doc.pages.length) {
+      addToast('Dökümandaki tüm sayfalar silinemez. En az bir sayfa kalmalıdır.', 'error');
+      return;
+    }
+
+    const deleted = doc.pages
+      .map((p, idx) => ({ page: p, index: idx }))
+      .filter((item) => doc.selectedPageIds.includes(item.page.id));
+
+    historyManager.execute(new DeletePageCommand(deleted));
+    const updated = useDocumentStore.getState().currentDocument;
+    if (updated) {
+      useTabStore.getState().updateTabModel(updated);
+    }
+    addToast(`${deleted.length} sayfa silindi. (Geri almak için Ctrl+Z)`, 'info');
+  }, [addToast]);
+
+  // Capture-phase keyboard shortcut listener so Escape handles submenus cleanly and avoids closing behind child modals
   useEffect(() => {
     if (!isPageManagerOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
-
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        if (historyManager.canUndo()) {
-          historyManager.undo();
-          addToast('İşlem geri alındı.', 'info');
-        }
-      } else if (
-        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
-        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
+      const uiState = useUIStore.getState();
+      if (
+        uiState.isExtractPagesModalOpen ||
+        uiState.isInsertBlankPageModalOpen ||
+        uiState.isPageLayoutModalOpen
       ) {
+        return;
+      }
+
+      const target = e.target as HTMLElement | null;
+      const inEditable =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+
+      if (e.key === 'Escape') {
         e.preventDefault();
-        if (historyManager.canRedo()) {
-          historyManager.redo();
-          addToast('İşlem yinelendi.', 'info');
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        selectAllPages();
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (currentDocument && currentDocument.selectedPageIds.length > 0) {
-          e.preventDefault();
-          handleDeleteSelected();
-        }
-      } else if (e.key === 'Escape') {
+        e.stopPropagation();
         if (isAddMenuOpen) {
           setIsAddMenuOpen(false);
         } else if (contextMenu) {
@@ -132,14 +157,58 @@ export const PageManagerModal: React.FC = () => {
         } else {
           setPageManagerOpen(false);
         }
+        return;
+      }
+
+      if (inEditable) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (historyManager.canUndo()) {
+          historyManager.undo();
+          const updated = useDocumentStore.getState().currentDocument;
+          if (updated) useTabStore.getState().updateTabModel(updated);
+          addToast('İşlem geri alındı.', 'info');
+        }
+      } else if (
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (historyManager.canRedo()) {
+          historyManager.redo();
+          const updated = useDocumentStore.getState().currentDocument;
+          if (updated) useTabStore.getState().updateTabModel(updated);
+          addToast('İşlem yinelendi.', 'info');
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        e.stopPropagation();
+        selectAllPages();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        const doc = useDocumentStore.getState().currentDocument;
+        if (doc && doc.selectedPageIds.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleDeleteSelected();
+        }
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPageManagerOpen, contextMenu, isAddMenuOpen, currentDocument, addToast, selectAllPages, setPageManagerOpen]);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [
+    isPageManagerOpen,
+    contextMenu,
+    isAddMenuOpen,
+    addToast,
+    selectAllPages,
+    setPageManagerOpen,
+    handleDeleteSelected,
+  ]);
 
-  // Dismiss context menu & dropdown on window click
   useEffect(() => {
     const handleGlobalClick = () => {
       if (contextMenu) setContextMenu(null);
@@ -149,7 +218,6 @@ export const PageManagerModal: React.FC = () => {
     return () => window.removeEventListener('click', handleGlobalClick);
   }, [contextMenu, isAddMenuOpen]);
 
-  // Proximity auto-scrolling during drag
   const startAutoScrollLoop = useCallback(() => {
     if (autoScrollRafRef.current) return;
     const step = () => {
@@ -169,6 +237,14 @@ export const PageManagerModal: React.FC = () => {
     autoScrollSpeedRef.current = 0;
   }, []);
 
+  const detachMarqueeListeners = useCallback(() => {
+    if (marqueeListenersRef.current) {
+      window.removeEventListener('mousemove', marqueeListenersRef.current.move);
+      window.removeEventListener('mouseup', marqueeListenersRef.current.up);
+      marqueeListenersRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     const handleDragEndGlobal = () => stopAutoScrollLoop();
     window.addEventListener('dragend', handleDragEndGlobal);
@@ -177,18 +253,39 @@ export const PageManagerModal: React.FC = () => {
       window.removeEventListener('dragend', handleDragEndGlobal);
       window.removeEventListener('mouseup', handleDragEndGlobal);
       stopAutoScrollLoop();
+      detachMarqueeListeners();
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
     };
-  }, [stopAutoScrollLoop]);
+  }, [stopAutoScrollLoop, detachMarqueeListeners]);
 
-  // Proactive Multi-Page Drag Pre-bundling
+  const computeDragSignature = useCallback(() => {
+    if (!currentDocument || currentDocument.selectedPageIds.length === 0) return '';
+    const rotMap = new Map(currentDocument.pages.map((p) => [p.id, p.rotation]));
+    return (
+      `${currentDocument.id}:${currentDocument.version}:` +
+      currentDocument.selectedPageIds.map((id) => `${id}@${rotMap.get(id) ?? 0}`).join(',')
+    );
+  }, [currentDocument]);
+
+  // Prepare multi-page drag file lazily and deduplicated by selection+rotation signature
   const prepareMultiPagePdf = useCallback(async () => {
     if (!currentDocument || currentDocument.selectedPageIds.length === 0) {
       preparedMultiDragPathRef.current = null;
+      preparedSignatureRef.current = '';
       return;
     }
-    const electron = (window as any).electronAPI;
+    const electron = window.electronAPI;
     if (!electron?.prepareDragFile) return;
 
+    const sig = computeDragSignature();
+    if (!sig || sig === preparedSignatureRef.current || isPreparingDragRef.current) {
+      return;
+    }
+
+    isPreparingDragRef.current = true;
     try {
       const res = await PdfAssembler.extractPages(
         currentDocument,
@@ -202,24 +299,36 @@ export const PageManagerModal: React.FC = () => {
         });
         if (prepRes?.success && prepRes.filePath) {
           preparedMultiDragPathRef.current = prepRes.filePath;
+          preparedSignatureRef.current = sig;
         }
       }
     } catch {
       // silent fallback
+    } finally {
+      isPreparingDragRef.current = false;
     }
-  }, [currentDocument]);
+  }, [currentDocument, computeDragSignature]);
 
-  // Debounced auto-preparation whenever selectedPageIds changes
+  // Reset cached drag path whenever selection changes, and only auto-prebundle small selections
   useEffect(() => {
-    if (!isPageManagerOpen || !currentDocument || currentDocument.selectedPageIds.length === 0) {
+    const sig = computeDragSignature();
+    if (sig !== preparedSignatureRef.current) {
       preparedMultiDragPathRef.current = null;
+      preparedSignatureRef.current = '';
+    }
+    if (
+      !isPageManagerOpen ||
+      !currentDocument ||
+      currentDocument.selectedPageIds.length === 0 ||
+      currentDocument.selectedPageIds.length > 20
+    ) {
       return;
     }
     const timer = setTimeout(() => {
       prepareMultiPagePdf();
-    }, 150);
+    }, 250);
     return () => clearTimeout(timer);
-  }, [isPageManagerOpen, currentDocument?.selectedPageIds, prepareMultiPagePdf]);
+  }, [isPageManagerOpen, currentDocument, computeDragSignature, prepareMultiPagePdf]);
 
   const handleMultiPageDragStart = useCallback(
     (e: React.DragEvent) => {
@@ -227,7 +336,7 @@ export const PageManagerModal: React.FC = () => {
       document.body.classList.add('is-dragging-page');
 
       const pageIds = currentDocument.selectedPageIds;
-      (window as any).__xpdf_internal_drag = {
+      (window as unknown as Record<string, unknown>).__xpdf_internal_drag = {
         pageIds,
         sourceDocId: currentDocument.id,
         filePath: preparedMultiDragPathRef.current,
@@ -237,14 +346,12 @@ export const PageManagerModal: React.FC = () => {
       e.dataTransfer.setData('text/plain', pageIds.join(','));
       e.dataTransfer.effectAllowed = 'copyMove';
 
-      // Start native Windows OLE drag to Desktop / Explorer
-      if (preparedMultiDragPathRef.current && (window as any).electronAPI?.startDragFile) {
-        (window as any).electronAPI.startDragFile({
+      if (preparedMultiDragPathRef.current && window.electronAPI?.startDragFile) {
+        window.electronAPI.startDragFile({
           filePath: preparedMultiDragPathRef.current,
         });
       }
 
-      // Drag ghost preview pill
       try {
         const ghost = document.createElement('div');
         ghost.style.position = 'absolute';
@@ -262,18 +369,20 @@ export const PageManagerModal: React.FC = () => {
         ghost.style.alignItems = 'center';
         ghost.style.gap = '8px';
         ghost.style.zIndex = '9999';
-        ghost.innerHTML = `<span>📦</span> <span>${pageIds.length} Sayfa Taşınıyor (Masaüstüne Bırakın)</span>`;
+        ghost.textContent = `${pageIds.length} Sayfa Taşınıyor (Masaüstüne Bırakın)`;
         document.body.appendChild(ghost);
         e.dataTransfer.setDragImage(ghost, 20, 20);
         setTimeout(() => ghost.remove(), 100);
-      } catch {}
+      } catch {
+        // ignore drag image error
+      }
     },
     [currentDocument]
   );
 
   const handleMultiPageDragEnd = useCallback(() => {
     document.body.classList.remove('is-dragging-page');
-    (window as any).__xpdf_internal_drag = null;
+    (window as unknown as Record<string, unknown>).__xpdf_internal_drag = null;
   }, []);
 
   if (!isPageManagerOpen || !currentDocument) return null;
@@ -291,34 +400,24 @@ export const PageManagerModal: React.FC = () => {
         { separateFiles: false }
       );
       if (res.mode === 'single') {
-        const electron = (window as any).electronAPI;
-        let saved = false;
-        if (electron?.showSaveDialog && electron?.saveFile) {
-          const dialogRes = await electron.showSaveDialog({
-            title: 'Seçili Sayfaları PDF Olarak Kaydet',
-            defaultPath: res.name,
-            filters: [{ name: 'PDF Dökümanı', extensions: ['pdf'] }],
-          });
-          if (!dialogRes.canceled && dialogRes.filePath) {
-            await electron.saveFile(dialogRes.filePath, res.buffer);
-            saved = true;
-            addToast(`PDF başarıyla kaydedildi: ${res.name}`, 'success');
-          }
+        const saveRes = await saveBinaryOrBlobFile({
+          data: res.buffer,
+          defaultName: res.name,
+          dialogTitle: 'Seçili Sayfaları PDF Olarak Kaydet',
+          filters: [{ name: 'PDF Dökümanı', extensions: ['pdf'] }],
+          mimeType: 'application/pdf',
+        });
+
+        if (saveRes.status === 'canceled') {
+          addToast('Kaydetme iptal edildi.', 'info');
+          return;
         }
-        if (!saved && (!electron || !electron.showSaveDialog)) {
-          const blob = new Blob([res.buffer], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = res.name;
-          a.click();
-          URL.revokeObjectURL(url);
-          addToast(`PDF indirildi: ${res.name}`, 'success');
-        }
+        addToast(`PDF başarıyla kaydedildi: ${res.name}`, 'success');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Export error:', err);
-      addToast('Dışa aktarma sırasında hata oluştu.', 'error');
+      const msg = err instanceof Error ? err.message : 'Dışa aktarma sırasında hata oluştu.';
+      addToast(msg, 'error');
     }
   };
 
@@ -334,40 +433,30 @@ export const PageManagerModal: React.FC = () => {
         currentDocument.selectedPageIds
       );
 
+      const syncedModel = syncReplacedActiveDocument(
+        result.model,
+        result.pdfDoc,
+        prevDocModel,
+        { isModified: true }
+      );
+
       historyManager.push(
         new DocumentStateSnapshotCommand(
           `${selectedCount} sayfa çoğaltıldı`,
           prevDocModel,
           prevPdfProxy,
-          result.model,
+          syncedModel,
           result.pdfDoc
         )
       );
 
-      setDocument(result.model, result.pdfDoc);
       addToast(`${selectedCount} sayfa başarıyla çoğaltıldı.`, 'success');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       addToast('Çoğaltma sırasında hata oluştu.', 'error');
     }
   };
 
-  const handleDeleteSelected = () => {
-    if (selectedCount === 0) return;
-    if (selectedCount >= currentDocument.pages.length) {
-      addToast('Dökümandaki tüm sayfalar silinemez. En az bir sayfa kalmalıdır.', 'error');
-      return;
-    }
-
-    const deleted = currentDocument.pages
-      .map((p, idx) => ({ page: p, index: idx }))
-      .filter((item) => currentDocument.selectedPageIds.includes(item.page.id));
-
-    historyManager.execute(new DeletePageCommand(deleted));
-    addToast(`${deleted.length} sayfa silindi. (Geri almak için Ctrl+Z)`, 'info');
-  };
-
-  // Extract Pages and Open directly as New PDF / Tab in editor
   const handleExtractAndOpenNewPdf = async () => {
     if (selectedCount === 0) {
       addToast('Lütfen açmak istediğiniz sayfaları seçin.', 'warning');
@@ -376,9 +465,11 @@ export const PageManagerModal: React.FC = () => {
 
     try {
       addToast('Seçili sayfalar yeni PDF olarak açılıyor...', 'info');
-      const res = await PdfAssembler.extractPages(currentDocument, currentDocument.selectedPageIds, {
-        separateFiles: false,
-      });
+      const res = await PdfAssembler.extractPages(
+        currentDocument,
+        currentDocument.selectedPageIds,
+        { separateFiles: false }
+      );
 
       if (res.mode === 'single') {
         const loaded = await PdfLoader.loadDocument(res.name, res.buffer);
@@ -387,156 +478,84 @@ export const PageManagerModal: React.FC = () => {
         setPageManagerOpen(false);
         addToast(`${selectedCount} sayfa yeni sekmede açıldı!`, 'success');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       addToast('Yeni PDF açılırken hata oluştu.', 'error');
     }
   };
 
-  // Add pages from external PDF or image files directly
-  const handleAddPagesFromFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0 || !currentDocument) return;
+  const insertExternalFiles = async (files: File[], toastPrefix: string) => {
+    if (!files.length || !currentDocument) return;
     try {
-      addToast('Dosyalar dökümana ekleniyor...', 'info');
-      const processed = await PdfAssembler.processDroppedFiles(Array.from(files));
+      addToast(toastPrefix, 'info');
+      const processed = await PdfAssembler.processDroppedFiles(files);
       if (processed.length === 0) {
         addToast('Desteklenen dosya bulunamadı (PDF, PNG, JPEG, WEBP).', 'error');
         return;
       }
-      let currentDoc = currentDocument;
-      let currentInsertIndex = currentDoc.pages.length;
+
+      const prevDocModel = currentDocument;
+      const prevPdfProxy = pdfDocProxy;
+      let workingDoc = currentDocument;
+      let workingProxy: typeof pdfDocProxy = null;
+      let currentInsertIndex = workingDoc.pages.length;
       let totalAdded = 0;
 
       for (const item of processed) {
         const indices = Array.from({ length: item.pageCount }, (_, idx) => idx);
         const result = await PdfAssembler.insertPagesIntoDocument(
-          currentDoc,
+          workingDoc,
           item.buffer,
           indices,
           currentInsertIndex
         );
-        currentDoc = result.model;
-        currentInsertIndex += indices.length;
-        totalAdded += indices.length;
-        setDocument(result.model, result.pdfDoc);
-      }
-      addToast(`${totalAdded} sayfa başarıyla eklendi!`, 'success');
-    } catch (err: any) {
-      console.error(err);
-      addToast('Dosyalar eklenirken hata oluştu.', 'error');
-    } finally {
-      if (e.target) e.target.value = '';
-    }
-  };
-
-  // Ultra-Fast Zero-Allocation Marquee Selection Handlers
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('button, [draggable="true"]')) return;
-    if (e.button !== 0 || !gridContainerRef.current) return;
-
-    const rect = gridContainerRef.current.getBoundingClientRect();
-    const startX = e.clientX - rect.left + gridContainerRef.current.scrollLeft;
-    const startY = e.clientY - rect.top + gridContainerRef.current.scrollTop;
-
-    isSelectingRef.current = true;
-    const isMulti = e.ctrlKey || e.metaKey || e.shiftKey;
-    isMultiSelectModeRef.current = isMulti;
-    startPosRef.current = { x: startX, y: startY };
-
-    // Pre-cache DOM elements and their coordinates ONCE on mouse down
-    const elements = gridContainerRef.current.querySelectorAll('[data-page-id]');
-    cachedBoundsRef.current = Array.from(elements).map((el) => {
-      const htmlEl = el as HTMLElement;
-      return {
-        id: el.getAttribute('data-page-id')!,
-        el: htmlEl,
-        left: htmlEl.offsetLeft,
-        top: htmlEl.offsetTop,
-        right: htmlEl.offsetLeft + htmlEl.offsetWidth,
-        bottom: htmlEl.offsetTop + htmlEl.offsetHeight,
-      };
-    });
-
-    currentSelectedSetRef.current = new Set(
-      isMulti ? currentDocument.selectedPageIds : []
-    );
-
-    if (!isMulti) {
-      clearPageSelection();
-    }
-
-    if (selectionBoxRef.current) {
-      selectionBoxRef.current.style.display = 'block';
-      selectionBoxRef.current.style.left = `${startX}px`;
-      selectionBoxRef.current.style.top = `${startY}px`;
-      selectionBoxRef.current.style.width = '0px';
-      selectionBoxRef.current.style.height = '0px';
-    }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isSelectingRef.current || !gridContainerRef.current) return;
-    pendingMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
-
-    if (!rafIdRef.current) {
-      rafIdRef.current = requestAnimationFrame(() => {
-        rafIdRef.current = null;
-        if (!isSelectingRef.current || !gridContainerRef.current || !pendingMousePosRef.current) return;
-
-        const { clientX, clientY } = pendingMousePosRef.current;
-        const rect = gridContainerRef.current.getBoundingClientRect();
-        const currentX = clientX - rect.left + gridContainerRef.current.scrollLeft;
-        const currentY = clientY - rect.top + gridContainerRef.current.scrollTop;
-
-        const startX = startPosRef.current.x;
-        const startY = startPosRef.current.y;
-
-        const boxLeft = Math.min(startX, currentX);
-        const boxRight = Math.max(startX, currentX);
-        const boxTop = Math.min(startY, currentY);
-        const boxBottom = Math.max(startY, currentY);
-
-        if (selectionBoxRef.current) {
-          selectionBoxRef.current.style.left = `${boxLeft}px`;
-          selectionBoxRef.current.style.top = `${boxTop}px`;
-          selectionBoxRef.current.style.width = `${boxRight - boxLeft}px`;
-          selectionBoxRef.current.style.height = `${boxBottom - boxTop}px`;
-        }
-
-        const bounds = cachedBoundsRef.current;
-        const intersectingIds: string[] = [];
-
-        for (let i = 0; i < bounds.length; i++) {
-          const b = bounds[i];
-          const isInside =
-            boxLeft < b.right &&
-            boxRight > b.left &&
-            boxTop < b.bottom &&
-            boxBottom > b.top;
-
-          if (isInside) {
-            intersectingIds.push(b.id);
-            if (!b.el.classList.contains('ring-2')) {
-              b.el.classList.add('ring-2', 'ring-sky-500', 'scale-[0.98]');
-            }
-          } else {
-            if (b.el.classList.contains('ring-2')) {
-              b.el.classList.remove('ring-2', 'ring-sky-500', 'scale-[0.98]');
-            }
+        if (workingProxy && workingProxy !== prevPdfProxy) {
+          try {
+            await workingProxy.destroy();
+          } catch {
+            // ignore cleanup errors
           }
         }
+        workingDoc = result.model;
+        workingProxy = result.pdfDoc;
+        currentInsertIndex += indices.length;
+        totalAdded += indices.length;
+      }
 
-        currentSelectedSetRef.current = new Set(
-          isMultiSelectModeRef.current
-            ? [...currentDocument.selectedPageIds, ...intersectingIds]
-            : intersectingIds
+      if (workingProxy) {
+        const finalModel = syncReplacedActiveDocument(
+          workingDoc,
+          workingProxy,
+          prevDocModel,
+          { isModified: true }
         );
-      });
+
+        historyManager.push(
+          new DocumentStateSnapshotCommand(
+            `${totalAdded} harici sayfa eklendi`,
+            prevDocModel,
+            prevPdfProxy,
+            finalModel,
+            workingProxy
+          )
+        );
+
+        addToast(`${totalAdded} sayfa dökümana başarıyla eklendi!`, 'success');
+      }
+    } catch (err: unknown) {
+      console.error('External page insert error:', err);
+      addToast('Dosyalar eklenirken hata oluştu.', 'error');
     }
   };
 
-  const handleMouseUp = () => {
+  const handleAddPagesFromFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = '';
+    if (files.length === 0) return;
+    await insertExternalFiles(files, 'Dosyalar dökümana ekleniyor...');
+  };
+
+  const finalizeMarqueeSelection = () => {
     if (rafIdRef.current) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
@@ -555,9 +574,123 @@ export const PageManagerModal: React.FC = () => {
 
     isSelectingRef.current = false;
     isMultiSelectModeRef.current = false;
+    pendingMousePosRef.current = null;
     if (selectionBoxRef.current) {
       selectionBoxRef.current.style.display = 'none';
     }
+    detachMarqueeListeners();
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button, [draggable="true"]')) return;
+    if (e.button !== 0 || !gridContainerRef.current) return;
+
+    const rect = gridContainerRef.current.getBoundingClientRect();
+    const startX = e.clientX - rect.left + gridContainerRef.current.scrollLeft;
+    const startY = e.clientY - rect.top + gridContainerRef.current.scrollTop;
+
+    isSelectingRef.current = true;
+    const isMulti = e.ctrlKey || e.metaKey || e.shiftKey;
+    isMultiSelectModeRef.current = isMulti;
+    startPosRef.current = { x: startX, y: startY };
+
+    const elements = gridContainerRef.current.querySelectorAll('[data-page-id]');
+    cachedBoundsRef.current = Array.from(elements).map((el) => {
+      const htmlEl = el as HTMLElement;
+      return {
+        id: el.getAttribute('data-page-id')!,
+        el: htmlEl,
+        left: htmlEl.offsetLeft,
+        top: htmlEl.offsetTop,
+        right: htmlEl.offsetLeft + htmlEl.offsetWidth,
+        bottom: htmlEl.offsetTop + htmlEl.offsetHeight,
+      };
+    });
+
+    const initialSelection = isMulti ? [...currentDocument.selectedPageIds] : [];
+    currentSelectedSetRef.current = new Set(initialSelection);
+
+    if (!isMulti) {
+      clearPageSelection();
+    }
+
+    if (selectionBoxRef.current) {
+      selectionBoxRef.current.style.display = 'block';
+      selectionBoxRef.current.style.left = `${startX}px`;
+      selectionBoxRef.current.style.top = `${startY}px`;
+      selectionBoxRef.current.style.width = '0px';
+      selectionBoxRef.current.style.height = '0px';
+    }
+
+    const onWindowMouseMove = (me: MouseEvent) => {
+      if (!isSelectingRef.current || !gridContainerRef.current) return;
+      pendingMousePosRef.current = { clientX: me.clientX, clientY: me.clientY };
+
+      if (!rafIdRef.current) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = null;
+          if (!isSelectingRef.current || !gridContainerRef.current || !pendingMousePosRef.current) {
+            return;
+          }
+
+          const { clientX, clientY } = pendingMousePosRef.current;
+          const containerRect = gridContainerRef.current.getBoundingClientRect();
+          const currentX = clientX - containerRect.left + gridContainerRef.current.scrollLeft;
+          const currentY = clientY - containerRect.top + gridContainerRef.current.scrollTop;
+
+          const sX = startPosRef.current.x;
+          const sY = startPosRef.current.y;
+
+          const boxLeft = Math.min(sX, currentX);
+          const boxRight = Math.max(sX, currentX);
+          const boxTop = Math.min(sY, currentY);
+          const boxBottom = Math.max(sY, currentY);
+
+          if (selectionBoxRef.current) {
+            selectionBoxRef.current.style.left = `${boxLeft}px`;
+            selectionBoxRef.current.style.top = `${boxTop}px`;
+            selectionBoxRef.current.style.width = `${boxRight - boxLeft}px`;
+            selectionBoxRef.current.style.height = `${boxBottom - boxTop}px`;
+          }
+
+          const bounds = cachedBoundsRef.current;
+          const intersectingIds: string[] = [];
+
+          for (let i = 0; i < bounds.length; i++) {
+            const b = bounds[i];
+            const isInside =
+              boxLeft < b.right &&
+              boxRight > b.left &&
+              boxTop < b.bottom &&
+              boxBottom > b.top;
+
+            if (isInside) {
+              intersectingIds.push(b.id);
+              if (!b.el.classList.contains('ring-2')) {
+                b.el.classList.add('ring-2', 'ring-sky-500', 'scale-[0.98]');
+              }
+            } else if (b.el.classList.contains('ring-2')) {
+              b.el.classList.remove('ring-2', 'ring-sky-500', 'scale-[0.98]');
+            }
+          }
+
+          currentSelectedSetRef.current = new Set(
+            isMultiSelectModeRef.current
+              ? [...initialSelection, ...intersectingIds]
+              : intersectingIds
+          );
+        });
+      }
+    };
+
+    const onWindowMouseUp = () => {
+      finalizeMarqueeSelection();
+    };
+
+    detachMarqueeListeners();
+    marqueeListenersRef.current = { move: onWindowMouseMove, up: onWindowMouseUp };
+    window.addEventListener('mousemove', onWindowMouseMove);
+    window.addEventListener('mouseup', onWindowMouseUp);
   };
 
   const handlePageClick = (
@@ -598,9 +731,19 @@ export const PageManagerModal: React.FC = () => {
     });
   };
 
+  const isMultiContextSelection =
+    contextMenu !== null &&
+    selectedCount > 1 &&
+    currentDocument.selectedPageIds.includes(contextMenu.pageId);
+  const contextTargetIds =
+    contextMenu === null
+      ? []
+      : isMultiContextSelection
+        ? currentDocument.selectedPageIds
+        : [contextMenu.pageId];
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/85 flex flex-col animate-in fade-in duration-150">
-      {/* Hidden File Input for "Dosyadan Sayfa Ekle" */}
       <input
         type="file"
         ref={addFileInputRef}
@@ -638,11 +781,12 @@ export const PageManagerModal: React.FC = () => {
             </div>
           </div>
 
-          <div className="h-6 w-px bg-slate-200 dark:border-slate-800" />
+          <div className="h-6 w-px bg-slate-200 dark:bg-slate-800" />
 
           {/* Add Page Dropdown Menu */}
           <div className="relative">
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 setIsAddMenuOpen((prev) => !prev);
@@ -660,6 +804,7 @@ export const PageManagerModal: React.FC = () => {
                 onClick={(e) => e.stopPropagation()}
               >
                 <button
+                  type="button"
                   onClick={() => {
                     setIsAddMenuOpen(false);
                     const selectedIdx =
@@ -677,6 +822,7 @@ export const PageManagerModal: React.FC = () => {
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => {
                     setIsAddMenuOpen(false);
                     addFileInputRef.current?.click();
@@ -693,11 +839,13 @@ export const PageManagerModal: React.FC = () => {
 
         {/* Center Section: Core Page Editing Actions */}
         <div className="flex items-center gap-1.5">
-          {/* Rotate Left */}
           <button
+            type="button"
             onClick={() => {
               if (selectedCount > 0) {
                 historyManager.execute(new RotatePageCommand(currentDocument.selectedPageIds, -90));
+                const updated = useDocumentStore.getState().currentDocument;
+                if (updated) useTabStore.getState().updateTabModel(updated);
               }
             }}
             disabled={selectedCount === 0}
@@ -708,11 +856,13 @@ export const PageManagerModal: React.FC = () => {
             <span>Sola</span>
           </button>
 
-          {/* Rotate Right */}
           <button
+            type="button"
             onClick={() => {
               if (selectedCount > 0) {
                 historyManager.execute(new RotatePageCommand(currentDocument.selectedPageIds, 90));
+                const updated = useDocumentStore.getState().currentDocument;
+                if (updated) useTabStore.getState().updateTabModel(updated);
               }
             }}
             disabled={selectedCount === 0}
@@ -723,8 +873,8 @@ export const PageManagerModal: React.FC = () => {
             <span>Sağa</span>
           </button>
 
-          {/* Extract Button */}
           <button
+            type="button"
             onClick={() => setExtractPagesModalOpen(true)}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs font-bold transition-all shadow-sm shadow-sky-500/20 active:scale-95"
             title="Sayfaları Ayıkla (Yeni PDF, Ayrı Sayfalar veya ZIP)"
@@ -733,8 +883,8 @@ export const PageManagerModal: React.FC = () => {
             <span>Ayıkla...</span>
           </button>
 
-          {/* Duplicate Button */}
           <button
+            type="button"
             onClick={handleDuplicate}
             disabled={selectedCount === 0}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-35 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
@@ -744,22 +894,22 @@ export const PageManagerModal: React.FC = () => {
             <span>Çoğalt</span>
           </button>
 
-          {/* Synthesize N-up button */}
           <button
+            type="button"
             onClick={() => {
               setPageManagerOpen(false);
               setPageLayoutModalOpen(true);
             }}
             disabled={selectedCount === 0}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-35 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
-            title="Seçili sayfaları tek bir A4/A3 sayfada birleştir"
+            title="Seçili sayfaları N-up ızgara düzeninde birleştir"
           >
             <Sparkles className="w-3.5 h-3.5 text-purple-500" />
             <span>Birleştir</span>
           </button>
 
-          {/* Delete selected */}
           <button
+            type="button"
             onClick={handleDeleteSelected}
             disabled={selectedCount === 0}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 disabled:opacity-35 text-xs font-medium transition-colors"
@@ -772,23 +922,34 @@ export const PageManagerModal: React.FC = () => {
 
         {/* Right Section: View, Undo/Redo & Close */}
         <div className="flex items-center gap-3">
-          {/* Undo / Redo */}
           <div className="flex items-center gap-1">
             <button
+              type="button"
               onClick={() => {
-                if (historyManager.undo()) addToast('İşlem geri alındı.', 'info');
+                if (historyManager.undo()) {
+                  const updated = useDocumentStore.getState().currentDocument;
+                  if (updated) useTabStore.getState().updateTabModel(updated);
+                  addToast('İşlem geri alındı.', 'info');
+                }
               }}
               disabled={!historyManager.canUndo()}
+              aria-label="Geri Al"
               className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
               title="Geri Al (Ctrl+Z)"
             >
               <Undo2 className="w-4 h-4" />
             </button>
             <button
+              type="button"
               onClick={() => {
-                if (historyManager.redo()) addToast('İşlem yinelendi.', 'info');
+                if (historyManager.redo()) {
+                  const updated = useDocumentStore.getState().currentDocument;
+                  if (updated) useTabStore.getState().updateTabModel(updated);
+                  addToast('İşlem yinelendi.', 'info');
+                }
               }}
               disabled={!historyManager.canRedo()}
+              aria-label="Yinele"
               className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
               title="Yinele (Ctrl+Y)"
             >
@@ -796,11 +957,11 @@ export const PageManagerModal: React.FC = () => {
             </button>
           </div>
 
-          <div className="h-5 w-px bg-slate-200 dark:border-slate-800" />
+          <div className="h-5 w-px bg-slate-200 dark:bg-slate-800" />
 
-          {/* Grid Size Switcher */}
           <div className="flex items-center p-0.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 text-xs">
             <button
+              type="button"
               onClick={() => setThumbnailSize('small')}
               className={cn(
                 'px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all',
@@ -813,6 +974,7 @@ export const PageManagerModal: React.FC = () => {
               Küçük
             </button>
             <button
+              type="button"
               onClick={() => setThumbnailSize('medium')}
               className={cn(
                 'px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all',
@@ -825,6 +987,7 @@ export const PageManagerModal: React.FC = () => {
               Orta
             </button>
             <button
+              type="button"
               onClick={() => setThumbnailSize('large')}
               className={cn(
                 'px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all',
@@ -838,8 +1001,8 @@ export const PageManagerModal: React.FC = () => {
             </button>
           </div>
 
-          {/* Select all toggle */}
           <button
+            type="button"
             onClick={isAllSelected ? clearPageSelection : selectAllPages}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors border border-slate-200/80 dark:border-slate-700/80"
             title={isAllSelected ? 'Tüm seçimleri temizle' : 'Tüm sayfaları seç (Ctrl+A)'}
@@ -848,9 +1011,10 @@ export const PageManagerModal: React.FC = () => {
             <span>{isAllSelected ? 'Temizle' : 'Tümünü Seç'}</span>
           </button>
 
-          {/* Close button */}
           <button
+            type="button"
             onClick={() => setPageManagerOpen(false)}
+            aria-label="Kapat"
             className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors border border-slate-200/80 dark:border-slate-700/80"
             title="Kapat (ESC)"
           >
@@ -859,17 +1023,10 @@ export const PageManagerModal: React.FC = () => {
         </div>
       </div>
 
-      {/* Grid of Pages with High Performance Marquee Selection */}
+      {/* Grid of Pages with Native Scroll & Window-Bound Marquee Selection */}
       <div
         ref={gridContainerRef}
         onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onWheel={(e) => {
-          if (gridContainerRef.current) {
-            gridContainerRef.current.scrollTop += e.deltaY;
-          }
-        }}
         onDragOver={(e) => {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'copy';
@@ -902,47 +1059,18 @@ export const PageManagerModal: React.FC = () => {
           e.preventDefault();
           e.stopPropagation();
 
-          // If internal reorder drag was triggered, do NOT treat as external file insertion!
-          if ((window as any).__xpdf_internal_drag) {
-            (window as any).__xpdf_internal_drag = null;
+          const win = window as unknown as Record<string, unknown>;
+          if (win.__xpdf_internal_drag) {
+            win.__xpdf_internal_drag = null;
             return;
           }
 
           if (!currentDocument || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
           const droppedFiles = Array.from(e.dataTransfer.files);
-          try {
-            addToast('Harici dosya(lar) dökümana ekleniyor...', 'info');
-            const processed = await PdfAssembler.processDroppedFiles(droppedFiles);
-            if (processed.length === 0) {
-              addToast('Desteklenen dosya bulunamadı (PDF, PNG, JPEG, WEBP).', 'error');
-              return;
-            }
-
-            let currentDoc = currentDocument;
-            let currentInsertIndex = currentDoc.pages.length;
-            let totalAdded = 0;
-            for (const item of processed) {
-              const indices = Array.from({ length: item.pageCount }, (_, idx) => idx);
-              const result = await PdfAssembler.insertPagesIntoDocument(
-                currentDoc,
-                item.buffer,
-                indices,
-                currentInsertIndex
-              );
-              currentDoc = result.model;
-              currentInsertIndex += indices.length;
-              totalAdded += indices.length;
-              setDocument(result.model, result.pdfDoc);
-            }
-            addToast(`${totalAdded} sayfa döküman sonuna başarıyla eklendi!`, 'success');
-          } catch (err: any) {
-            console.error('Drop error:', err);
-            addToast('Dosyalar eklenirken hata oluştu.', 'error');
-          }
+          await insertExternalFiles(droppedFiles, 'Harici dosya(lar) dökümana ekleniyor...');
         }}
         className="relative flex-1 overflow-y-auto p-8 select-none bg-slate-100/80 dark:bg-slate-950/60 pb-24"
       >
-        {/* Direct DOM Marquee Rectangle */}
         <div
           ref={selectionBoxRef}
           style={{ display: 'none' }}
@@ -958,11 +1086,7 @@ export const PageManagerModal: React.FC = () => {
           )}
         >
           {currentDocument.pages.map((page, index) => (
-            <div
-              key={page.id}
-              data-page-id={page.id}
-              className="relative"
-            >
+            <div key={page.id} data-page-id={page.id} className="relative">
               <ThumbnailItem
                 page={page}
                 index={index}
@@ -977,10 +1101,9 @@ export const PageManagerModal: React.FC = () => {
         </div>
       </div>
 
-      {/* Floating Action Dock (High-Contrast, Readable & Professional Dock) */}
+      {/* Floating Action Dock */}
       {selectedCount > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-5 py-3 rounded-2xl bg-slate-950 border-2 border-slate-700 text-white shadow-[0_12px_45px_rgba(0,0,0,0.85)] animate-in fade-in slide-in-from-bottom-5 duration-200 select-none">
-          {/* Selected Count Indicator */}
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-sky-500/20 border border-sky-400/40 text-xs font-bold text-sky-300">
             <CheckSquare className="w-4 h-4 text-sky-400" />
             <span>{selectedCount} sayfa seçildi</span>
@@ -988,11 +1111,9 @@ export const PageManagerModal: React.FC = () => {
 
           <div className="h-5 w-px bg-slate-700" />
 
-          {/* Draggable + Clickable Badge for Desktop Drag or Direct Export */}
           <button
             type="button"
             draggable
-            onMouseEnter={prepareMultiPagePdf}
             onMouseDown={prepareMultiPagePdf}
             onDragStart={handleMultiPageDragStart}
             onDragEnd={handleMultiPageDragEnd}
@@ -1001,13 +1122,13 @@ export const PageManagerModal: React.FC = () => {
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white font-bold text-xs cursor-grab active:cursor-grabbing transition-all shadow-md shadow-sky-600/40 border border-sky-400/50 hover:scale-105 active:scale-95"
           >
             <Download className="w-4 h-4 text-white" />
-            <span>Masaüstüne Sürükleyin / Kaydet ↗</span>
+            <span>Masaüstüne Sürükleyin / Kaydet</span>
           </button>
 
           <div className="h-5 w-px bg-slate-700" />
 
-          {/* Quick Action: Extract */}
           <button
+            type="button"
             onClick={() => setExtractPagesModalOpen(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-white transition-colors border border-slate-700"
             title="Seçili Sayfaları Ayıkla"
@@ -1016,9 +1137,13 @@ export const PageManagerModal: React.FC = () => {
             <span>Ayıkla</span>
           </button>
 
-          {/* Quick Action: Rotate */}
           <button
-            onClick={() => historyManager.execute(new RotatePageCommand(currentDocument.selectedPageIds, 90))}
+            type="button"
+            onClick={() => {
+              historyManager.execute(new RotatePageCommand(currentDocument.selectedPageIds, 90));
+              const updated = useDocumentStore.getState().currentDocument;
+              if (updated) useTabStore.getState().updateTabModel(updated);
+            }}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-white transition-colors border border-slate-700"
             title="90° Sağa Döndür"
           >
@@ -1026,8 +1151,8 @@ export const PageManagerModal: React.FC = () => {
             <span>Döndür</span>
           </button>
 
-          {/* Quick Action: Duplicate */}
           <button
+            type="button"
             onClick={handleDuplicate}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-white transition-colors border border-slate-700"
             title="Seçili Sayfaları Çoğalt"
@@ -1036,8 +1161,8 @@ export const PageManagerModal: React.FC = () => {
             <span>Çoğalt</span>
           </button>
 
-          {/* Quick Action: Delete */}
           <button
+            type="button"
             onClick={handleDeleteSelected}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900 text-xs font-semibold text-rose-300 hover:text-rose-100 transition-colors border border-rose-800/80"
             title="Seçili Sayfaları Sil"
@@ -1048,9 +1173,10 @@ export const PageManagerModal: React.FC = () => {
 
           <div className="h-5 w-px bg-slate-700" />
 
-          {/* Clear Selection */}
           <button
+            type="button"
             onClick={clearPageSelection}
+            aria-label="Seçimi Temizle"
             className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white transition-colors border border-slate-700"
             title="Seçimi Temizle"
           >
@@ -1067,32 +1193,49 @@ export const PageManagerModal: React.FC = () => {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="px-3 py-1.5 text-[11px] font-bold text-slate-400 border-b border-slate-100 dark:border-slate-800 mb-1">
-            Sayfa {contextMenu.pageIndex + 1} İşlemleri
+            {isMultiContextSelection
+              ? `Seçili ${selectedCount} Sayfa İşlemleri`
+              : `Sayfa ${contextMenu.pageIndex + 1} İşlemleri`}
           </div>
 
           <button
+            type="button"
             onClick={() => {
-              historyManager.execute(new RotatePageCommand([contextMenu.pageId], 90));
+              historyManager.execute(new RotatePageCommand(contextTargetIds, 90));
+              const updated = useDocumentStore.getState().currentDocument;
+              if (updated) useTabStore.getState().updateTabModel(updated);
               setContextMenu(null);
             }}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-sky-50 dark:hover:bg-sky-950/60 hover:text-sky-600 transition-colors"
           >
             <RotateCw className="w-3.5 h-3.5 text-sky-500" />
-            <span>90° Sağa Döndür</span>
+            <span>
+              {isMultiContextSelection
+                ? `${selectedCount} Sayfayı 90° Sağa Döndür`
+                : '90° Sağa Döndür'}
+            </span>
           </button>
 
           <button
+            type="button"
             onClick={() => {
-              historyManager.execute(new RotatePageCommand([contextMenu.pageId], -90));
+              historyManager.execute(new RotatePageCommand(contextTargetIds, -90));
+              const updated = useDocumentStore.getState().currentDocument;
+              if (updated) useTabStore.getState().updateTabModel(updated);
               setContextMenu(null);
             }}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-sky-50 dark:hover:bg-sky-950/60 hover:text-sky-600 transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5 text-sky-500" />
-            <span>90° Sola Döndür</span>
+            <span>
+              {isMultiContextSelection
+                ? `${selectedCount} Sayfayı 90° Sola Döndür`
+                : '90° Sola Döndür'}
+            </span>
           </button>
 
           <button
+            type="button"
             onClick={() => {
               const insertIdx = contextMenu.pageIndex + 1;
               setInsertBlankPageModalOpen(true, insertIdx);
@@ -1101,10 +1244,11 @@ export const PageManagerModal: React.FC = () => {
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-emerald-50 dark:hover:bg-emerald-950/60 hover:text-emerald-600 transition-colors"
           >
             <Plus className="w-3.5 h-3.5 text-emerald-500" />
-            <span>Sonrasına Boş Sayfa Ekle</span>
+            <span>Sayfa {contextMenu.pageIndex + 1} Sonrasına Boş Sayfa Ekle</span>
           </button>
 
           <button
+            type="button"
             onClick={() => {
               handleDuplicate();
               setContextMenu(null);
@@ -1112,12 +1256,15 @@ export const PageManagerModal: React.FC = () => {
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-amber-50 dark:hover:bg-amber-950/60 hover:text-amber-600 transition-colors"
           >
             <Copy className="w-3.5 h-3.5 text-amber-500" />
-            <span>Sayfayı Çoğalt</span>
+            <span>
+              {isMultiContextSelection ? `${selectedCount} Sayfayı Çoğalt` : 'Sayfayı Çoğalt'}
+            </span>
           </button>
 
           <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 
           <button
+            type="button"
             onClick={() => {
               setExtractPagesModalOpen(true);
               setContextMenu(null);
@@ -1129,6 +1276,7 @@ export const PageManagerModal: React.FC = () => {
           </button>
 
           <button
+            type="button"
             onClick={() => {
               handleExtractAndOpenNewPdf();
               setContextMenu(null);
@@ -1142,6 +1290,7 @@ export const PageManagerModal: React.FC = () => {
           <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 
           <button
+            type="button"
             onClick={() => {
               handleDeleteSelected();
               setContextMenu(null);
@@ -1149,7 +1298,9 @@ export const PageManagerModal: React.FC = () => {
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>Sayfayı Sil</span>
+            <span>
+              {isMultiContextSelection ? `${selectedCount} Sayfayı Sil` : 'Sayfayı Sil'}
+            </span>
           </button>
         </div>
       )}
