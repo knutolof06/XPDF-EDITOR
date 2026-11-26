@@ -4,6 +4,19 @@ import { PdfDocumentModel, RecentDocumentItem } from '@/types/document';
 import * as pdfjsLib from 'pdfjs-dist';
 import { clearDocumentCaches } from '@/core/cache/render-cache';
 import { cancelActivePreload } from '@/core/cache/page-preloader';
+import { binaryStore } from '@/core/storage/binary-store';
+import {
+  historyManager,
+  MovePageCommand,
+  MoveMultiplePagesCommand,
+  RotatePageCommand,
+  DeletePageCommand,
+} from '@/core/history/command-manager';
+import { useTabStore } from './tab-store';
+import { useAnnotationStore } from './annotation-store';
+import { useRulerStore } from './ruler-store';
+import { useNativeObjectStore } from './native-object-store';
+import { useFormStore } from './form-store';
 
 interface DocumentState {
   currentDocument: PdfDocumentModel | null;
@@ -45,8 +58,40 @@ const loadRecentDocuments = (): RecentDocumentItem[] => {
   return [];
 };
 
+export function cleanupClosedDocumentResources(
+  docId: string,
+  pageIds?: string[],
+  pdfDocProxy?: pdfjsLib.PDFDocumentProxy | null
+): void {
+  if (!docId) return;
+
+  const remainingTabs = useTabStore.getState().tabs;
+  if (remainingTabs.some((t) => t.id === docId)) {
+    return;
+  }
+
+  clearDocumentCaches(docId);
+  binaryStore.delete(docId);
+  historyManager.clear(docId);
+  useNativeObjectStore.getState().clearDocObjects(docId, pageIds);
+  useFormStore.getState().clearDocValues(docId);
+  useAnnotationStore.getState().clearDocState(docId);
+  useRulerStore.getState().clearDocGuides(docId);
+
+  if (pdfDocProxy && !remainingTabs.some((t) => t.pdfDocProxy === pdfDocProxy)) {
+    try {
+      const destroyFn = (pdfDocProxy as { destroy?: () => unknown }).destroy;
+      if (typeof destroyFn === 'function') {
+        void Promise.resolve(destroyFn.call(pdfDocProxy)).catch(() => {});
+      }
+    } catch {
+      // ignore pdfjs destroy errors
+    }
+  }
+}
+
 export const useDocumentStore = create<DocumentState>()(
-  immer((set) => ({
+  immer((set, get) => ({
     currentDocument: null,
     pdfDocProxy: null,
     recentDocuments: loadRecentDocuments(),
@@ -54,24 +99,57 @@ export const useDocumentStore = create<DocumentState>()(
     loadingProgress: 0,
     loadingError: null,
 
-    setDocument: (model, pdfDoc) =>
+    setDocument: (model, pdfDoc) => {
+      const prevDocId = get().currentDocument?.id;
       set((state) => {
         state.currentDocument = model;
-        (state as any).pdfDocProxy = pdfDoc;
+        (state as unknown as { pdfDocProxy: pdfjsLib.PDFDocumentProxy | null }).pdfDocProxy = pdfDoc;
         state.isLoading = false;
         state.loadingError = null;
-      }),
+      });
 
-    closeDocument: () =>
-      set((state) => {
-        if (state.currentDocument) {
-          clearDocumentCaches(state.currentDocument.id);
+      const tabStore = useTabStore.getState();
+      const matchingTab = tabStore.tabs.find((t) => t.id === model.id);
+      if (matchingTab) {
+        tabStore.updateTabModel(model);
+        if (matchingTab.pdfDocProxy !== pdfDoc) {
+          useTabStore.setState((s) => {
+            const tab = s.tabs.find((t) => t.id === model.id);
+            if (tab) {
+              (tab as unknown as { pdfDocProxy: pdfjsLib.PDFDocumentProxy }).pdfDocProxy = pdfDoc;
+            }
+          });
         }
-        cancelActivePreload();
+      }
+
+      if (prevDocId !== model.id) {
+        useAnnotationStore.getState().syncActiveDocument(model.id);
+        useRulerStore.getState().syncActiveDocument(model.id);
+      }
+    },
+
+    closeDocument: () => {
+      const closingDoc = get().currentDocument;
+      const closingProxy = get().pdfDocProxy;
+
+      cancelActivePreload();
+      set((state) => {
         state.currentDocument = null;
         state.pdfDocProxy = null;
         state.loadingError = null;
-      }),
+      });
+
+      useAnnotationStore.getState().syncActiveDocument(null);
+      useRulerStore.getState().syncActiveDocument(null);
+
+      if (closingDoc) {
+        cleanupClosedDocumentResources(
+          closingDoc.id,
+          closingDoc.pages.map((p) => p.id),
+          closingProxy
+        );
+      }
+    },
 
     setActivePageIndex: (index) =>
       set((state) => {
@@ -121,39 +199,54 @@ export const useDocumentStore = create<DocumentState>()(
         state.currentDocument.selectedPageIds = [];
       }),
 
-    rotatePage: (pageId, angle) =>
+    rotatePage: (pageId, angle) => {
+      const doc = get().currentDocument;
+      if (!doc) return;
+      if (!historyManager.isApplying()) {
+        historyManager.execute(new RotatePageCommand([pageId], angle, doc.id), doc.id);
+        return;
+      }
       set((state) => {
         if (!state.currentDocument) return;
         const page = state.currentDocument.pages.find((p) => p.id === pageId);
         if (page) {
-          page.rotation = (page.rotation + angle + 360) % 360;
+          page.rotation = ((page.rotation + angle) % 360 + 360) % 360;
           state.currentDocument.isModified = true;
         }
-      }),
+      });
+    },
 
-    rotateSelectedPages: (angle) =>
+    rotateSelectedPages: (angle) => {
+      const doc = get().currentDocument;
+      if (!doc || doc.selectedPageIds.length === 0) return;
+      if (!historyManager.isApplying()) {
+        historyManager.execute(new RotatePageCommand([...doc.selectedPageIds], angle, doc.id), doc.id);
+        return;
+      }
       set((state) => {
         if (!state.currentDocument) return;
         const selected = new Set(state.currentDocument.selectedPageIds);
         state.currentDocument.pages.forEach((p) => {
           if (selected.has(p.id)) {
-            p.rotation = (p.rotation + angle + 360) % 360;
+            p.rotation = ((p.rotation + angle) % 360 + 360) % 360;
           }
         });
         state.currentDocument.isModified = true;
-      }),
+      });
+    },
 
-    reorderPages: (fromIndex, toIndex) =>
+    reorderPages: (fromIndex, toIndex) => {
+      const doc = get().currentDocument;
+      if (!doc) return;
+      const len = doc.pages.length;
+      if (fromIndex < 0 || fromIndex >= len || toIndex < 0 || toIndex >= len || fromIndex === toIndex) {
+        return;
+      }
+
       set((state) => {
         if (!state.currentDocument) return;
         const pages = state.currentDocument.pages;
-        if (
-          fromIndex < 0 ||
-          fromIndex >= pages.length ||
-          toIndex < 0 ||
-          toIndex >= pages.length
-        )
-          return;
+        const activeId = state.currentDocument.activePageId;
 
         const [moved] = pages.splice(fromIndex, 1);
         pages.splice(toIndex, 0, moved);
@@ -162,24 +255,42 @@ export const useDocumentStore = create<DocumentState>()(
           p.displayPageNumber = idx + 1;
         });
 
+        const newActiveIdx = pages.findIndex((p) => p.id === activeId);
+        if (newActiveIdx !== -1) {
+          state.currentDocument.activePageIndex = newActiveIdx;
+        }
         state.currentDocument.isModified = true;
-      }),
+      });
 
-    moveMultiplePages: (pageIds, targetIndex, position) =>
+      if (!historyManager.isApplying()) {
+        historyManager.push(new MovePageCommand(fromIndex, toIndex, doc.id), doc.id);
+      }
+    },
+
+    moveMultiplePages: (pageIds, targetIndex, position) => {
+      const doc = get().currentDocument;
+      if (!doc || pageIds.length === 0) return;
+      if (!historyManager.isApplying()) {
+        historyManager.execute(
+          new MoveMultiplePagesCommand(pageIds, targetIndex, position, doc.id),
+          doc.id
+        );
+        return;
+      }
+
       set((state) => {
         if (!state.currentDocument || pageIds.length === 0) return;
         const pages = state.currentDocument.pages;
         const targetPage = pages[targetIndex];
         if (!targetPage) return;
 
-        // Preserve relative order of moved pages
+        const activeId = state.currentDocument.activePageId;
         const movingPages = pages.filter((p) => pageIds.includes(p.id));
         const remainingPages = pages.filter((p) => !pageIds.includes(p.id));
 
-        // Find new index of targetPage in remainingPages
         let insertIndex = remainingPages.findIndex((p) => p.id === targetPage.id);
         if (insertIndex === -1) {
-          insertIndex = targetIndex;
+          insertIndex = Math.max(0, Math.min(targetIndex, remainingPages.length));
         } else if (position === 'after') {
           insertIndex += 1;
         }
@@ -190,25 +301,43 @@ export const useDocumentStore = create<DocumentState>()(
           p.displayPageNumber = idx + 1;
         });
 
+        const nextActiveIdx = remainingPages.findIndex((p) => p.id === activeId);
         state.currentDocument.pages = remainingPages;
+        if (nextActiveIdx !== -1) {
+          state.currentDocument.activePageIndex = nextActiveIdx;
+        }
         state.currentDocument.selectedPageIds = pageIds;
         state.currentDocument.isModified = true;
-      }),
+      });
+    },
 
-    deletePage: (pageId) =>
+    deletePage: (pageId) => {
+      const doc = get().currentDocument;
+      if (!doc) return;
+      const idx = doc.pages.findIndex((p) => p.id === pageId);
+      if (idx === -1) return;
+
+      if (!historyManager.isApplying()) {
+        historyManager.execute(
+          new DeletePageCommand([{ page: doc.pages[idx], index: idx }], doc.id),
+          doc.id
+        );
+        return;
+      }
+
       set((state) => {
         if (!state.currentDocument) return;
-        const idx = state.currentDocument.pages.findIndex((p) => p.id === pageId);
-        if (idx !== -1) {
-          state.currentDocument.pages.splice(idx, 1);
+        const deleteIdx = state.currentDocument.pages.findIndex((p) => p.id === pageId);
+        if (deleteIdx !== -1) {
+          state.currentDocument.pages.splice(deleteIdx, 1);
           state.currentDocument.totalPages = state.currentDocument.pages.length;
-          
+
           state.currentDocument.pages.forEach((p, i) => {
             p.displayPageNumber = i + 1;
           });
 
           if (state.currentDocument.pages.length > 0) {
-            const nextIdx = Math.min(idx, state.currentDocument.pages.length - 1);
+            const nextIdx = Math.min(deleteIdx, state.currentDocument.pages.length - 1);
             state.currentDocument.activePageIndex = nextIdx;
             state.currentDocument.activePageId = state.currentDocument.pages[nextIdx].id;
             state.currentDocument.selectedPageIds = [state.currentDocument.pages[nextIdx].id];
@@ -220,7 +349,8 @@ export const useDocumentStore = create<DocumentState>()(
 
           state.currentDocument.isModified = true;
         }
-      }),
+      });
+    },
 
     updatePageGeometry: (pageId, geometry) =>
       set((state) => {
@@ -254,7 +384,16 @@ export const useDocumentStore = create<DocumentState>()(
 
     addRecentDocument: (item) =>
       set((state) => {
-        const filtered = state.recentDocuments.filter((d) => d.name !== item.name && d.id !== item.id);
+        const filtered = state.recentDocuments.filter((d) => {
+          if (d.id === item.id) return false;
+          if (item.filePath && d.filePath) {
+            return d.filePath !== item.filePath;
+          }
+          if (!item.filePath && !d.filePath) {
+            return d.name !== item.name;
+          }
+          return true;
+        });
         const updated = [item, ...filtered].slice(0, 15);
         state.recentDocuments = updated;
         if (typeof window !== 'undefined' && window.localStorage) {
@@ -292,3 +431,16 @@ export const useDocumentStore = create<DocumentState>()(
       }),
   }))
 );
+
+// Automatically mirror ANY mutation to currentDocument (including external setState calls)
+// back into the matching tab in useTabStore so tabs never drift out of sync.
+useDocumentStore.subscribe((state, prevState) => {
+  if (!state.currentDocument || state.currentDocument === prevState.currentDocument) {
+    return;
+  }
+  const tabStore = useTabStore.getState();
+  const matchingTab = tabStore.tabs.find((t) => t.id === state.currentDocument!.id);
+  if (matchingTab && matchingTab.model !== state.currentDocument) {
+    tabStore.updateTabModel(state.currentDocument);
+  }
+});

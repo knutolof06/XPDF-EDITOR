@@ -1,4 +1,6 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { PdfDocumentModel } from '@/types/document';
+import { useDocumentStore } from '@/store/document-store';
 
 export interface ExtractedPageText {
   pageNumber: number;
@@ -16,61 +18,163 @@ export interface ExtractedDocumentText {
   totalLines: number;
 }
 
+interface RawTextItem {
+  str: string;
+  transform: number[];
+  width?: number;
+  hasEOL?: boolean;
+}
+
+const Y_LINE_TOLERANCE = 5;
+
+function detectTwoColumnGutter(items: RawTextItem[]): number | null {
+  if (items.length < 8) return null;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const it of items) {
+    const x1 = it.transform[4];
+    const x2 = x1 + (it.width || 0);
+    if (x1 < minX) minX = x1;
+    if (x2 > maxX) maxX = x2;
+  }
+
+  const contentSpan = maxX - minX;
+  if (contentSpan < 180) return null;
+
+  const midX = minX + contentSpan / 2;
+  const gutterHalf = Math.max(8, contentSpan * 0.03);
+  let leftCount = 0;
+  let rightCount = 0;
+  let crossingCount = 0;
+
+  for (const it of items) {
+    const x1 = it.transform[4];
+    const x2 = x1 + (it.width || 0);
+    if (x2 <= midX - gutterHalf) {
+      leftCount++;
+    } else if (x1 >= midX + gutterHalf) {
+      rightCount++;
+    } else if (x2 - x1 < contentSpan * 0.65) {
+      crossingCount++;
+    }
+  }
+
+  if (leftCount >= 3 && rightCount >= 3 && crossingCount === 0) {
+    return midX;
+  }
+  return null;
+}
+
+function sortItemsReadingOrder(items: RawTextItem[]): RawTextItem[] {
+  const gutterX = detectTwoColumnGutter(items);
+
+  const compareWithinColumn = (a: RawTextItem, b: RawTextItem): number => {
+    const yDiff = b.transform[5] - a.transform[5];
+    if (Math.abs(yDiff) > Y_LINE_TOLERANCE) {
+      return yDiff;
+    }
+    return a.transform[4] - b.transform[4];
+  };
+
+  if (gutterX === null) {
+    return [...items].sort(compareWithinColumn);
+  }
+
+  const leftCol: RawTextItem[] = [];
+  const rightCol: RawTextItem[] = [];
+  const fullSpanItems: RawTextItem[] = [];
+
+  for (const it of items) {
+    const x1 = it.transform[4];
+    const x2 = x1 + (it.width || 0);
+    if (x2 <= gutterX) leftCol.push(it);
+    else if (x1 >= gutterX) rightCol.push(it);
+    else fullSpanItems.push(it);
+  }
+
+  fullSpanItems.sort(compareWithinColumn);
+  leftCol.sort(compareWithinColumn);
+  rightCol.sort(compareWithinColumn);
+
+  const maxLeftY = leftCol[0]?.transform[5] ?? -Infinity;
+  const maxRightY = rightCol[0]?.transform[5] ?? -Infinity;
+  const bodyTopY = Math.max(maxLeftY, maxRightY);
+  const topHeaders = fullSpanItems.filter((it) => it.transform[5] > bodyTopY + Y_LINE_TOLERANCE);
+  const bottomFooters = fullSpanItems.filter(
+    (it) => it.transform[5] <= bodyTopY + Y_LINE_TOLERANCE
+  );
+
+  return [...topHeaders, ...leftCol, ...rightCol, ...bottomFooters];
+}
+
 export class PdfTextExtractor {
   /**
-   * Extracts clean, structured text from all or specified pages with natural layout sorting.
+   * Extracts clean, structured text with consistent column-aware sorting
+   * and honors deleted/reordered pages when a PdfDocumentModel is active or supplied.
    */
   public static async extractText(
     pdfDocProxy: PDFDocumentProxy,
-    onProgress?: (current: number, total: number) => void
+    onProgress?: (current: number, total: number) => void,
+    docModel?: PdfDocumentModel
   ): Promise<ExtractedDocumentText> {
-    const totalPages = pdfDocProxy.numPages;
+    const docState = useDocumentStore.getState();
+    const activeModel =
+      docModel || (docState.pdfDocProxy === pdfDocProxy ? docState.currentDocument : null);
+
+    const pageEntries: Array<{ logicalPageNumber: number; sourcePageIndex: number }> =
+      activeModel
+        ? activeModel.pages.map((p, idx) => ({
+            logicalPageNumber: idx + 1,
+            sourcePageIndex: p.sourcePageIndex,
+          }))
+        : Array.from({ length: pdfDocProxy.numPages }, (_, idx) => ({
+            logicalPageNumber: idx + 1,
+            sourcePageIndex: idx,
+          }));
+
+    const totalPages = pageEntries.length;
     const pages: ExtractedPageText[] = [];
     let fullTextBuilder = '';
     let totalWords = 0;
     let totalChars = 0;
     let totalLines = 0;
 
-    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      if (onProgress) onProgress(pageNum, totalPages);
+    for (let i = 0; i < totalPages; i++) {
+      const entry = pageEntries[i];
+      if (onProgress) onProgress(i + 1, totalPages);
 
-      const pdfPage = await pdfDocProxy.getPage(pageNum);
+      const pdfPage = await pdfDocProxy.getPage(entry.sourcePageIndex + 1);
       const textContent = await pdfPage.getTextContent();
 
-      // Sort items: Reading order top-to-bottom (Y desc), then left-to-right (X asc)
-      const items = (textContent.items as any[]).filter(
-        (item) => typeof item.str === 'string' && item.str.trim().length > 0
+      const rawItems = (textContent.items as RawTextItem[]).filter(
+        (item) => typeof item.str === 'string' && item.str.trim().length > 0 && Array.isArray(item.transform)
       );
 
-      items.sort((a, b) => {
-        const yDiff = b.transform[5] - a.transform[5];
-        if (Math.abs(yDiff) > 4) {
-          return yDiff; // Higher Y is higher on page in PDF coordinates
-        }
-        return a.transform[4] - b.transform[4]; // Left to right
-      });
+      const sortedItems = sortItemsReadingOrder(rawItems);
 
       let pageText = '';
       let lastY: number | null = null;
-      let lastX: number | null = null;
+      let lastEndX: number | null = null;
+      let prevHadEol = false;
 
-      for (const item of items) {
+      for (const item of sortedItems) {
         const currentX = item.transform[4];
         const currentY = item.transform[5];
 
         if (lastY !== null) {
           const yDiff = Math.abs(lastY - currentY);
-          if (yDiff > 6) {
-            // New line
+          if (prevHadEol || yDiff > Y_LINE_TOLERANCE) {
             pageText += '\n';
-          } else if (lastX !== null && currentX - lastX > 3 && !pageText.endsWith(' ')) {
+          } else if (lastEndX !== null && currentX - lastEndX > 3 && !pageText.endsWith(' ')) {
             pageText += ' ';
           }
         }
 
         pageText += item.str;
         lastY = currentY;
-        lastX = currentX + (item.width || 0);
+        lastEndX = currentX + (item.width || 0);
+        prevHadEol = Boolean(item.hasEOL);
       }
 
       const trimmedPageText = pageText.trim();
@@ -83,14 +187,14 @@ export class PdfTextExtractor {
       totalLines += lines;
 
       pages.push({
-        pageNumber: pageNum,
+        pageNumber: entry.logicalPageNumber,
         text: trimmedPageText,
         wordCount: words,
         charCount: chars,
         lineCount: lines,
       });
 
-      fullTextBuilder += `--- Sayfa ${pageNum} ---\n${trimmedPageText}\n\n`;
+      fullTextBuilder += `--- Sayfa ${entry.logicalPageNumber} ---\n${trimmedPageText}\n\n`;
     }
 
     return {
@@ -113,7 +217,7 @@ export class PdfTextExtractor {
     link.href = url;
     link.download = `${baseName}_metin.txt`;
     link.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   /**
@@ -128,7 +232,7 @@ export class PdfTextExtractor {
     link.href = url;
     link.download = `${baseName}_metin_verisi.json`;
     link.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   /**
