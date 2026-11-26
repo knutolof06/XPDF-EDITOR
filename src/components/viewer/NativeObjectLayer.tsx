@@ -4,9 +4,9 @@ import { PdfPageModel } from '@/types/document';
 import { PdfNativeObject } from '@/types/annotations';
 import { useNativeObjectStore } from '@/store/native-object-store';
 import { useAnnotationStore } from '@/store/annotation-store';
-import { extractNativeTextObjects } from '@/core/pdf/pdf-native-extractor';
+import { extractAllNativeObjects } from '@/core/pdf/pdf-native-extractor';
 import { cn } from '@/utils/cn';
-import { RotateCcw, Move } from 'lucide-react';
+import { RotateCcw, Move, Trash2 } from 'lucide-react';
 
 interface NativeObjectLayerProps {
   page: PdfPageModel;
@@ -15,14 +15,8 @@ interface NativeObjectLayerProps {
 }
 
 /**
- * NativeObjectLayer renders selectable/draggable overlays over existing PDF content.
- * Only active when activeTool === 'select'.
- *
- * Architecture:
- *  1. On mount (or pdfPage change): call extractNativeTextObjects → store in NativeObjectStore
- *  2. Render each PdfNativeObject as a transparent hover-reveal overlay
- *  3. On drag: call moveObject(pageId, id, newX, newY)
- *  4. Moved objects show a "Sıfırla" (reset) badge
+ * NativeObjectLayer renders selectable/draggable/editable overlays over existing PDF content.
+ * Active when inline native-edit mode is enabled and activeTool === 'select'.
  */
 export const NativeObjectLayer: React.FC<NativeObjectLayerProps> = ({
   page,
@@ -30,11 +24,14 @@ export const NativeObjectLayer: React.FC<NativeObjectLayerProps> = ({
   pdfPage,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const { activeTool } = useAnnotationStore();
-  const { objectsByPage, setObjects, moveObject, resetObject } = useNativeObjectStore();
+  const extractedKeyRef = useRef<string | null>(null);
+  const activeTool = useAnnotationStore((s) => s.activeTool);
+  const { objectsByPage, setObjects, moveObject, resetObject, updateObjectText, deleteObject } =
+    useNativeObjectStore();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftText, setDraftText] = useState<string>('');
 
-  // Drag state (ref-based to avoid re-renders during drag)
   const dragRef = useRef<{
     id: string;
     startMouseX: number;
@@ -45,23 +42,78 @@ export const NativeObjectLayer: React.FC<NativeObjectLayerProps> = ({
 
   const objects: PdfNativeObject[] = objectsByPage[page.id] ?? [];
 
-  // Extract native objects when pdfPage becomes available (once per page instance)
   useEffect(() => {
     if (!pdfPage) return;
-    // Only extract if not already done for this page
-    if (objectsByPage[page.id] && objectsByPage[page.id].length > 0) return;
+    const extractKey = `${page.id}_rot${page.rotation}`;
+    if (extractedKeyRef.current === extractKey) return;
+    extractedKeyRef.current = extractKey;
 
-    extractNativeTextObjects(pdfPage, page.id).then((objs) => {
-      setObjects(page.id, objs);
+    let cancelled = false;
+    extractAllNativeObjects(pdfPage, page.id).then((objs) => {
+      if (cancelled) return;
+      // Normalize coordinates when page is rotated relative to unrotated PDF.js extraction
+      const baseZero = pdfPage.getViewport({ scale: 1, rotation: 0 });
+      const w0 = baseZero.width || 595.28;
+      const h0 = baseZero.height || 841.89;
+      const rot = ((page.rotation % 360) + 360) % 360;
+
+      const transformed =
+        rot === 0
+          ? objs
+          : objs.map((obj) => {
+              let nx = obj.x;
+              let ny = obj.y;
+              let nw = obj.width;
+              let nh = obj.height;
+              if (rot === 90) {
+                nx = h0 - obj.y - obj.height;
+                ny = obj.x;
+                nw = obj.height;
+                nh = obj.width;
+              } else if (rot === 180) {
+                nx = w0 - obj.x - obj.width;
+                ny = h0 - obj.y - obj.height;
+              } else if (rot === 270) {
+                nx = obj.y;
+                ny = w0 - obj.x - obj.width;
+                nw = obj.height;
+                nh = obj.width;
+              }
+              return {
+                ...obj,
+                originalText: obj.originalText ?? obj.text,
+                x: nx,
+                y: ny,
+                width: nw,
+                height: nh,
+                originalX: nx,
+                originalY: ny,
+                originalWidth: nw,
+                originalHeight: nh,
+              };
+            });
+
+      setObjects(page.id, transformed);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfPage, page.id]);
 
-  // Only render in select tool mode
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfPage, page.id, page.rotation, setObjects]);
+
   if (activeTool !== 'select') return null;
-  if (objects.length === 0) return null;
+
+  const visibleObjects = objects.filter((o) => !o.deleted);
+  if (visibleObjects.length === 0) return null;
+
+  const pageWidthPt = page.width || 595.28;
+  const pageHeightPt = page.height || 841.89;
 
   const handleMouseDown = (e: React.MouseEvent, obj: PdfNativeObject) => {
+    if (editingId === obj.id) {
+      e.stopPropagation();
+      return;
+    }
     e.stopPropagation();
     e.preventDefault();
     setSelectedId(obj.id);
@@ -78,8 +130,8 @@ export const NativeObjectLayer: React.FC<NativeObjectLayerProps> = ({
       if (!dragRef.current) return;
       const dx = (me.clientX - dragRef.current.startMouseX) / scale;
       const dy = (me.clientY - dragRef.current.startMouseY) / scale;
-      const newX = Math.max(0, dragRef.current.startObjX + dx);
-      const newY = Math.max(0, dragRef.current.startObjY + dy);
+      const newX = Math.max(0, Math.min(pageWidthPt, dragRef.current.startObjX + dx));
+      const newY = Math.max(0, Math.min(pageHeightPt, dragRef.current.startObjY + dy));
       moveObject(page.id, dragRef.current.id, newX, newY);
     };
 
@@ -96,10 +148,11 @@ export const NativeObjectLayer: React.FC<NativeObjectLayerProps> = ({
   return (
     <div
       ref={containerRef}
-      className="absolute inset-0 z-20 pointer-events-none overflow-visible"
+      className="no-print absolute inset-0 z-20 pointer-events-none overflow-visible"
     >
-      {objects.map((obj) => {
+      {visibleObjects.map((obj) => {
         const isSelected = selectedId === obj.id;
+        const isEditing = editingId === obj.id;
         const x = obj.x * scale;
         const y = obj.y * scale;
         const w = obj.width * scale;
@@ -116,39 +169,104 @@ export const NativeObjectLayer: React.FC<NativeObjectLayerProps> = ({
             }}
             className={cn(
               'absolute pointer-events-auto cursor-move group select-none transition-all duration-75',
-              'hover:bg-sky-400/10 hover:ring-1 hover:ring-sky-400/60 rounded-sm',
-              isSelected && 'bg-sky-400/15 ring-2 ring-sky-500 rounded-sm shadow-md'
+              'hover:bg-sky-400/15 hover:ring-1 hover:ring-sky-400/70 rounded-sm',
+              isSelected && 'bg-sky-400/20 ring-2 ring-sky-500 rounded-sm shadow-md'
             )}
             onMouseDown={(e) => handleMouseDown(e, obj)}
-            onClick={(e) => { e.stopPropagation(); setSelectedId(obj.id); }}
-            title={obj.text ? `"${obj.text.slice(0, 40)}" — taşımak için sürükle` : 'Taşımak için sürükle'}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedId(obj.id);
+            }}
+            onDoubleClick={(e) => {
+              if (obj.type === 'native-text') {
+                e.stopPropagation();
+                setSelectedId(obj.id);
+                setEditingId(obj.id);
+                setDraftText(obj.text || '');
+              }
+            }}
+            title={
+              obj.type === 'native-text' && obj.text
+                ? `"${obj.text.slice(0, 40)}" — taşımak için sürükleyin, düzenlemek için çift tıklayın`
+                : 'Görsel nesne — taşımak için sürükleyin'
+            }
           >
+            {/* Inline Edit Input */}
+            {isEditing && (
+              <input
+                type="text"
+                aria-label="Yerel metin içeriğini düzenle"
+                value={draftText}
+                autoFocus
+                onMouseDown={(e) => e.stopPropagation()}
+                onChange={(e) => setDraftText(e.target.value)}
+                onBlur={() => {
+                  setEditingId(null);
+                  if (draftText !== obj.text) {
+                    updateObjectText(page.id, obj.id, draftText);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    setEditingId(null);
+                    if (draftText !== obj.text) {
+                      updateObjectText(page.id, obj.id, draftText);
+                    }
+                  } else if (e.key === 'Escape') {
+                    setEditingId(null);
+                    setDraftText(obj.text || '');
+                  }
+                }}
+                className="w-full h-full min-w-[80px] bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-sky-500 rounded px-1 text-xs focus:outline-none shadow-lg"
+              />
+            )}
+
             {/* Move icon hint on hover */}
-            {!obj.moved && (
+            {!obj.moved && !obj.isEdited && !isEditing && (
               <div className="absolute -top-5 left-0 hidden group-hover:flex items-center gap-1 bg-slate-900/90 text-white text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap shadow-lg z-30 pointer-events-none">
                 <Move className="w-2.5 h-2.5 text-sky-400" />
-                <span>Taşı</span>
+                <span>{obj.type === 'native-image' ? 'Görsel Taşı' : 'Taşı / Çift Tıkla'}</span>
               </div>
             )}
 
-            {/* Moved badge + Reset button */}
-            {obj.moved && (
+            {/* Moved/Edited badge + Reset + Delete actions */}
+            {(obj.moved || obj.isEdited || isSelected) && !isEditing && (
               <div
-                className="absolute -top-6 left-0 flex items-center gap-1 bg-amber-500/90 text-white text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap shadow-lg z-30 pointer-events-auto"
+                className="absolute -top-6 left-0 flex items-center gap-1 bg-amber-500/95 text-white text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap shadow-lg z-30 pointer-events-auto"
                 onMouseDown={(e) => e.stopPropagation()}
               >
-                <span className="font-semibold">Taşındı</span>
+                <span className="font-semibold">
+                  {obj.isEdited ? 'Düzenlendi' : obj.moved ? 'Taşındı' : 'Seçili'}
+                </span>
+                {(obj.moved || obj.isEdited) && (
+                  <button
+                    type="button"
+                    aria-label="Orijinal konuma sıfırla"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      resetObject(page.id, obj.id);
+                      if (selectedId === obj.id) setSelectedId(null);
+                    }}
+                    className="flex items-center gap-0.5 hover:bg-amber-700/60 rounded px-1 transition-colors"
+                    title="Orijinal konuma geri al"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    Sıfırla
+                  </button>
+                )}
                 <button
+                  type="button"
+                  aria-label="Nesneyi sil"
                   onClick={(e) => {
                     e.stopPropagation();
-                    resetObject(page.id, obj.id);
-                    if (selectedId === obj.id) setSelectedId(null);
+                    deleteObject(page.id, obj.id);
+                    setSelectedId(null);
                   }}
-                  className="flex items-center gap-0.5 hover:bg-amber-700/60 rounded px-1 transition-colors"
-                  title="Orijinal konuma geri al"
+                  className="flex items-center gap-0.5 hover:bg-rose-600/80 rounded px-1 transition-colors"
+                  title="Nesneyi Sil (Gizle)"
                 >
-                  <RotateCcw className="w-2.5 h-2.5" />
-                  Sıfırla
+                  <Trash2 className="w-2.5 h-2.5" />
                 </button>
               </div>
             )}

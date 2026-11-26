@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore, ReadingTheme } from '@/store/viewer-store';
 import { useUIStore } from '@/store/ui-store';
+import { syncActiveTool } from '@/components/common/pdf-actions';
+import { getReadingThemeLabel } from '@/components/common/theme-utils';
 import {
   ChevronLeft,
   ChevronRight,
@@ -26,7 +28,6 @@ export const FullscreenHUD: React.FC = () => {
     fitMode,
     setFitMode,
     activeTool,
-    setActiveTool,
     readingTheme,
     setReadingTheme,
   } = useViewerStore();
@@ -34,6 +35,33 @@ export const FullscreenHUD: React.FC = () => {
 
   const [isVisible, setIsVisible] = useState(true);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasNativeFullscreenRef = useRef(false);
+
+  // Sync browser native fullscreen exit (e.g. Esc or F11) back to presentation mode state
+  useEffect(() => {
+    if (!isFullscreenPresentation) {
+      wasNativeFullscreenRef.current = false;
+      return;
+    }
+
+    if (document.fullscreenElement) {
+      wasNativeFullscreenRef.current = true;
+    }
+
+    const handleFullscreenChange = () => {
+      if (document.fullscreenElement) {
+        wasNativeFullscreenRef.current = true;
+      } else if (wasNativeFullscreenRef.current) {
+        wasNativeFullscreenRef.current = false;
+        setFullscreenPresentation(false);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, [isFullscreenPresentation, setFullscreenPresentation]);
 
   useEffect(() => {
     if (!isFullscreenPresentation) return;
@@ -74,14 +102,16 @@ export const FullscreenHUD: React.FC = () => {
   return (
     <div
       className={cn(
-        'fixed bottom-6 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 transform',
+        'fullscreen-hud no-print fixed bottom-6 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 transform',
         isVisible ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 translate-y-4 pointer-events-none'
       )}
     >
-      <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/85 dark:bg-slate-900/90 text-white backdrop-blur-md border border-white/15 shadow-2xl select-none">
+      <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/90 text-white backdrop-blur-md border border-white/15 shadow-2xl select-none">
         {/* Page Nav */}
         <div className="flex items-center gap-1 border-r border-white/15 pr-2">
           <button
+            type="button"
+            aria-label="Önceki sayfa"
             onClick={() => setActivePageIndex(Math.max(0, activeIndex - 1))}
             disabled={activeIndex <= 0}
             className="p-1 rounded-full hover:bg-white/10 disabled:opacity-30 transition-colors"
@@ -93,10 +123,12 @@ export const FullscreenHUD: React.FC = () => {
             {activeIndex + 1} / {totalPages}
           </span>
           <button
+            type="button"
+            aria-label="Sonraki sayfa"
             onClick={() => setActivePageIndex(Math.min(totalPages - 1, activeIndex + 1))}
             disabled={activeIndex >= totalPages - 1}
             className="p-1 rounded-full hover:bg-white/10 disabled:opacity-30 transition-colors"
-            title="Sonraki Sayfa (Sağ Ok / Space / PageDown)"
+            title="Sonraki Sayfa (Sağ Ok / Boşluk / PageDown)"
           >
             <ChevronRight className="w-4 h-4" />
           </button>
@@ -105,6 +137,9 @@ export const FullscreenHUD: React.FC = () => {
         {/* Fit Controls */}
         <div className="flex items-center gap-1 border-r border-white/15 pr-2">
           <button
+            type="button"
+            aria-label="Genişliğe Sığdır"
+            aria-pressed={fitMode === 'width'}
             onClick={() => setFitMode(fitMode === 'width' ? 'none' : 'width')}
             className={cn(
               'p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1',
@@ -116,6 +151,9 @@ export const FullscreenHUD: React.FC = () => {
             <span className="text-[11px] hidden sm:inline">Genişlik</span>
           </button>
           <button
+            type="button"
+            aria-label="Sayfaya Sığdır"
+            aria-pressed={fitMode === 'page'}
             onClick={() => setFitMode(fitMode === 'page' ? 'none' : 'page')}
             className={cn(
               'p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1',
@@ -131,6 +169,8 @@ export const FullscreenHUD: React.FC = () => {
         {/* Zoom Controls */}
         <div className="flex items-center gap-1 border-r border-white/15 pr-2">
           <button
+            type="button"
+            aria-label="Uzaklaştır"
             onClick={zoomOut}
             className="p-1 rounded-full hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
             title="Uzaklaştır (Ctrl + -)"
@@ -141,6 +181,8 @@ export const FullscreenHUD: React.FC = () => {
             {Math.round(zoom * 100)}%
           </span>
           <button
+            type="button"
+            aria-label="Yakınlaştır"
             onClick={zoomIn}
             className="p-1 rounded-full hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
             title="Yakınlaştır (Ctrl + +)"
@@ -151,7 +193,10 @@ export const FullscreenHUD: React.FC = () => {
 
         {/* Laser Pointer Toggle */}
         <button
-          onClick={() => setActiveTool(activeTool === 'laser' ? 'select' : 'laser')}
+          type="button"
+          aria-label="Sunum Lazer İşaretçisi"
+          aria-pressed={activeTool === 'laser'}
+          onClick={() => syncActiveTool(activeTool === 'laser' ? 'select' : 'laser')}
           className={cn(
             'p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1 border-r border-white/15 pr-2',
             activeTool === 'laser' ? 'bg-red-500 text-white font-semibold shadow-lg shadow-red-500/30' : 'hover:bg-white/10 text-slate-300'
@@ -164,17 +209,21 @@ export const FullscreenHUD: React.FC = () => {
 
         {/* Reading Theme Toggle */}
         <button
+          type="button"
+          aria-label={`Okuma Modu: ${getReadingThemeLabel(readingTheme)}`}
           onClick={() => {
             const nextTheme: ReadingTheme =
               readingTheme === 'default'
                 ? 'dark'
                 : readingTheme === 'dark'
                 ? 'sepia'
+                : readingTheme === 'sepia'
+                ? 'high-contrast'
                 : 'default';
             setReadingTheme(nextTheme);
           }}
           className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white transition-colors border-r border-white/15 pr-2"
-          title={`Okuma Modu: ${readingTheme}`}
+          title={`Okuma Modu: ${getReadingThemeLabel(readingTheme)}`}
         >
           {readingTheme === 'dark' ? (
             <Moon className="w-3.5 h-3.5 text-sky-400" />
@@ -187,6 +236,8 @@ export const FullscreenHUD: React.FC = () => {
 
         {/* Exit Fullscreen */}
         <button
+          type="button"
+          aria-label="Tam ekrandan çık"
           onClick={handleExit}
           className="p-1.5 rounded-full hover:bg-red-500/30 text-slate-300 hover:text-red-300 transition-colors ml-1"
           title="Tam Ekrandan Çık (Esc / F11)"

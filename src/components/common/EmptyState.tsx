@@ -5,6 +5,8 @@ import { useUIStore } from '@/store/ui-store';
 import { useViewerStore } from '@/store/viewer-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import { openRecentDocument } from '@/utils/recent-document-opener';
+import { openPdfFileDialog, openPdfFiles } from './pdf-actions';
+import { useResolvedDarkTheme } from './theme-utils';
 import {
   Upload,
   FilePlus2,
@@ -21,13 +23,11 @@ import { cn } from '@/utils/cn';
 export const EmptyState: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const appDesignTheme = useViewerStore((s) => s.appDesignTheme);
+  const isDark = useResolvedDarkTheme();
 
   const {
     setDocument,
-    setLoading,
-    setError,
     recentDocuments,
-    addRecentDocument,
     removeRecentDocument,
     clearRecentDocuments,
   } = useDocumentStore();
@@ -35,46 +35,9 @@ export const EmptyState: React.FC = () => {
   const { addTab } = useTabStore();
   const { setMergeModalOpen, addToast } = useUIStore();
 
-  const handleOpenFile = async (file: File) => {
-    try {
-      setLoading(true);
-      addToast(`"${file.name}" yükleniyor...`, 'info');
-      const arrayBuffer = await file.arrayBuffer();
-      const { model, pdfDoc } = await PdfLoader.loadDocument(
-        file.name,
-        arrayBuffer,
-        (file as any).path || undefined
-      );
-      setDocument(model, pdfDoc);
-      addTab(model, pdfDoc);
-      addRecentDocument({
-        id: model.id,
-        name: model.name,
-        fileSize: model.fileSize,
-        pageCount: model.totalPages,
-        lastOpened: Date.now(),
-        filePath: (file as any).path || undefined,
-      });
-      addToast(`"${file.name}" başarıyla açıldı.`, 'success');
-    } catch (err: any) {
-      console.error(err);
-      if (err?.isPasswordProtected) {
-        useUIStore.getState().setPasswordModalOpen(true, {
-          name: err.fileName || file.name,
-          buffer: err.buffer,
-          filePath: err.filePath,
-        });
-        addToast('Bu PDF parola ile korunmaktadır. Lütfen parolayı girin.', 'warning');
-      } else {
-        setError(err?.message || 'PDF yüklenemedi.');
-        addToast('PDF yüklenemedi.', 'error');
-      }
-    }
-  };
-
   const handleCreateBlankPdf = async () => {
     try {
-      addToast('Boş PDF dökümanı oluşturuluyor...', 'info');
+      addToast('Boş PDF belgesi oluşturuluyor...', 'info');
       const { PDFDocument } = await import('pdf-lib');
       const pdfDoc = await PDFDocument.create();
       pdfDoc.addPage([595.28, 841.89]); // A4
@@ -94,12 +57,16 @@ export const EmptyState: React.FC = () => {
     }
   };
 
+  const isLinearDark = appDesignTheme === 'linear' && isDark;
+  const isLinearLight = appDesignTheme === 'linear' && !isDark;
+
   return (
     <div
       className={cn(
         'flex-1 flex flex-col items-center justify-center p-6 text-center select-none transition-colors overflow-y-auto',
         appDesignTheme === 'cupertino' && 'bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900',
-        appDesignTheme === 'linear' && 'bg-[#08090a] text-slate-100',
+        isLinearDark && 'bg-[#08090a] text-slate-100',
+        isLinearLight && 'bg-slate-50 text-slate-900',
         appDesignTheme === 'ribbon' && 'bg-slate-100 dark:bg-slate-950',
         appDesignTheme === 'fluent' && 'bg-slate-100 dark:bg-slate-950'
       )}
@@ -107,9 +74,12 @@ export const EmptyState: React.FC = () => {
       <input
         type="file"
         ref={fileInputRef}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleOpenFile(file);
+        multiple
+        onChange={async (e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            await openPdfFiles(e.target.files);
+          }
+          e.target.value = '';
         }}
         accept="application/pdf"
         className="hidden"
@@ -119,7 +89,8 @@ export const EmptyState: React.FC = () => {
         className={cn(
           'max-w-xl w-full flex flex-col items-center p-4 transition-all',
           appDesignTheme === 'cupertino' && 'cupertino-glass rounded-3xl p-8 shadow-2xl border',
-          appDesignTheme === 'linear' && 'bg-[#0e1015] border border-white/10 rounded-xl p-8'
+          isLinearDark && 'bg-[#0e1015] border border-white/10 rounded-xl p-8',
+          isLinearLight && 'bg-white border border-slate-200 rounded-xl p-8 shadow-sm'
         )}
       >
         {/* Modern App Icon */}
@@ -137,7 +108,8 @@ export const EmptyState: React.FC = () => {
         {/* Primary Action Buttons */}
         <div className="flex flex-wrap items-center justify-center gap-3 w-full max-w-md mb-10">
           <button
-            onClick={() => fileInputRef.current?.click()}
+            type="button"
+            onClick={() => openPdfFileDialog(fileInputRef.current)}
             className="flex-1 min-w-[140px] flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold shadow-lg shadow-sky-600/25 transition-all transform active:scale-95"
           >
             <Upload className="w-4 h-4" />
@@ -145,6 +117,7 @@ export const EmptyState: React.FC = () => {
           </button>
 
           <button
+            type="button"
             onClick={handleCreateBlankPdf}
             className="flex-1 min-w-[140px] flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 text-sm font-semibold transition-all transform active:scale-95 shadow-sm"
           >
@@ -153,11 +126,12 @@ export const EmptyState: React.FC = () => {
           </button>
 
           <button
+            type="button"
             onClick={() => setMergeModalOpen(true)}
             className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-slate-200 dark:bg-slate-900 hover:bg-slate-300 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-800 text-xs font-medium transition-colors"
           >
             <Layers className="w-3.5 h-3.5 text-sky-500 dark:text-sky-400" />
-            Birden Fazla PDF'i Birleştir
+            Birden Fazla PDF&apos;i Birleştir
           </button>
         </div>
 
@@ -167,7 +141,7 @@ export const EmptyState: React.FC = () => {
             <div className="w-7 h-7 rounded-lg bg-sky-500/10 flex items-center justify-center text-sky-600 dark:text-sky-400 mb-2">
               <Zap className="w-4 h-4" />
             </div>
-            <h4 className="text-xs font-bold text-slate-900 dark:text-slate-200">Hızlı & Yerel</h4>
+            <h4 className="text-xs font-bold text-slate-900 dark:text-slate-200">Hızlı &amp; Yerel</h4>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Tüm işlemler tarayıcınızda 60 FPS çalışır.</p>
           </div>
 
@@ -184,7 +158,7 @@ export const EmptyState: React.FC = () => {
               <Sparkles className="w-4 h-4" />
             </div>
             <h4 className="text-xs font-bold text-slate-900 dark:text-slate-200">Yapay Zeka</h4>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Döküman özeti ve soru-cevap asistanı.</p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Belge özeti ve soru-cevap asistanı.</p>
           </div>
         </div>
 
@@ -242,6 +216,7 @@ export const EmptyState: React.FC = () => {
                     </span>
                     <button
                       type="button"
+                      aria-label={`${doc.name} belgesini son açılanlar listesinden kaldır`}
                       title="Listeden Kaldır"
                       onClick={(e) => {
                         e.stopPropagation();

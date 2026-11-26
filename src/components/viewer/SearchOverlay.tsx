@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore } from '@/store/viewer-store';
-import { useUIStore } from '@/store/ui-store';
 import { PdfSearchEngine } from '@/core/pdf/pdf-search';
 import { Search, ChevronUp, ChevronDown, X, CaseSensitive } from 'lucide-react';
 import { cn } from '@/utils/cn';
@@ -9,7 +8,6 @@ import { cn } from '@/utils/cn';
 export const SearchOverlay: React.FC = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const { pdfDocProxy, setActivePageIndex } = useDocumentStore();
-  const isRightToolsSidebarOpen = useUIStore((s) => s.isRightToolsSidebarOpen);
   const {
     searchState,
     closeSearch,
@@ -63,13 +61,11 @@ export const SearchOverlay: React.FC = () => {
       isCancelled = true;
       clearTimeout(timer);
     };
-  }, [pdfDocProxy, searchState.query, searchState.matchCase]);
+  }, [pdfDocProxy, searchState.query, searchState.matchCase, setActivePageIndex, setSearchResults, setSearching]);
 
-  // Jump to page on next / prev result — always read fresh state AFTER the mutation
   const handleNext = () => {
     if (searchState.results.length === 0) return;
     nextSearchResult();
-    // Read the store's new currentIndex AFTER mutation (not from the closed-over snapshot)
     const { searchState: fresh } = useViewerStore.getState();
     const target = fresh.results[fresh.currentIndex];
     if (target) {
@@ -94,27 +90,42 @@ export const SearchOverlay: React.FC = () => {
 
   return (
     <div
-      className={cn(
-        'fixed top-16 z-50 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700/80 rounded-2xl shadow-2xl p-2 flex items-center gap-2 backdrop-blur-md animate-in fade-in slide-in-from-top-4 duration-200 text-slate-800 dark:text-slate-100 transition-[right]',
-        isRightToolsSidebarOpen ? 'right-72 sm:right-80' : 'right-8'
-      )}
+      role="search"
+      aria-label="Belge içi arama"
+      className="search-overlay no-print absolute top-3 right-5 z-40 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700/80 rounded-2xl shadow-2xl p-2 flex items-center gap-2 backdrop-blur-md animate-in fade-in slide-in-from-top-4 duration-200 text-slate-800 dark:text-slate-100"
     >
       <div className="flex items-center gap-2 px-2 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
         <Search className="w-4 h-4 text-sky-500 dark:text-sky-400 shrink-0" />
         <input
           ref={inputRef}
           type="text"
+          aria-label="Aranacak metin"
           value={searchState.query}
           onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (e.shiftKey) handlePrev();
+              else handleNext();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              window.getSelection()?.removeAllRanges();
+              closeSearch();
+            }
+          }}
           placeholder="PDF içinde ara..."
           className="bg-transparent text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 py-1.5 focus:outline-none w-48 sm:w-64"
         />
-        {/* Match case button */}
         <button
+          type="button"
+          aria-label="Büyük ve küçük harf duyarlı"
+          aria-pressed={searchState.matchCase}
           onClick={() => setMatchCase(!searchState.matchCase)}
           className={cn(
             'p-1 rounded-md text-xs transition-colors',
-            searchState.matchCase ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-bold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+            searchState.matchCase
+              ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-bold'
+              : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
           )}
           title="Büyük/Küçük Harf Duyarlı"
         >
@@ -138,24 +149,30 @@ export const SearchOverlay: React.FC = () => {
       {/* Navigation buttons */}
       <div className="flex items-center gap-1">
         <button
+          type="button"
+          aria-label="Önceki sonuç"
           onClick={handlePrev}
           onMouseDown={(e) => e.preventDefault()}
           disabled={totalResults === 0}
           className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 transition-colors"
-          title="Önceki Sonuç"
+          title="Önceki Sonuç (Shift+Enter)"
         >
           <ChevronUp className="w-4 h-4" />
         </button>
         <button
+          type="button"
+          aria-label="Sonraki sonuç"
           onClick={handleNext}
           onMouseDown={(e) => e.preventDefault()}
           disabled={totalResults === 0}
           className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 transition-colors"
-          title="Sonraki Sonuç"
+          title="Sonraki Sonuç (Enter)"
         >
           <ChevronDown className="w-4 h-4" />
         </button>
         <button
+          type="button"
+          aria-label="Aramayı kapat"
           onClick={() => {
             window.getSelection()?.removeAllRanges();
             closeSearch();

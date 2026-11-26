@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useRulerStore, ptToUnit, unitToPt } from '@/store/ruler-store';
-import { useViewerStore } from '@/store/viewer-store';
+import { useResolvedDarkTheme } from '@/components/common/theme-utils';
 import { cn } from '@/utils/cn';
 
 interface RulerGuideOverlayProps {
@@ -8,6 +8,49 @@ interface RulerGuideOverlayProps {
   widthPt: number;
   heightPt: number;
   scale: number;
+  pageContainerRef?: React.RefObject<HTMLDivElement | null>;
+}
+
+export function snapCoordinatesToGuides(
+  xPt: number,
+  yPt: number,
+  pageIndex: number,
+  widthPt: number,
+  heightPt: number,
+  thresholdPt = 6
+): { xPt: number; yPt: number } {
+  const { snapToGuides, snapToGrid, gridSizePt, horizontalGuidesByPage, verticalGuidesByPage } =
+    useRulerStore.getState();
+
+  let snappedX = xPt;
+  let snappedY = yPt;
+
+  if (snapToGuides) {
+    const vGuides = [...(verticalGuidesByPage[pageIndex] || []), widthPt / 2];
+    for (const gx of vGuides) {
+      if (Math.abs(snappedX - gx) <= thresholdPt) {
+        snappedX = gx;
+        break;
+      }
+    }
+
+    const hGuides = [...(horizontalGuidesByPage[pageIndex] || []), heightPt / 2];
+    for (const gy of hGuides) {
+      if (Math.abs(snappedY - gy) <= thresholdPt) {
+        snappedY = gy;
+        break;
+      }
+    }
+  }
+
+  if (snapToGrid && gridSizePt > 0) {
+    const gridX = Math.round(snappedX / gridSizePt) * gridSizePt;
+    const gridY = Math.round(snappedY / gridSizePt) * gridSizePt;
+    if (Math.abs(snappedX - gridX) <= thresholdPt) snappedX = gridX;
+    if (Math.abs(snappedY - gridY) <= thresholdPt) snappedY = gridY;
+  }
+
+  return { xPt: snappedX, yPt: snappedY };
 }
 
 export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
@@ -15,6 +58,7 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
   widthPt,
   heightPt,
   scale,
+  pageContainerRef,
 }) => {
   const {
     showRulers,
@@ -22,6 +66,7 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
     unit,
     gridSizePt,
     snapToGuides,
+    snapToGrid,
     horizontalGuidesByPage,
     verticalGuidesByPage,
     addHorizontalGuide,
@@ -32,8 +77,7 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
     setMousePosition,
   } = useRulerStore();
 
-  const theme = useViewerStore((s) => s.theme);
-  const isDark = theme === 'dark';
+  const isDark = useResolvedDarkTheme();
 
   const [draggingGuide, setDraggingGuide] = useState<{
     type: 'h' | 'v';
@@ -50,6 +94,31 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
   const pageWidthPx = widthPt * scale;
   const pageHeightPx = heightPt * scale;
 
+  // Attach mouse tracking directly to pageContainerRef because this overlay is pointer-events-none
+  useEffect(() => {
+    if (!showRulers) return;
+    const target = pageContainerRef?.current || containerRef.current?.parentElement;
+    if (!target) return;
+
+    const handleMove = (e: MouseEvent) => {
+      const rect = target.getBoundingClientRect();
+      const xPt = (e.clientX - rect.left) / scale;
+      const yPt = (e.clientY - rect.top) / scale;
+      setMousePosition({ xPt, yPt });
+    };
+
+    const handleLeave = () => {
+      setMousePosition(null);
+    };
+
+    target.addEventListener('mousemove', handleMove);
+    target.addEventListener('mouseleave', handleLeave);
+    return () => {
+      target.removeEventListener('mousemove', handleMove);
+      target.removeEventListener('mouseleave', handleLeave);
+    };
+  }, [showRulers, pageContainerRef, scale, setMousePosition]);
+
   // Handle dragging guides
   useEffect(() => {
     if (!draggingGuide) return;
@@ -59,22 +128,26 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
       const rect = containerRef.current.getBoundingClientRect();
 
       if (draggingGuide.type === 'h') {
-        let yPx = e.clientY - rect.top;
+        const yPx = e.clientY - rect.top;
         let yPt = yPx / scale;
 
-        // Snap to center if enabled
         if (snapToGuides && Math.abs(yPt - heightPt / 2) < 6) {
           yPt = heightPt / 2;
+        } else if (snapToGrid && gridSizePt > 0) {
+          const gridY = Math.round(yPt / gridSizePt) * gridSizePt;
+          if (Math.abs(yPt - gridY) < 6) yPt = gridY;
         }
 
         setDraggingGuide((prev) => (prev ? { ...prev, currentValPt: yPt } : null));
       } else {
-        let xPx = e.clientX - rect.left;
+        const xPx = e.clientX - rect.left;
         let xPt = xPx / scale;
 
-        // Snap to center if enabled
         if (snapToGuides && Math.abs(xPt - widthPt / 2) < 6) {
           xPt = widthPt / 2;
+        } else if (snapToGrid && gridSizePt > 0) {
+          const gridX = Math.round(xPt / gridSizePt) * gridSizePt;
+          if (Math.abs(xPt - gridX) < 6) xPt = gridX;
         }
 
         setDraggingGuide((prev) => (prev ? { ...prev, currentValPt: xPt } : null));
@@ -93,7 +166,6 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
         const yPt = yPx / scale;
 
         if (yPt < -20 || yPt > heightPt + 20) {
-          // Dragged off page -> remove
           if (draggingGuide.index !== undefined) {
             removeHorizontalGuide(pageIndex, draggingGuide.index);
           }
@@ -128,26 +200,26 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [draggingGuide, scale, widthPt, heightPt, pageIndex, snapToGuides]);
-
-  // Track mouse coordinates over page
-  const handlePageMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const xPt = (e.clientX - rect.left) / scale;
-    const yPt = (e.clientY - rect.top) / scale;
-    setMousePosition({ xPt, yPt });
-  };
-
-  const handlePageMouseLeave = () => {
-    setMousePosition(null);
-  };
+  }, [
+    draggingGuide,
+    scale,
+    widthPt,
+    heightPt,
+    pageIndex,
+    snapToGuides,
+    snapToGrid,
+    gridSizePt,
+    addHorizontalGuide,
+    addVerticalGuide,
+    removeHorizontalGuide,
+    removeVerticalGuide,
+  ]);
 
   const formatUnitValue = (pt: number) => {
     const val = ptToUnit(pt, unit);
     return `${val.toFixed(1)} ${unit}`;
   };
 
-  // Generate ruler tick marks
   const renderHorizontalRulerTicks = () => {
     const ticks: JSX.Element[] = [];
     const maxUnits = ptToUnit(widthPt, unit);
@@ -205,9 +277,7 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
   return (
     <div
       ref={containerRef}
-      onMouseMove={handlePageMouseMove}
-      onMouseLeave={handlePageMouseLeave}
-      className="absolute inset-0 pointer-events-none select-none z-[8]"
+      className="no-print absolute inset-0 pointer-events-none select-none z-[18] overflow-visible"
     >
       {/* 1. Subtle Grid Overlay */}
       {showGrid && (
@@ -235,24 +305,39 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
         </svg>
       )}
 
+      {/* Corner Origin Box when Rulers Visible */}
+      {showRulers && (
+        <div
+          className={cn(
+            'ruler-overlay-strip absolute -top-5 -left-5 w-5 h-5 border-r border-b flex items-center justify-center text-[7px] font-mono font-bold z-20',
+            isDark
+              ? 'bg-slate-800 border-slate-700 text-slate-400'
+              : 'bg-slate-100 border-slate-300 text-slate-600'
+          )}
+        >
+          {unit}
+        </div>
+      )}
+
       {/* 2. Top Horizontal Ruler */}
       {showRulers && (
         <div
           onMouseDown={(e) => {
             e.stopPropagation();
-            setDraggingGuide({ type: 'h', initialValPt: 0, currentValPt: 0 });
+            const rect = containerRef.current?.getBoundingClientRect();
+            const initialYPt = rect ? Math.max(0, (e.clientY - rect.top) / scale) : 0;
+            setDraggingGuide({ type: 'h', initialValPt: initialYPt, currentValPt: initialYPt });
           }}
           style={{ width: `${pageWidthPx}px` }}
           className={cn(
-            'absolute -top-5 left-0 h-5 border-b pointer-events-auto cursor-ns-resize shadow-2xs overflow-hidden transition-colors',
+            'ruler-overlay-strip absolute -top-5 left-0 h-5 border-b pointer-events-auto cursor-ns-resize shadow-sm overflow-hidden transition-colors',
             isDark ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-slate-100 border-slate-300 text-slate-700'
           )}
           title="Yatay Kılavuz Çizgisi Çekmek İçin Aşağı Sürükleyin"
         >
           {renderHorizontalRulerTicks()}
 
-          {/* Mouse Marker Tick */}
-          {mousePosition && (
+          {mousePosition && mousePosition.xPt >= 0 && mousePosition.xPt <= widthPt && (
             <div
               style={{ left: `${mousePosition.xPt * scale}px` }}
               className="absolute top-0 bottom-0 w-[1.5px] bg-rose-500 z-10"
@@ -266,19 +351,20 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
         <div
           onMouseDown={(e) => {
             e.stopPropagation();
-            setDraggingGuide({ type: 'v', initialValPt: 0, currentValPt: 0 });
+            const rect = containerRef.current?.getBoundingClientRect();
+            const initialXPt = rect ? Math.max(0, (e.clientX - rect.left) / scale) : 0;
+            setDraggingGuide({ type: 'v', initialValPt: initialXPt, currentValPt: initialXPt });
           }}
           style={{ height: `${pageHeightPx}px` }}
           className={cn(
-            'absolute -left-5 top-0 w-5 border-r pointer-events-auto cursor-ew-resize shadow-2xs overflow-hidden transition-colors',
+            'ruler-overlay-strip absolute -left-5 top-0 w-5 border-r pointer-events-auto cursor-ew-resize shadow-sm overflow-hidden transition-colors',
             isDark ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-slate-100 border-slate-300 text-slate-700'
           )}
           title="Dikey Kılavuz Çizgisi Çekmek İçin Sağa Sürükleyin"
         >
           {renderVerticalRulerTicks()}
 
-          {/* Mouse Marker Tick */}
-          {mousePosition && (
+          {mousePosition && mousePosition.yPt >= 0 && mousePosition.yPt <= heightPt && (
             <div
               style={{ top: `${mousePosition.yPt * scale}px` }}
               className="absolute left-0 right-0 h-[1.5px] bg-rose-500 z-10"
@@ -299,7 +385,7 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
             }}
             style={{ top: `${topPx}px` }}
             className="absolute left-0 w-full h-[1.5px] bg-sky-500 pointer-events-auto cursor-ns-resize group z-20 hover:h-[3px] transition-all"
-            title={`Yatay Kılavuz: ${formatUnitValue(yPt)} (Kaldırmak için döküman dışına sürükleyin)`}
+            title={`Yatay Kılavuz: ${formatUnitValue(yPt)} (Kaldırmak için belge dışına sürükleyin)`}
           >
             <span className="hidden group-hover:block absolute left-2 -top-5 text-[9px] font-mono font-bold bg-sky-600 text-white px-1.5 py-0.5 rounded shadow-sm">
               Y: {formatUnitValue(yPt)}
@@ -320,7 +406,7 @@ export const RulerGuideOverlay: React.FC<RulerGuideOverlayProps> = ({
             }}
             style={{ left: `${leftPx}px` }}
             className="absolute top-0 h-full w-[1.5px] bg-sky-500 pointer-events-auto cursor-ew-resize group z-20 hover:w-[3px] transition-all"
-            title={`Dikey Kılavuz: ${formatUnitValue(xPt)} (Kaldırmak için döküman dışına sürükleyin)`}
+            title={`Dikey Kılavuz: ${formatUnitValue(xPt)} (Kaldırmak için belge dışına sürükleyin)`}
           >
             <span className="hidden group-hover:block absolute top-2 left-2 text-[9px] font-mono font-bold bg-sky-600 text-white px-1.5 py-0.5 rounded shadow-sm">
               X: {formatUnitValue(xPt)}

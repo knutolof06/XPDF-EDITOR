@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { PdfPageModel } from '@/types/document';
 import { useDocumentStore } from '@/store/document-store';
+import { useTabStore } from '@/store/tab-store';
 import { useUIStore } from '@/store/ui-store';
 import { useViewerStore } from '@/store/viewer-store';
 import { thumbnailCache } from '@/core/cache/render-cache';
@@ -12,6 +13,7 @@ import {
   DeletePageCommand,
 } from '@/core/history/command-manager';
 import { PdfAssembler } from '@/core/engine/pdf-assembler';
+import { useResolvedDarkTheme } from '../common/theme-utils';
 import { Trash2, RotateCw, GripVertical, Download } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -24,6 +26,16 @@ interface ThumbnailItemProps {
   onPageClick: (pageId: string, index: number, isMulti: boolean, isShift: boolean) => void;
   onContextMenu?: (e: React.MouseEvent, pageId: string, index: number) => void;
 }
+
+type InternalDragPayload = {
+  pageIds: string[];
+  sourceDocId?: string;
+  filePath?: string | null;
+};
+
+type WindowWithInternalDrag = Window & {
+  __xpdf_internal_drag?: InternalDragPayload | null;
+};
 
 export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   page,
@@ -39,6 +51,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
   const renderedKeyRef = useRef<string>('');
   const dropPositionRef = useRef<'before' | 'after' | null>(null);
   const preparedFilePathRef = useRef<string | null>(null);
+  const prepareInFlightRef = useRef<boolean>(false);
 
   const [isRendered, setIsRendered] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
@@ -46,6 +59,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
   const pdfDocProxy = useDocumentStore((s) => s.pdfDocProxy);
   const appDesignTheme = useViewerStore((s) => s.appDesignTheme) || 'fluent';
+  const isDark = useResolvedDarkTheme();
 
   // Viewport IntersectionObserver: Proactive high-margin rendering (1000px)
   useEffect(() => {
@@ -68,10 +82,11 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     return () => observer.disconnect();
   }, []);
 
-  // Pre-generate PDF file ahead of drag (single or multi-selected pages)
+  // Pre-generate PDF file only on pointer down / drag start (never on hover)
   const prepareSinglePagePdf = useCallback(async () => {
     const doc = useDocumentStore.getState().currentDocument;
-    if (!doc || !(window as any).electronAPI?.prepareDragFile) return;
+    if (!doc || !window.electronAPI?.prepareDragFile || prepareInFlightRef.current) return;
+    prepareInFlightRef.current = true;
     try {
       const isPartOfSelection = doc.selectedPageIds.includes(page.id);
       const movingPageIds =
@@ -81,7 +96,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
       const res = await PdfAssembler.extractPages(doc, movingPageIds, { separateFiles: false });
       if (res.mode === 'single') {
-        const prepRes = await (window as any).electronAPI.prepareDragFile({
+        const prepRes = await window.electronAPI.prepareDragFile({
           fileName: res.name,
           buffer: res.buffer,
         });
@@ -89,8 +104,10 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
           preparedFilePathRef.current = prepRes.filePath;
         }
       }
-    } catch (err) {
+    } catch {
       // silent
+    } finally {
+      prepareInFlightRef.current = false;
     }
   }, [page.id]);
 
@@ -100,15 +117,12 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
     const cacheKey = `thumb_${page.id}_p${page.sourcePageIndex}_rot${page.rotation}_${thumbnailSize}`;
 
-    // Already rendered for this exact page, rotation, and size
     if (renderedKeyRef.current === cacheKey) {
       return;
     }
 
     if (!pdfDocProxy || !canvasRef.current) return;
 
-    // SYNCHRONOUS CACHE HIT CHECK:
-    // If cached in ImageBitmap LRU, paint immediately (<0.1ms) without entering the async queue!
     const cachedBitmap = thumbnailCache.get(cacheKey);
     if (cachedBitmap && canvasRef.current) {
       const canvas = canvasRef.current;
@@ -132,10 +146,9 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         const pdfPage = await pdfDocProxy.getPage(page.sourcePageIndex + 1);
         if (isCancelled || !canvasRef.current) return;
 
-        // Dynamic width based on chosen thumbnailSize
         const targetWidth = thumbnailSize === 'large' ? 320 : thumbnailSize === 'small' ? 110 : 175;
         const unscaledViewport = pdfPage.getViewport({ scale: 1.0, rotation: page.rotation });
-        const scale = targetWidth / unscaledViewport.width;
+        const scale = targetWidth / (unscaledViewport.width || 1);
         const viewport = pdfPage.getViewport({ scale, rotation: page.rotation });
 
         if (isCancelled || !canvasRef.current) return;
@@ -146,7 +159,6 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
 
-        // Pre-fill solid white so transparent PDFs never render black
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -173,7 +185,6 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       }
     }
 
-    // Visible thumbnails on screen get immediate priority 0!
     const cancelQueue = enqueueThumbnail(renderThumbnail, 0);
 
     return () => {
@@ -188,12 +199,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       dropPositionRef.current = null;
       setDragOverPosition(null);
     };
-    // dragend fires on the dragged element; drop fires on the target element.
-    // Both together guarantee all cards are cleaned up regardless of which
-    // card was being dragged over when the user released the mouse.
     window.addEventListener('dragend', clearDragState);
     window.addEventListener('drop', clearDragState);
-    // pointerup catches cases where the drag was cancelled (e.g., Escape key)
     window.addEventListener('pointerup', clearDragState);
     return () => {
       window.removeEventListener('dragend', clearDragState);
@@ -202,67 +209,67 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     };
   }, []);
 
-  // Drag Start
-  const handleDragStart = useCallback((e: React.DragEvent) => {
-    document.body.classList.add('is-dragging-page');
+  const startInternalOrExternalDrag = useCallback(
+    (e: React.DragEvent) => {
+      document.body.classList.add('is-dragging-page');
 
-    const doc = useDocumentStore.getState().currentDocument;
-    if (!doc) return;
+      const doc = useDocumentStore.getState().currentDocument;
+      if (!doc) return;
 
-    const isPartOfSelection = doc.selectedPageIds.includes(page.id);
-    const movingPageIds =
-      isPartOfSelection && doc.selectedPageIds.length > 1
-        ? doc.selectedPageIds
-        : [page.id];
+      const isPartOfSelection = doc.selectedPageIds.includes(page.id);
+      const movingPageIds =
+        isPartOfSelection && doc.selectedPageIds.length > 1
+          ? doc.selectedPageIds
+          : [page.id];
 
-    // Coordinate internal drag flag
-    (window as any).__xpdf_internal_drag = {
-      pageIds: movingPageIds,
-      sourceDocId: doc.id,
-      filePath: preparedFilePathRef.current,
-    };
+      (window as WindowWithInternalDrag).__xpdf_internal_drag = {
+        pageIds: movingPageIds,
+        sourceDocId: doc.id,
+        filePath: preparedFilePathRef.current,
+      };
 
-    e.dataTransfer.setData('application/json', JSON.stringify({ pageIds: movingPageIds }));
-    e.dataTransfer.setData('text/plain', movingPageIds.join(','));
-    e.dataTransfer.effectAllowed = 'copyMove';
+      e.dataTransfer.setData('application/json', JSON.stringify({ pageIds: movingPageIds }));
+      e.dataTransfer.setData('text/plain', movingPageIds.join(','));
+      e.dataTransfer.effectAllowed = 'copyMove';
 
-    // Start native Windows OLE drag to Desktop / Explorer
-    if (preparedFilePathRef.current && (window as any).electronAPI?.startDragFile) {
-      (window as any).electronAPI.startDragFile({ filePath: preparedFilePathRef.current });
-    }
+      if (preparedFilePathRef.current && window.electronAPI?.startDragFile) {
+        window.electronAPI.startDragFile({ filePath: preparedFilePathRef.current });
+      }
 
-    // Create high-contrast floating drag ghost pill
-    try {
-      const ghost = document.createElement('div');
-      ghost.style.position = 'absolute';
-      ghost.style.top = '-1000px';
-      ghost.style.left = '-1000px';
-      ghost.style.padding = '8px 14px';
-      ghost.style.borderRadius = '12px';
-      ghost.style.background = '#0284c7';
-      ghost.style.color = '#ffffff';
-      ghost.style.fontWeight = '700';
-      ghost.style.fontSize = '12px';
-      ghost.style.boxShadow = '0 10px 25px rgba(2, 132, 199, 0.5)';
-      ghost.style.border = '2px solid rgba(255, 255, 255, 0.6)';
-      ghost.style.display = 'flex';
-      ghost.style.alignItems = 'center';
-      ghost.style.gap = '6px';
-      ghost.style.zIndex = '9999';
-      ghost.innerHTML = `<span>📄</span> <span>${
-        movingPageIds.length > 1
-          ? `${movingPageIds.length} Sayfa Taşınıyor`
-          : `Sayfa ${page.displayPageNumber} Taşınıyor`
-      }</span>`;
-      document.body.appendChild(ghost);
-      e.dataTransfer.setDragImage(ghost, 20, 20);
-      setTimeout(() => ghost.remove(), 100);
-    } catch {}
-  }, [page.id, page.displayPageNumber]);
+      try {
+        const ghost = document.createElement('div');
+        ghost.style.position = 'absolute';
+        ghost.style.top = '-1000px';
+        ghost.style.left = '-1000px';
+        ghost.style.padding = '8px 14px';
+        ghost.style.borderRadius = '12px';
+        ghost.style.background = '#0284c7';
+        ghost.style.color = '#ffffff';
+        ghost.style.fontWeight = '700';
+        ghost.style.fontSize = '12px';
+        ghost.style.boxShadow = '0 10px 25px rgba(2, 132, 199, 0.5)';
+        ghost.style.border = '2px solid rgba(255, 255, 255, 0.6)';
+        ghost.style.display = 'flex';
+        ghost.style.alignItems = 'center';
+        ghost.style.gap = '6px';
+        ghost.style.zIndex = '9999';
+        ghost.textContent =
+          movingPageIds.length > 1
+            ? `${movingPageIds.length} Sayfa Taşınıyor`
+            : `Sayfa ${page.displayPageNumber} Taşınıyor`;
+        document.body.appendChild(ghost);
+        e.dataTransfer.setDragImage(ghost, 20, 20);
+        setTimeout(() => ghost.remove(), 100);
+      } catch {
+        // ignore drag ghost failures
+      }
+    },
+    [page.id, page.displayPageNumber]
+  );
 
   const handleDragEnd = useCallback(() => {
     document.body.classList.remove('is-dragging-page');
-    (window as any).__xpdf_internal_drag = null;
+    (window as WindowWithInternalDrag).__xpdf_internal_drag = null;
     dropPositionRef.current = null;
     setDragOverPosition(null);
   }, []);
@@ -274,20 +281,37 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     try {
       const res = await PdfAssembler.extractPages(doc, [page.id], { separateFiles: false });
       if (res.mode === 'single') {
+        const electron = window.electronAPI;
+        if (electron?.showSaveDialog && electron?.saveFile) {
+          const dialogRes = await electron.showSaveDialog({
+            title: 'Sayfayı Kaydet',
+            defaultPath: res.name,
+            filters: [{ name: 'PDF Dosyaları', extensions: ['pdf'] }],
+          });
+          if (dialogRes.canceled || !dialogRes.filePath) return;
+          const saveRes = await electron.saveFile(dialogRes.filePath, res.buffer);
+          if (saveRes?.success) {
+            useUIStore.getState().addToast(`Sayfa ${page.displayPageNumber} kaydedildi.`, 'success');
+          } else {
+            useUIStore.getState().addToast('Kaydetme hatası oluştu.', 'error');
+          }
+          return;
+        }
+
         const blob = new Blob([res.buffer], { type: 'application/pdf' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = res.name;
         a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
       }
     } catch (err) {
       console.error('Download error:', err);
+      useUIStore.getState().addToast('Sayfa dışa aktarılamadı.', 'error');
     }
-  }, [page.id]);
+  }, [page.id, page.displayPageNumber]);
 
-  // High-Precision Drag Over
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -328,8 +352,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     const doc = useDocumentStore.getState().currentDocument;
     if (!doc) return;
 
-    // 1. Internal page reordering (Check internal coordinator or JSON first)
-    const internalDrag = (window as any).__xpdf_internal_drag;
+    const internalDrag = (window as WindowWithInternalDrag).__xpdf_internal_drag;
     let pageIds: string[] = internalDrag?.pageIds || [];
 
     if (pageIds.length === 0) {
@@ -354,8 +377,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     }
 
     if (pageIds.length > 0) {
-      // Clear internal coordinator
-      (window as any).__xpdf_internal_drag = null;
+      (window as WindowWithInternalDrag).__xpdf_internal_drag = null;
       const targetIndex = doc.pages.findIndex((p) => p.id === page.id);
       if (targetIndex !== -1) {
         historyManager.execute(new MoveMultiplePagesCommand(pageIds, targetIndex, position));
@@ -363,7 +385,6 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       return;
     }
 
-    // 2. External PDF or Image file drop from Desktop or Explorer
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const droppedFiles = Array.from(e.dataTransfer.files);
       const targetIndex = doc.pages.findIndex((p) => p.id === page.id);
@@ -393,14 +414,14 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
             currentInsertIndex += indices.length;
             totalAdded += indices.length;
             useDocumentStore.getState().setDocument(result.model, result.pdfDoc);
+            useTabStore.getState().replaceActiveTab(result.model, result.pdfDoc);
           }
 
           useUIStore.getState().addToast(`${totalAdded} sayfa başarıyla eklendi!`, 'success');
-        } catch (err: any) {
+        } catch (err) {
           console.error('External file drop error:', err);
           useUIStore.getState().addToast('Dosyalar eklenirken hata oluştu.', 'error');
         }
-        return;
       }
     }
   }, [page.id]);
@@ -414,13 +435,19 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
     [onPageClick, page.id, index]
   );
 
+  const isLinearDark = appDesignTheme === 'linear' && isDark;
+  const isLinearLight = appDesignTheme === 'linear' && !isDark;
+
   return (
     <div
       ref={containerRef}
       draggable
-      onMouseEnter={prepareSinglePagePdf}
-      onMouseDown={prepareSinglePagePdf}
-      onDragStart={handleDragStart}
+      onMouseDown={(e) => {
+        if (e.button === 0) {
+          prepareSinglePagePdf();
+        }
+      }}
+      onDragStart={startInternalOrExternalDrag}
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -433,7 +460,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
       }}
       className={cn(
         'group relative flex flex-col items-center p-2 cursor-grab active:cursor-grabbing select-none min-h-[120px] transition-all duration-150',
-        appDesignTheme === 'linear' && [
+        isLinearDark && [
           'rounded-lg border bg-[#0E1015]',
           dragOverPosition
             ? 'ring-2 ring-cyan-400 border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.4)] scale-[1.02]'
@@ -443,6 +470,16 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
             ? 'border-cyan-500/50 bg-cyan-950/20'
             : 'border-white/10 hover:border-white/20 hover:bg-white/[0.03]',
         ],
+        isLinearLight && [
+          'rounded-lg border bg-white',
+          dragOverPosition
+            ? 'ring-2 ring-sky-500 border-sky-400 scale-[1.02]'
+            : isSelected
+            ? 'border-sky-500 bg-sky-50 ring-2 ring-sky-500'
+            : isActive
+            ? 'border-sky-400/60 bg-sky-50/40'
+            : 'border-slate-200 hover:border-slate-300',
+        ],
         appDesignTheme === 'cupertino' && [
           'rounded-2xl border transition-all duration-200',
           dragOverPosition
@@ -451,7 +488,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
             ? 'ring-2 ring-sky-500 border-sky-400 bg-sky-500/20 shadow-lg'
             : isActive
             ? 'border-sky-500/50 bg-sky-500/10'
-            : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-xs hover:shadow-md',
+            : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-sm hover:shadow-md',
         ],
         appDesignTheme === 'fluent' && [
           'rounded-xl border-2',
@@ -475,7 +512,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         ]
       )}
     >
-      {/* Sleek Minimalist Insertion Indicator on the LEFT */}
+      {/* Insertion Indicator LEFT */}
       {dragOverPosition === 'before' && (
         <div className="absolute -left-3 top-0 bottom-0 w-1.5 bg-sky-500 rounded-full shadow-[0_0_12px_rgba(14,165,233,0.9)] z-50 pointer-events-none flex flex-col justify-between items-center py-0.5">
           <div className="w-2.5 h-2.5 rounded-full bg-sky-500 shadow-md ring-2 ring-white dark:ring-slate-900" />
@@ -483,7 +520,7 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         </div>
       )}
 
-      {/* Sleek Minimalist Insertion Indicator on the RIGHT */}
+      {/* Insertion Indicator RIGHT */}
       {dragOverPosition === 'after' && (
         <div className="absolute -right-3 top-0 bottom-0 w-1.5 bg-sky-500 rounded-full shadow-[0_0_12px_rgba(14,165,233,0.9)] z-50 pointer-events-none flex flex-col justify-between items-center py-0.5">
           <div className="w-2.5 h-2.5 rounded-full bg-sky-500 shadow-md ring-2 ring-white dark:ring-slate-900" />
@@ -505,9 +542,12 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
           <div className="w-5 h-5 border-2 border-sky-500/30 border-t-sky-500 rounded-full animate-spin" />
         )}
 
-        {/* Selected Badge */}
+        {/* Selected Badge (bottom-right so it never collides with top-right hover actions) */}
         {isSelected && (
-          <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-sky-500 text-white flex items-center justify-center text-[10px] font-black shadow z-10">
+          <div
+            aria-label="Seçili sayfa"
+            className="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-sky-500 text-white flex items-center justify-center text-[10px] font-black shadow z-10"
+          >
             ✓
           </div>
         )}
@@ -515,6 +555,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         {/* Hover Quick Actions */}
         <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-opacity z-20 shadow-sm">
           <button
+            type="button"
+            aria-label={`Sayfa ${page.displayPageNumber} dışa aktar`}
             onClick={handleQuickDownload}
             className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-emerald-500 dark:hover:text-emerald-400 rounded transition-colors"
             title="Bu Sayfayı PDF Olarak İndir / Ayıkla"
@@ -522,6 +564,8 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
             <Download className="w-3 h-3" />
           </button>
           <button
+            type="button"
+            aria-label={`Sayfa ${page.displayPageNumber} sağa döndür`}
             onClick={(e) => {
               e.stopPropagation();
               historyManager.execute(new RotatePageCommand([page.id], 90));
@@ -532,12 +576,16 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
             <RotateCw className="w-3 h-3" />
           </button>
           <button
+            type="button"
+            aria-label={`Sayfa ${page.displayPageNumber} sil`}
             onClick={(e) => {
               e.stopPropagation();
               const doc = useDocumentStore.getState().currentDocument;
-              if (doc) {
+              if (doc && doc.pages.length > 1) {
                 const idx = doc.pages.findIndex((p) => p.id === page.id);
                 historyManager.execute(new DeletePageCommand([{ page, index: idx }]));
+              } else {
+                useUIStore.getState().addToast('Belgede en az 1 sayfa kalmalıdır.', 'warning');
               }
             }}
             className="p-1 hover:bg-rose-100 dark:hover:bg-rose-500/20 text-slate-600 dark:text-slate-300 hover:text-rose-500 dark:hover:text-rose-400 rounded transition-colors"
@@ -550,27 +598,18 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
         {/* Native Drag-to-Desktop Handle */}
         <div
           draggable
-          onMouseEnter={prepareSinglePagePdf}
-          onMouseDown={prepareSinglePagePdf}
-          onDragStart={(e) => {
+          onMouseDown={(e) => {
             e.stopPropagation();
-            const doc = useDocumentStore.getState().currentDocument;
-            const movingPageIds =
-              doc && doc.selectedPageIds.includes(page.id) && doc.selectedPageIds.length > 1
-                ? doc.selectedPageIds
-                : [page.id];
-
-            (window as any).__xpdf_internal_drag = {
-              pageIds: movingPageIds,
-              sourceDocId: doc?.id,
-              filePath: preparedFilePathRef.current,
-            };
-
-            if (preparedFilePathRef.current && (window as any).electronAPI?.startDragFile) {
-              (window as any).electronAPI.startDragFile({ filePath: preparedFilePathRef.current });
+            if (e.button === 0) {
+              prepareSinglePagePdf();
             }
           }}
-          className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 p-1 rounded-md bg-white/95 dark:bg-slate-800/95 text-slate-500 hover:text-sky-600 hover:bg-sky-50 dark:hover:bg-slate-700 shadow-xs border border-slate-200 dark:border-slate-700 cursor-grab active:cursor-grabbing transition-all z-20"
+          onDragStart={(e) => {
+            e.stopPropagation();
+            startInternalOrExternalDrag(e);
+          }}
+          onDragEnd={handleDragEnd}
+          className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 p-1 rounded-md bg-white/95 dark:bg-slate-800/95 text-slate-500 hover:text-sky-600 hover:bg-sky-50 dark:hover:bg-slate-700 shadow-sm border border-slate-200 dark:border-slate-700 cursor-grab active:cursor-grabbing transition-all z-20"
           title="Masaüstüne veya Klasöre Sürükle (Yeni PDF Olarak Çıkart)"
         >
           <GripVertical className="w-3.5 h-3.5" />
@@ -579,10 +618,10 @@ export const ThumbnailItem: React.FC<ThumbnailItemProps> = React.memo(({
 
       {/* Page Number Label / Badge */}
       {appDesignTheme === 'cupertino' ? (
-        <span className="mt-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide bg-black/60 dark:bg-black/70 text-white backdrop-blur-md shadow-xs">
+        <span className="mt-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide bg-black/60 dark:bg-black/70 text-white backdrop-blur-md shadow-sm">
           {page.displayPageNumber}
         </span>
-      ) : appDesignTheme === 'linear' ? (
+      ) : isLinearDark ? (
         <span className="mt-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold tracking-wider bg-cyan-950/60 text-cyan-400 border border-cyan-800/50">
           #{page.displayPageNumber < 10 ? `0${page.displayPageNumber}` : page.displayPageNumber}
         </span>

@@ -2,10 +2,16 @@ import React, { useRef, useState, useEffect } from 'react';
 import { useDocumentStore } from '@/store/document-store';
 import { useViewerStore, ReadingTheme, ZOOM_STEPS } from '@/store/viewer-store';
 import { useUIStore } from '@/store/ui-store';
-import { useTabStore } from '@/store/tab-store';
-import { PdfLoader } from '@/core/pdf/pdf-loader';
-import { PdfExporter } from '@/core/engine/pdf-exporter';
 import { historyManager, RotatePageCommand } from '@/core/history/command-manager';
+import {
+  openPdfFileDialog,
+  openPdfFiles,
+  printDocumentWithAnnotations,
+  saveDocument,
+  syncActiveTool,
+} from '@/components/common/pdf-actions';
+import { useResolvedDarkTheme, getReadingThemeLabel } from '@/components/common/theme-utils';
+import { useViewerUIState } from '@/components/viewer/viewer-ui-state';
 import {
   FolderOpen,
   ZoomIn,
@@ -36,21 +42,16 @@ import {
   ChevronDown,
   Settings,
   Crosshair,
+  BookCopy,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
 export const TopToolbar: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const {
-    currentDocument,
-    setDocument,
-    setLoading,
-    setError,
-    addRecentDocument,
-  } = useDocumentStore();
-
-  const { addTab } = useTabStore();
+  const currentDocument = useDocumentStore((s) => s.currentDocument);
+  const isDark = useResolvedDarkTheme();
+  const { twoPageCoverOffset, toggleTwoPageCoverOffset } = useViewerUIState();
 
   const {
     zoom,
@@ -62,7 +63,6 @@ export const TopToolbar: React.FC = () => {
     zoomIn,
     zoomOut,
     activeTool,
-    setActiveTool,
     viewMode,
     setViewMode,
     theme,
@@ -116,179 +116,46 @@ export const TopToolbar: React.FC = () => {
     addToast,
   } = useUIStore();
 
-  const handleOpenFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    try {
-      setLoading(true);
-      addToast(`"${file.name}" yükleniyor...`, 'info');
-      const arrayBuffer = await file.arrayBuffer();
-      const filePath = (file as any).path || undefined;
-      const { model, pdfDoc } = await PdfLoader.loadDocument(file.name, arrayBuffer, filePath);
-      setDocument(model, pdfDoc);
-      addTab(model, pdfDoc);
-      addRecentDocument({
-        id: model.id,
-        name: model.name,
-        filePath,
-        fileSize: model.fileSize,
-        pageCount: model.totalPages,
-        lastOpened: Date.now(),
-      });
-      addToast(`"${file.name}" başarıyla açıldı.`, 'success');
-    } catch (err: any) {
-      console.error(err);
-      if (err?.isPasswordProtected) {
-        useUIStore.getState().setPasswordModalOpen(true, {
-          name: err.fileName || file.name,
-          buffer: err.buffer,
-          filePath: err.filePath,
-        });
-        addToast('Bu PDF parola ile korunmaktadır. Lütfen parolayı girin.', 'warning');
-      } else {
-        setError(err?.message || 'PDF yüklenemedi.');
-        addToast('PDF açılamadı.', 'error');
-      }
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  // Kaydet: Orijinal dosyanın üzerine yaz (filePath varsa), yoksa Farklı Kaydet'e düşer
-  const handleSave = async () => {
+  const handleRotate = (angle: number) => {
     if (!currentDocument) return;
-    const electron = window.electronAPI;
-    try {
-      addToast('Kaydediliyor...', 'info');
-      const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
-
-      if (electron?.saveFile && currentDocument.filePath) {
-        // Electron: Doğrudan orijinal dosyanın üzerine yaz
-        const result = await electron.saveFile(currentDocument.filePath, rawOut);
-        if (result?.success) {
-          addToast(`"${currentDocument.name}" kaydedildi!`, 'success');
-        } else {
-          addToast('Kaydetme hatası: ' + (result?.error || 'bilinmeyen hata'), 'error');
-        }
-      } else {
-        // Tarayıcı / dosya yolu yok → indirme olarak kaydet (aynı isim)
-        const blob = new Blob([rawOut], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = currentDocument.name;
-        a.click();
-        URL.revokeObjectURL(url);
-        addToast(`"${currentDocument.name}" kaydedildi!`, 'success');
-      }
-    } catch (err: any) {
-      console.error('Save error:', err);
-      addToast('Kaydetme hatası oluştu.', 'error');
+    const selected = currentDocument.selectedPageIds;
+    const targetIds =
+      selected.length > 0
+        ? selected
+        : currentDocument.pages[currentDocument.activePageIndex]
+        ? [currentDocument.pages[currentDocument.activePageIndex].id]
+        : [];
+    if (targetIds.length > 0) {
+      historyManager.execute(new RotatePageCommand(targetIds, angle));
     }
   };
 
-  // Farklı Kaydet: Her zaman kayıt konumu sor
-  const handleSaveAs = async () => {
-    if (!currentDocument) return;
-    const electron = window.electronAPI;
-    try {
-      addToast('Dışa aktarılıyor...', 'info');
-      const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
-
-      if (electron?.showSaveDialog) {
-        // Electron: Yerel Windows kayıt diyaloğu
-        const defaultName = currentDocument.name.replace(/\.pdf$/i, '') + '_edited.pdf';
-        const dialogRes = await electron.showSaveDialog({ defaultPath: defaultName });
-        if (dialogRes.canceled || !dialogRes.filePath) return; // İptal edildi
-        const savePath = dialogRes.filePath;
-        const result = await electron.saveFile(savePath, rawOut);
-        if (result?.success) {
-          addToast(`"${savePath.split(/[\\/]/).pop()}" kaydedildi!`, 'success');
-        } else {
-          addToast('Kaydetme hatası: ' + (result?.error || ''), 'error');
-        }
-      } else {
-        // Tarayıcı fallback: indir
-        const blob = new Blob([rawOut], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = currentDocument.name.replace(/\.pdf$/i, '') + '_edited.pdf';
-        a.click();
-        URL.revokeObjectURL(url);
-        addToast('PDF başarıyla dışa aktarıldı!', 'success');
-      }
-    } catch (err: any) {
-      console.error('SaveAs error:', err);
-      addToast('Dışa aktarma hatası oluştu.', 'error');
-    }
-  };
-
-  // Yazdır (Print: Tüm sayfaları vektör kalitesinde ve açıklamalarla birlikte yazdırır)
-  const handlePrint = async () => {
-    if (!currentDocument) return;
-    const electron = window.electronAPI;
-    try {
-      addToast('Yazdırma hazırlanıyor...', 'info', 2000);
-      const rawOut = await PdfExporter.exportDocumentWithAnnotations(currentDocument);
-      const blob = new Blob([rawOut], { type: 'application/pdf' });
-      const blobUrl = URL.createObjectURL(blob);
-
-      const printIframe = document.createElement('iframe');
-      printIframe.style.position = 'fixed';
-      printIframe.style.right = '0';
-      printIframe.style.bottom = '0';
-      printIframe.style.width = '0';
-      printIframe.style.height = '0';
-      printIframe.style.border = '0';
-      printIframe.src = blobUrl;
-      document.body.appendChild(printIframe);
-
-      printIframe.onload = () => {
-        try {
-          printIframe.contentWindow?.focus();
-          printIframe.contentWindow?.print();
-        } catch {
-          if (electron?.printDocument) {
-            electron.printDocument();
-          } else {
-            window.print();
-          }
-        }
-        setTimeout(() => {
-          try {
-            document.body.removeChild(printIframe);
-            URL.revokeObjectURL(blobUrl);
-          } catch {
-            // ignore
-          }
-        }, 60000);
-      };
-    } catch (err: any) {
-      console.error('Print error:', err);
-      if (electron?.printDocument) {
-        electron.printDocument();
-      } else {
-        window.print();
-      }
-    }
-  };
+  const isLinearDark = appDesignTheme === 'linear' && isDark;
+  const isLinearLight = appDesignTheme === 'linear' && !isDark;
 
   return (
     <header
+      role="toolbar"
+      aria-label="Ana Araç Çubuğu"
       className={cn(
-        'flex items-center justify-between text-slate-700 dark:text-slate-200 select-none z-30 shrink-0 transition-all duration-200',
-        appDesignTheme === 'cupertino' && 'h-12 mx-3 my-1.5 rounded-2xl cupertino-glass px-4 shadow-md border',
-        appDesignTheme === 'linear' && 'h-10 bg-[#08090a] border-b border-white/10 px-3 text-xs shadow-none',
-        appDesignTheme === 'ribbon' && 'h-10 bg-slate-100 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 px-3 text-xs shadow-none',
-        appDesignTheme === 'fluent' && 'h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 shadow-sm'
+        'no-print flex items-center justify-between select-none z-30 shrink-0 transition-all duration-200',
+        appDesignTheme === 'cupertino' && 'h-12 mx-3 my-1.5 rounded-2xl cupertino-glass px-4 shadow-md border text-slate-700 dark:text-slate-200',
+        isLinearDark && 'h-10 bg-[#08090a] border-b border-white/10 px-3 text-xs text-slate-200 shadow-none',
+        isLinearLight && 'h-10 bg-white border-b border-slate-200 px-3 text-xs text-slate-800 shadow-none',
+        appDesignTheme === 'ribbon' && 'h-10 bg-slate-100 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 px-3 text-xs text-slate-700 dark:text-slate-200 shadow-none',
+        appDesignTheme === 'fluent' && 'h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 text-slate-700 dark:text-slate-200 shadow-sm'
       )}
     >
       <input
         type="file"
         ref={fileInputRef}
-        onChange={handleOpenFile}
+        multiple
+        onChange={async (e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            await openPdfFiles(e.target.files);
+          }
+          e.target.value = '';
+        }}
         accept="application/pdf"
         className="hidden"
       />
@@ -304,7 +171,9 @@ export const TopToolbar: React.FC = () => {
 
         {/* File Open */}
         <button
-          onClick={() => fileInputRef.current?.click()}
+          type="button"
+          onClick={() => openPdfFileDialog(fileInputRef.current)}
+          aria-label="PDF Aç (Ctrl + O)"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-800 dark:text-slate-200 transition-colors border border-slate-200 dark:border-slate-700/80"
           title="PDF Aç (Ctrl + O)"
         >
@@ -314,7 +183,9 @@ export const TopToolbar: React.FC = () => {
 
         {/* Images to PDF */}
         <button
+          type="button"
           onClick={() => setImagesToPdfModalOpen(true)}
+          aria-label="Görsellerden PDF Oluştur"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-xs font-semibold text-purple-700 dark:text-purple-300 transition-colors border border-purple-200 dark:border-purple-800/60"
           title="Görsellerden (JPG, PNG) Yeni PDF Oluştur"
         >
@@ -326,7 +197,9 @@ export const TopToolbar: React.FC = () => {
         {currentDocument && (
           <div className="flex items-center rounded-lg overflow-hidden border border-sky-600/60 shadow-sm shadow-sky-600/20">
             <button
-              onClick={handleSave}
+              type="button"
+              onClick={() => saveDocument(currentDocument, false)}
+              aria-label="Belgeyi Kaydet (Ctrl + S)"
               className="flex items-center gap-1.5 px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white transition-colors"
               title={currentDocument.filePath ? `Kaydet — ${currentDocument.filePath} (Ctrl+S)` : 'Kaydet (Ctrl+S)'}
             >
@@ -334,7 +207,9 @@ export const TopToolbar: React.FC = () => {
             </button>
             <div className="w-px h-full bg-sky-500/40" />
             <button
-              onClick={handleSaveAs}
+              type="button"
+              onClick={() => saveDocument(currentDocument, true)}
+              aria-label="Farklı Kaydet (Ctrl + Shift + S)"
               className="flex items-center gap-1 px-2 py-1.5 bg-sky-700 hover:bg-sky-600 text-xs font-semibold text-white transition-colors"
               title="Farklı Kaydet — yeni konuma kaydet (Ctrl+Shift+S)"
             >
@@ -347,7 +222,9 @@ export const TopToolbar: React.FC = () => {
         {/* Print */}
         {currentDocument && (
           <button
-            onClick={handlePrint}
+            type="button"
+            onClick={() => printDocumentWithAnnotations(currentDocument)}
+            aria-label="Yazdır (Ctrl + P)"
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80"
             title="Yazdır (Ctrl + P)"
           >
@@ -360,9 +237,11 @@ export const TopToolbar: React.FC = () => {
         {currentDocument && (
           <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700/80 ml-1">
             <button
+              type="button"
+              aria-label="Geri Al (Ctrl + Z)"
               onClick={() => {
                 if (historyManager.undo()) {
-                  addToast('Geri alındı (Undo)', 'info', 1500);
+                  addToast('İşlem geri alındı', 'info', 1500);
                 }
               }}
               className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-slate-700 dark:text-slate-300 transition-colors"
@@ -371,9 +250,11 @@ export const TopToolbar: React.FC = () => {
               <Undo2 className="w-3.5 h-3.5" />
             </button>
             <button
+              type="button"
+              aria-label="Yinele (Ctrl + Y)"
               onClick={() => {
                 if (historyManager.redo()) {
-                  addToast('Yinelendi (Redo)', 'info', 1500);
+                  addToast('İşlem yinelendi', 'info', 1500);
                 }
               }}
               className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-slate-700 dark:text-slate-300 transition-colors"
@@ -384,20 +265,30 @@ export const TopToolbar: React.FC = () => {
           </div>
         )}
 
-        {/* Adobe Acrobat Style "Tüm Araçlar" (Tools) Panel Toggle */}
-        <button
-          onClick={() => setRightToolsSidebarOpen((prev: boolean) => !prev)}
-          className={cn(
-            'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border shadow-xs ml-1.5',
-            isRightToolsSidebarOpen
-              ? 'bg-sky-500 text-white border-sky-600 shadow-sky-500/20'
-              : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
-          )}
-          title="Adobe Acrobat Tarzı Tüm Araçlar Panelini Aç / Kapat"
-        >
-          <SlidersHorizontal className="w-4 h-4 text-sky-400" />
-          <span className="hidden sm:inline">Tüm Araçlar</span>
-        </button>
+        {/* Tools Panel Toggle (document-only) */}
+        {currentDocument && (
+          <button
+            type="button"
+            aria-label="Tüm Araçlar Panelini Aç veya Kapat"
+            aria-pressed={isRightToolsSidebarOpen}
+            onClick={() => setRightToolsSidebarOpen((prev: boolean) => !prev)}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border shadow-sm ml-1.5',
+              isRightToolsSidebarOpen
+                ? 'bg-sky-600 text-white border-sky-700 shadow-sky-500/20'
+                : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+            )}
+            title="Tüm Araçlar Panelini Aç / Kapat"
+          >
+            <SlidersHorizontal
+              className={cn(
+                'w-4 h-4',
+                isRightToolsSidebarOpen ? 'text-white' : 'text-sky-600 dark:text-sky-400'
+              )}
+            />
+            <span className="hidden sm:inline">Tüm Araçlar</span>
+          </button>
+        )}
       </div>
 
       {/* Center Section: Zoom & View Controls */}
@@ -406,6 +297,8 @@ export const TopToolbar: React.FC = () => {
           {/* Zoom controls */}
           <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700/80">
             <button
+              type="button"
+              aria-label="Uzaklaştır (Ctrl + -)"
               onClick={zoomOut}
               className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-slate-700 dark:text-slate-300 transition-colors"
               title="Uzaklaştır (Ctrl + -)"
@@ -416,6 +309,9 @@ export const TopToolbar: React.FC = () => {
             {/* Zoom Popover Trigger */}
             <div className="relative" ref={zoomPopoverRef}>
               <button
+                type="button"
+                aria-label="Yakınlaştırma Seçenekleri"
+                aria-expanded={isZoomPopoverOpen}
                 onClick={() => setIsZoomPopoverOpen(!isZoomPopoverOpen)}
                 className={cn(
                   'px-2 py-1 text-xs font-semibold rounded min-w-[56px] flex items-center justify-center gap-1 transition-colors',
@@ -436,6 +332,7 @@ export const TopToolbar: React.FC = () => {
                     <span className="text-slate-400 font-semibold">%</span>
                     <input
                       type="number"
+                      aria-label="Özel Yakınlaştırma Yüzdesi"
                       min={20}
                       max={500}
                       placeholder={String(Math.round(zoom * 100))}
@@ -552,6 +449,8 @@ export const TopToolbar: React.FC = () => {
             </div>
 
             <button
+              type="button"
+              aria-label="Yakınlaştır (Ctrl + +)"
               onClick={zoomIn}
               className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-slate-700 dark:text-slate-300 transition-colors"
               title="Yakınlaştır (Ctrl + +)"
@@ -562,45 +461,56 @@ export const TopToolbar: React.FC = () => {
             <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
 
             <button
+              type="button"
+              aria-label="Genişliğe Sığdır"
+              aria-pressed={fitMode === 'width'}
               onClick={() => setFitMode(fitMode === 'width' ? 'none' : 'width')}
               className={cn(
                 'p-1.5 rounded-md transition-colors',
                 fitMode === 'width'
-                  ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-xs'
+                  ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-sm'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
-              title="Genişliğe Sığdır (Pencere boyutlandıkça sayfayı otomatik sığdırır) - Ctrl+2"
+              title="Genişliğe Sığdır (Ctrl+2)"
             >
               <FoldHorizontal className="w-4 h-4" />
             </button>
 
             <button
+              type="button"
+              aria-label="Sayfaya Sığdır"
+              aria-pressed={fitMode === 'page'}
               onClick={() => setFitMode(fitMode === 'page' ? 'none' : 'page')}
               className={cn(
                 'p-1.5 rounded-md transition-colors',
                 fitMode === 'page'
-                  ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-xs'
+                  ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold shadow-sm'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
-              title="Sayfaya Sığdır (Tüm sayfayı ekrana sığdırır) - Ctrl+0"
+              title="Sayfaya Sığdır (Ctrl+0)"
             >
               <Minimize2 className="w-4 h-4" />
             </button>
 
             <button
-              onClick={() => setActiveTool(activeTool === 'marquee-zoom' ? 'select' : 'marquee-zoom')}
+              type="button"
+              aria-label="Alan Yakınlaştırma"
+              aria-pressed={activeTool === 'marquee-zoom'}
+              onClick={() => syncActiveTool(activeTool === 'marquee-zoom' ? 'select' : 'marquee-zoom')}
               className={cn(
                 'p-1.5 rounded-md transition-colors',
                 activeTool === 'marquee-zoom'
-                  ? 'bg-sky-500 text-white font-semibold shadow-xs'
+                  ? 'bg-sky-500 text-white font-semibold shadow-sm'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
-              title="Alan Yakınlaştırma (Kutu içine aldığınız alanı tam ekrana sığdırır) - Z / Shift+Sürükle"
+              title="Alan Yakınlaştırma (Z / Shift+Sürükle)"
             >
               <Scan className="w-4 h-4" />
             </button>
 
             <button
+              type="button"
+              aria-label="Tam Ekran Sunum Modu"
               onClick={() => {
                 useUIStore.getState().setFullscreenPresentation(true);
                 if (!document.fullscreenElement) {
@@ -615,11 +525,12 @@ export const TopToolbar: React.FC = () => {
 
             <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
 
-            {/* Bölge OCR (Windows Snipping Tool Tarzı) */}
             <button
+              type="button"
+              aria-label="Bölge OCR"
               onClick={() => useUIStore.getState().setSnipOcrModalOpen(true)}
-              className="px-2 py-1 rounded-md text-xs font-medium text-sky-600 dark:text-sky-400 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 transition-colors flex items-center gap-1.5 shadow-xs"
-              title="Bölge OCR — Windows Ekran Alıntısı tarzı alandan metin tara"
+              className="px-2 py-1 rounded-md text-xs font-medium text-sky-600 dark:text-sky-400 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 transition-colors flex items-center gap-1.5 shadow-sm"
+              title="Bölge OCR — Seçilen alandan metin tara"
             >
               <Crosshair className="w-3.5 h-3.5 text-sky-500" />
               <span className="hidden lg:inline">Bölge OCR</span>
@@ -629,6 +540,9 @@ export const TopToolbar: React.FC = () => {
           {/* View Mode Select */}
           <div className="hidden md:flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700/80">
             <button
+              type="button"
+              aria-label="Sürekli Dikey Görünüm"
+              aria-pressed={viewMode === 'continuous'}
               onClick={() => setViewMode('continuous')}
               className={cn(
                 'p-1.5 rounded-md transition-colors',
@@ -641,6 +555,9 @@ export const TopToolbar: React.FC = () => {
               <Rows className="w-4 h-4" />
             </button>
             <button
+              type="button"
+              aria-label="Tek Sayfa Görünümü"
+              aria-pressed={viewMode === 'single'}
               onClick={() => setViewMode('single')}
               className={cn(
                 'p-1.5 rounded-md transition-colors',
@@ -653,6 +570,9 @@ export const TopToolbar: React.FC = () => {
               <Square className="w-4 h-4" />
             </button>
             <button
+              type="button"
+              aria-label="İki Sayfa Yan Yana"
+              aria-pressed={viewMode === 'two-page'}
               onClick={() => setViewMode('two-page')}
               className={cn(
                 'p-1.5 rounded-md transition-colors',
@@ -664,7 +584,27 @@ export const TopToolbar: React.FC = () => {
             >
               <Columns className="w-4 h-4" />
             </button>
+            {viewMode === 'two-page' && (
+              <button
+                type="button"
+                aria-label="Kapak Sayfasını Ayrı Göster"
+                aria-pressed={twoPageCoverOffset}
+                onClick={toggleTwoPageCoverOffset}
+                className={cn(
+                  'p-1.5 rounded-md transition-colors',
+                  twoPageCoverOffset
+                    ? 'bg-sky-500 text-white font-semibold'
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                )}
+                title="İki Sayfa Görünümünde Kapak Sayfasını Tek Göster"
+              >
+                <BookCopy className="w-4 h-4" />
+              </button>
+            )}
             <button
+              type="button"
+              aria-label="Dört Sayfa Grid Görünümü"
+              aria-pressed={viewMode === 'four-page'}
               onClick={() => setViewMode('four-page')}
               className={cn(
                 'p-1.5 rounded-md transition-colors',
@@ -672,7 +612,7 @@ export const TopToolbar: React.FC = () => {
                   ? 'bg-sky-500/20 text-sky-600 dark:text-sky-400 font-semibold'
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               )}
-              title="Dört Sayfa Grid Görünümü"
+              title="Dört Sayfa Izgara Görünümü"
             >
               <Grid2X2 className="w-4 h-4" />
             </button>
@@ -681,24 +621,18 @@ export const TopToolbar: React.FC = () => {
           {/* Rotate actions */}
           <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700/80">
             <button
-              onClick={() => {
-                const selected = currentDocument.selectedPageIds;
-                if (selected.length > 0) {
-                  historyManager.execute(new RotatePageCommand(selected, -90));
-                }
-              }}
+              type="button"
+              aria-label="Sola Döndür (-90 derece)"
+              onClick={() => handleRotate(-90)}
               className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-slate-700 dark:text-slate-300 transition-colors"
               title="Sola Döndür (-90°)"
             >
               <RotateCcw className="w-4 h-4" />
             </button>
             <button
-              onClick={() => {
-                const selected = currentDocument.selectedPageIds;
-                if (selected.length > 0) {
-                  historyManager.execute(new RotatePageCommand(selected, 90));
-                }
-              }}
+              type="button"
+              aria-label="Sağa Döndür (+90 derece)"
+              onClick={() => handleRotate(90)}
               className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-slate-700 dark:text-slate-300 transition-colors"
               title="Sağa Döndür (+90°)"
             >
@@ -707,16 +641,18 @@ export const TopToolbar: React.FC = () => {
           </div>
         </div>
       ) : (
-        <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Lütfen bir PDF dosyası açın</div>
+        <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Lütfen bir PDF belgesi açın</div>
       )}
 
-      {/* Right Section: Search, Settings, Info */}
+      {/* Right Section: Search, Reading Mode, Theme, Properties, Shortcuts, Settings */}
       <div className="flex items-center gap-1.5">
         {currentDocument && (
           <button
+            type="button"
+            aria-label="Belgede Ara (Ctrl + F)"
             onClick={openSearch}
             className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80"
-            title="Dökümanda Ara (Ctrl + F)"
+            title="Belgede Ara (Ctrl + F)"
           >
             <Search className="w-4 h-4 text-sky-500 dark:text-sky-400" />
           </button>
@@ -726,6 +662,9 @@ export const TopToolbar: React.FC = () => {
         {currentDocument && (
           <div className="relative" ref={readingThemeRef}>
             <button
+              type="button"
+              aria-label="Okuma Modu Seçimi"
+              aria-expanded={isReadingThemeOpen}
               onClick={() => setIsReadingThemeOpen(!isReadingThemeOpen)}
               className={cn(
                 'p-2 rounded-lg transition-colors border shadow-sm flex items-center gap-1.5 text-xs font-medium',
@@ -737,13 +676,7 @@ export const TopToolbar: React.FC = () => {
             >
               <BookOpen className="w-4 h-4" />
               <span className="hidden xl:inline text-[11px]">
-                {readingTheme === 'default'
-                  ? 'Okuma Modu'
-                  : readingTheme === 'dark'
-                  ? 'Gece'
-                  : readingTheme === 'sepia'
-                  ? 'Sepya'
-                  : 'Kontrast'}
+                {readingTheme === 'default' ? 'Okuma Modu' : getReadingThemeLabel(readingTheme)}
               </span>
             </button>
 
@@ -760,6 +693,7 @@ export const TopToolbar: React.FC = () => {
                 ].map((item) => (
                   <button
                     key={item.id}
+                    type="button"
                     onClick={() => {
                       setReadingTheme(item.id as ReadingTheme);
                       setIsReadingThemeOpen(false);
@@ -771,7 +705,7 @@ export const TopToolbar: React.FC = () => {
                     )}
                   >
                     <div className="flex items-center gap-2">
-                      <span className={cn('w-3.5 h-3.5 rounded-full border shadow-xs shrink-0', item.color)} />
+                      <span className={cn('w-3.5 h-3.5 rounded-full border shadow-sm shrink-0', item.color)} />
                       <div>
                         <div className="text-xs leading-snug">{item.label}</div>
                         <div className="text-[10px] text-slate-400 font-normal leading-tight">{item.desc}</div>
@@ -785,29 +719,35 @@ export const TopToolbar: React.FC = () => {
           </div>
         )}
 
-        {/* Theme Toggle (Güneş / Ay) */}
+        {/* Theme Toggle */}
         <button
+          type="button"
+          aria-label={isDark ? 'Açık Temaya Geç' : 'Karanlık Temaya Geç'}
           onClick={() => {
-            const nextTheme = theme === 'dark' ? 'light' : 'dark';
+            const nextTheme = isDark ? 'light' : 'dark';
             setTheme(nextTheme);
             addToast(`Tema değiştirildi: ${nextTheme === 'dark' ? 'Karanlık Mod' : 'Aydınlık Mod'}`, 'info', 1200);
           }}
           className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700/80 shadow-sm"
-          title={theme === 'dark' ? 'Açık Temaya Geç' : 'Karanlık Temaya Geç'}
+          title={
+            theme === 'system'
+              ? `Sistem Teması (${isDark ? 'Koyu' : 'Açık'}) — Değiştir`
+              : isDark
+              ? 'Açık Temaya Geç'
+              : 'Karanlık Temaya Geç'
+          }
         >
-          {theme === 'dark' ? (
-            <Sun className="w-4 h-4 text-amber-400" />
-          ) : (
-            <Moon className="w-4 h-4 text-sky-600" />
-          )}
+          {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-sky-600" />}
         </button>
 
         {/* Properties Modal */}
         {currentDocument && (
           <button
+            type="button"
+            aria-label="Belge Özellikleri"
             onClick={() => setPropertiesModalOpen(true)}
             className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 transition-colors border border-slate-200 dark:border-slate-700/80"
-            title="Döküman Bilgileri"
+            title="Belge Bilgileri"
           >
             <Info className="w-4 h-4" />
           </button>
@@ -815,6 +755,8 @@ export const TopToolbar: React.FC = () => {
 
         {/* Shortcuts */}
         <button
+          type="button"
+          aria-label="Klavye Kısayolları"
           onClick={() => setShortcutsModalOpen(true)}
           className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 transition-colors border border-slate-200 dark:border-slate-700/80"
           title="Klavye Kısayolları"
@@ -824,8 +766,10 @@ export const TopToolbar: React.FC = () => {
 
         {/* Settings Center */}
         <button
+          type="button"
+          aria-label="Ayarlar Merkezi"
           onClick={() => setSettingsModalOpen(true)}
-          className="p-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 transition-colors border border-sky-500/30 shadow-xs group"
+          className="p-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 transition-colors border border-sky-500/30 shadow-sm group"
           title="Ayarlar Merkezi & Tasarımlar (Ctrl + ,)"
         >
           <Settings className="w-4 h-4 group-hover:rotate-45 transition-transform duration-300" />
