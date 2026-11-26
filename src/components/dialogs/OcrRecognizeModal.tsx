@@ -7,6 +7,7 @@ import { useAnnotationStore } from '@/store/annotation-store';
 import { clearDocumentCaches } from '@/core/cache/render-cache';
 import { binaryStore } from '@/core/storage/binary-store';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
+import { PdfExporter } from '@/core/engine/pdf-exporter';
 import {
   OcrService,
   OcrLanguage,
@@ -35,6 +36,8 @@ import {
   ShieldCheck,
   RotateCcw,
   Crosshair,
+  SlidersHorizontal,
+  AlertTriangle,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -48,15 +51,23 @@ export const OcrRecognizeModal: React.FC = () => {
   const currentPageIndex = currentDocument?.activePageIndex || 0;
   const appDesignTheme = useViewerStore((s) => s.appDesignTheme) || 'fluent';
 
-  // Workflow Mode (PDF24 & Adobe Acrobat Pro Standards)
+  const hasWinRt = Boolean(
+    typeof window !== 'undefined' &&
+      window.electronAPI?.isElectron &&
+      window.electronAPI?.platform === 'win32' &&
+      window.electronAPI?.winrtOcrRegion
+  );
+
+  // Workflow Mode
   const [workflowMode, setWorkflowMode] = useState<OcrWorkflowMode>('searchable');
 
   // Configuration
   const [pageScope, setPageScope] = useState<'current' | 'all' | 'custom'>('all');
   const [customRange, setCustomRange] = useState('');
   const [selectedLang, setSelectedLang] = useState<OcrLanguage>('tur+eng');
-  const [cleanPaper, setCleanPaper] = useState(true);
-  const [hideScanUnderneath, setHideScanUnderneath] = useState(true);
+  const [enhanceMode, setEnhanceMode] = useState<OcrEnhanceMode>('smart');
+  const [psm, setPsm] = useState<OcrPageSegMode>('3');
+  const [hideScanUnderneath, setHideScanUnderneath] = useState(false);
   const [autoApply, setAutoApply] = useState(true);
 
   // Runtime State
@@ -67,20 +78,36 @@ export const OcrRecognizeModal: React.FC = () => {
   const [isCopied, setIsCopied] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
 
-  const abortRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Reset state on close or document change
+  // Reset state on close or document switch, and cancel any in-flight OCR
   useEffect(() => {
     if (!isOcrModalOpen) {
-      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
       setIsProcessing(false);
       setProgress(null);
       setOcrResult(null);
       setSearchablePdfBytes(null);
+      setIsCopied(false);
     } else {
-      abortRef.current = false;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      setIsProcessing(false);
+      setProgress(null);
+      setOcrResult(null);
+      setSearchablePdfBytes(null);
+      setIsCopied(false);
     }
-  }, [isOcrModalOpen]);
+  }, [isOcrModalOpen, currentDocument?.id]);
+
+  // Terminate Tesseract worker when modal unmounts to release WASM memory
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      OcrService.terminateWorker().catch(() => {});
+    };
+  }, []);
 
   if (!isOcrModalOpen || !currentDocument || !pdfDocProxy) return null;
 
@@ -114,6 +141,20 @@ export const OcrRecognizeModal: React.FC = () => {
     return result.length > 0 ? result : [activePageNum];
   };
 
+  const getEffectivePdfBuffer = async (): Promise<ArrayBuffer | undefined> => {
+    const hasUnsavedChanges =
+      currentDocument.isModified ||
+      currentDocument.pages.some((p) => p.annotations.length > 0);
+    if (hasUnsavedChanges) {
+      try {
+        return await PdfExporter.exportDocumentWithAnnotations(currentDocument);
+      } catch (err) {
+        console.warn('Could not export unsaved annotations before OCR, falling back to raw buffer:', err);
+      }
+    }
+    return binaryStore.get(currentDocument.id);
+  };
+
   const handleStartOcr = async () => {
     const targetPages = resolveTargetPages();
     if (targetPages.length === 0) {
@@ -121,18 +162,31 @@ export const OcrRecognizeModal: React.FC = () => {
       return;
     }
 
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setIsProcessing(true);
-    setProgress(null);
+    setProgress({
+      stage: 'rasterizing',
+      currentPage: targetPages[0],
+      totalPages: targetPages.length,
+      pageProgress: 0,
+      overallProgress: 0,
+      statusText: 'OCR motoru hazırlanıyor...',
+    });
     setOcrResult(null);
     setSearchablePdfBytes(null);
-    abortRef.current = false;
 
     try {
-      const enhanceMode: OcrEnhanceMode = cleanPaper ? 'smart' : 'raw';
-      const psm: OcrPageSegMode = '3';
-
       addToast(
-        `${targetPages.length} sayfa için ${workflowMode === 'searchable' ? 'Aranabilir PDF' : 'Metin Tanıma'} başlatıldı...`,
+        `${targetPages.length} sayfa için ${
+          workflowMode === 'searchable'
+            ? 'Aranabilir PDF'
+            : workflowMode === 'editable'
+            ? 'Düzenlenebilir Metin'
+            : 'Metin Tanıma'
+        } başlatıldı...`,
         'info'
       );
 
@@ -143,39 +197,41 @@ export const OcrRecognizeModal: React.FC = () => {
         enhanceMode,
         psm,
         (prog) => {
-          if (!abortRef.current) {
+          if (!controller.signal.aborted) {
             setProgress(prog);
           }
-        }
+        },
+        { signal: controller.signal, scale: 3.0, includePreview: false }
       );
 
-      if (abortRef.current) return;
+      if (controller.signal.aborted) return;
       setOcrResult(result);
 
-      // Workflow Mode 1: Searchable PDF (PDF24 & Adobe Acrobat Pro Standard)
       if (workflowMode === 'searchable') {
-        const originalBuffer = binaryStore.get(currentDocument.id);
-        if (originalBuffer) {
+        const sourceBuffer = await getEffectivePdfBuffer();
+        if (controller.signal.aborted) return;
+
+        if (sourceBuffer) {
           const searchableBytes = await SearchablePdfEngine.createSearchablePdf(
-            originalBuffer,
+            sourceBuffer,
             result.pages
           );
-          if (!abortRef.current) {
+          if (!controller.signal.aborted) {
             setSearchablePdfBytes(searchableBytes);
-
-            // Auto-apply directly to active document if enabled (Zero-Click experience)
-            if (autoApply) {
+            if (autoApply && result.totalWords > 0) {
               await applySearchablePdfToDocument(searchableBytes, result);
               return;
-            } else {
+            }
+            if (result.totalWords > 0) {
               addToast('Aranabilir PDF katmanı hazırlandı!', 'success');
+            } else {
+              addToast('Sayfalarda aranabilir metin tespit edilemedi.', 'warning');
             }
           }
         } else {
           addToast('Orijinal belge bellekte bulunamadı.', 'error');
         }
       } else if (workflowMode === 'editable') {
-        // Workflow Mode 2: Adobe Acrobat Pro In-Place Editable Text
         const options: TextTransferOptions = {
           mode: 'paragraph',
           hideOriginalScan: hideScanUnderneath,
@@ -184,51 +240,63 @@ export const OcrRecognizeModal: React.FC = () => {
           fontFamily: 'Helvetica, Arial, sans-serif',
         };
 
-        if (result.pages.length === 1) {
-          const res = OcrTextTransfer.transferSinglePage(result.pages[0], options);
-          if (res.success) {
-            addToast(
-              `Sayfa ${result.pages[0].pageNumber}'e ${res.count} düzenlenebilir metin kutusu aktarıldı!`,
-              'success',
-              4500
-            );
-            setOcrModalOpen(false);
-          } else {
-            addToast('Sayfaya aktarılacak metin bulunamadı.', 'warning');
-          }
+        const transferred =
+          result.pages.length === 1
+            ? OcrTextTransfer.transferSinglePage(result.pages[0], options)
+            : OcrTextTransfer.transferMultiplePages(result.pages, options);
+
+        if (transferred.success) {
+          const count = 'count' in transferred ? transferred.count : transferred.totalCount;
+          addToast(
+            `${count} düzenlenebilir metin kutusu sayfaya aktarıldı! (Ctrl+Z ile geri alınabilir)`,
+            'success',
+            4500
+          );
+          setOcrModalOpen(false);
         } else {
-          const res = OcrTextTransfer.transferMultiplePages(result.pages, options);
-          if (res.success) {
-            addToast(
-              `${res.pagesAffected} sayfaya toplam ${res.totalCount} düzenlenebilir metin aktarıldı! (Ctrl+Z ile geri alınabilir)`,
-              'success',
-              4500
-            );
-            setOcrModalOpen(false);
-          } else {
-            addToast('Sayfalara aktarılacak metin bulunamadı.', 'warning');
-          }
+          addToast('Sayfalara aktarılacak metin bulunamadı.', 'warning');
         }
       } else {
-        // Workflow Mode 3: Extract Text
         addToast(`${result.totalWords} kelime başarıyla ayıklandı!`, 'success');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      if ((err as { name?: string })?.name === 'AbortError') {
+        return;
+      }
       console.error('OCR Process Error:', err);
-      addToast(`İşlem sırasında hata oluştu: ${err.message || err}`, 'error');
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast(`İşlem sırasında hata oluştu: ${msg}`, 'error');
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
       setIsProcessing(false);
     }
   };
 
-  // Action: Apply Searchable PDF Directly into the Active Viewer (In-Place Update)
+  const handleCancelOcr = () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setIsProcessing(false);
+    setProgress(null);
+    addToast('OCR işlemi iptal edildi.', 'info');
+  };
+
+  const handleCloseModal = () => {
+    if (isProcessing) {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      setIsProcessing(false);
+    }
+    setOcrModalOpen(false);
+  };
+
   const applySearchablePdfToDocument = async (bytes: Uint8Array, result: OcrDocumentResult) => {
     setIsApplying(true);
     try {
       const pageIdx = currentDocument.activePageIndex || 0;
       const oldDocId = currentDocument.id;
 
-      // Invalidate render and metadata caches for old document
       clearDocumentCaches(oldDocId);
 
       const loaded = await PdfLoader.loadDocument(
@@ -237,24 +305,24 @@ export const OcrRecognizeModal: React.FC = () => {
         currentDocument.filePath
       );
 
-      // Preserve active page index
-      loaded.model.activePageIndex = pageIdx;
+      loaded.model.activePageIndex = Math.min(pageIdx, Math.max(0, loaded.model.pages.length - 1));
+      if (loaded.model.pages[loaded.model.activePageIndex]) {
+        loaded.model.activePageId = loaded.model.pages[loaded.model.activePageIndex].id;
+      }
+      loaded.model.isModified = true;
 
-      // Clean old binary and replace in active tab
-      binaryStore.delete(oldDocId);
       setDocument(loaded.model, loaded.pdfDoc);
       replaceActiveTab(loaded.model, loaded.pdfDoc);
+      binaryStore.delete(oldDocId);
 
-      // Switch active tool to select immediately
       useAnnotationStore.getState().setActiveTool('select');
       useViewerStore.getState().setActiveTool('select');
 
-      // Trigger instant Visual Highlight Pulse for the active page
       const activePageRes =
         result.pages.find((p) => p.pageNumber === pageIdx + 1) || result.pages[0];
       if (activePageRes) {
         setOcrHighlightPulse({
-          pageIndex: pageIdx,
+          pageIndex: loaded.model.activePageIndex,
           words: (activePageRes.words || []).map((w) => ({ normBbox: w.normBbox, text: w.text })),
           wordCount: result.totalWords,
           timestamp: Date.now(),
@@ -281,38 +349,30 @@ export const OcrRecognizeModal: React.FC = () => {
     await applySearchablePdfToDocument(searchablePdfBytes, ocrResult);
   };
 
-  // Action: Convert to Editable In-Place Text (Acrobat Pro Mode)
   const handleConvertToEditableDirectly = () => {
     if (!ocrResult) return;
     const options: TextTransferOptions = {
       mode: 'paragraph',
-      hideOriginalScan: true,
+      hideOriginalScan: hideScanUnderneath,
       fontSizeMultiplier: 1.0,
       fontColor: '#0f172a',
       fontFamily: 'Helvetica, Arial, sans-serif',
     };
-    if (ocrResult.pages.length === 1) {
-      const res = OcrTextTransfer.transferSinglePage(ocrResult.pages[0], options);
-      if (res.success) {
-        addToast(
-          `Sayfa ${ocrResult.pages[0].pageNumber}'e ${res.count} düzenlenebilir metin kutusu aktarıldı!`,
-          'success'
-        );
-        setOcrModalOpen(false);
-      }
+
+    const res =
+      ocrResult.pages.length === 1
+        ? OcrTextTransfer.transferSinglePage(ocrResult.pages[0], options)
+        : OcrTextTransfer.transferMultiplePages(ocrResult.pages, options);
+
+    if (res.success) {
+      const count = 'count' in res ? res.count : res.totalCount;
+      addToast(`${count} düzenlenebilir metin kutusu sayfaya aktarıldı!`, 'success');
+      setOcrModalOpen(false);
     } else {
-      const res = OcrTextTransfer.transferMultiplePages(ocrResult.pages, options);
-      if (res.success) {
-        addToast(
-          `${res.pagesAffected} sayfaya toplam ${res.totalCount} düzenlenebilir metin aktarıldı!`,
-          'success'
-        );
-        setOcrModalOpen(false);
-      }
+      addToast('Aktarılacak metin bulunamadı.', 'warning');
     }
   };
 
-  // Action: Open in New Tab
   const handleOpenInNewTab = async () => {
     if (!searchablePdfBytes) return;
     try {
@@ -330,22 +390,41 @@ export const OcrRecognizeModal: React.FC = () => {
     }
   };
 
-  // Action: Download Searchable PDF File
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     if (!searchablePdfBytes) return;
-    const blob = new Blob([searchablePdfBytes as any], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = currentDocument.name.replace(/\.pdf$/i, '') + ' (Aranabilir).pdf';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    addToast('Aranabilir PDF indirildi.', 'success');
+    const defaultName = currentDocument.name.replace(/\.pdf$/i, '') + ' (Aranabilir).pdf';
+    const electron = window.electronAPI;
+    try {
+      if (electron?.showSaveDialog && electron?.saveFile) {
+        const res = await electron.showSaveDialog({
+          title: 'Aranabilir PDF Kaydet',
+          defaultPath: defaultName,
+          filters: [{ name: 'PDF Dosyası', extensions: ['pdf'] }],
+        });
+        if (res.canceled || !res.filePath) return;
+        const saveRes = await electron.saveFile(res.filePath, searchablePdfBytes);
+        if (!saveRes.success) throw new Error(saveRes.error || 'Kaydetme başarısız.');
+        addToast('Aranabilir PDF kaydedildi.', 'success');
+        return;
+      }
+
+      const copy = searchablePdfBytes.slice();
+      const blob = new Blob([copy], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = defaultName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      addToast('Aranabilir PDF indirildi.', 'success');
+    } catch (err) {
+      console.error(err);
+      addToast('Aranabilir PDF kaydedilemedi.', 'error');
+    }
   };
 
-  // Action: Copy Extracted Text
   const handleCopyText = async () => {
     if (!ocrResult) return;
     try {
@@ -358,7 +437,6 @@ export const OcrRecognizeModal: React.FC = () => {
     }
   };
 
-  // Action: Download Extracted Text as TXT
   const handleDownloadTxt = () => {
     if (!ocrResult) return;
     const blob = new Blob([ocrResult.fullText], { type: 'text/plain;charset=utf-8' });
@@ -369,7 +447,7 @@ export const OcrRecognizeModal: React.FC = () => {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     addToast('Metin dosyası indirildi.', 'success');
   };
 
@@ -404,12 +482,12 @@ export const OcrRecognizeModal: React.FC = () => {
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-base font-bold tracking-tight">
                   Metin Tanıma (OCR) & Aranabilir Belge
                 </h2>
                 <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3" /> PDF24 & Acrobat Pro Motoru
+                  <ShieldCheck className="w-3 h-3" /> Çevrimdışı Tesseract Motoru
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -419,9 +497,10 @@ export const OcrRecognizeModal: React.FC = () => {
           </div>
 
           <button
-            onClick={() => setOcrModalOpen(false)}
-            disabled={isProcessing}
-            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+            type="button"
+            onClick={handleCloseModal}
+            aria-label="Kapat"
+            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -429,14 +508,13 @@ export const OcrRecognizeModal: React.FC = () => {
 
         {/* Content Body */}
         <div className="p-6 overflow-y-auto max-h-[75vh] space-y-6 text-xs sm:text-sm">
-          {/* Section 1: Output Mode Cards (PDF24 & Adobe Acrobat Standard) */}
+          {/* Section 1: Output Mode Cards */}
           {!ocrResult && !isProcessing && (
             <div className="space-y-3">
               <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
                 1. Çıktı Türü ve Eylem Modu
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {/* Mode 1: Searchable PDF (Recommended) */}
                 <button
                   type="button"
                   onClick={() => setWorkflowMode('searchable')}
@@ -452,7 +530,7 @@ export const OcrRecognizeModal: React.FC = () => {
                       <Search className="w-4 h-4" />
                     </div>
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300">
-                      PDF24 Standardı
+                      Standart
                     </span>
                   </div>
                   <div>
@@ -460,12 +538,11 @@ export const OcrRecognizeModal: React.FC = () => {
                       Aranabilir PDF Katmanı
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                      Orijinal kağıt görüntüsünü bozmadan metinleri seçilebilir, kopyalanabilir ve Ctrl+F ile aranabilir yapar (Görünmez katman).
+                      Görünmez metin katmanı (3 Tr) ekleyerek yazıları seçilebilir ve Ctrl+F ile aranabilir yapar.
                     </p>
                   </div>
                 </button>
 
-                {/* Mode 2: Editable In-Place Text (Acrobat Pro) */}
                 <button
                   type="button"
                   onClick={() => setWorkflowMode('editable')}
@@ -481,7 +558,7 @@ export const OcrRecognizeModal: React.FC = () => {
                       <Type className="w-4 h-4" />
                     </div>
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300">
-                      Acrobat Pro
+                      Düzenle
                     </span>
                   </div>
                   <div>
@@ -489,12 +566,11 @@ export const OcrRecognizeModal: React.FC = () => {
                       Düzenlenebilir Metin
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                      Sayfadaki yazıları doğrudan tıklayıp değiştirebileceğiniz ve silebileceğiniz düzenlenebilir metin kutularına dönüştürür.
+                      Sayfadaki yazıları doğrudan düzenlenebilir metin kutularına dönüştürür.
                     </p>
                   </div>
                 </button>
 
-                {/* Mode 3: Snipping Tool / PowerToys Region OCR */}
                 <button
                   type="button"
                   onClick={() => {
@@ -508,20 +584,21 @@ export const OcrRecognizeModal: React.FC = () => {
                       <Crosshair className="w-4 h-4" />
                     </div>
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-500 text-white">
-                      Windows Ekran Alıntısı
+                      {hasWinRt ? 'Windows OCR' : 'Bölge OCR'}
                     </span>
                   </div>
                   <div>
                     <h3 className="font-bold text-sky-700 dark:text-sky-300 text-xs mb-1 flex items-center gap-1">
-                      Bölge OCR (Seç & Tara) ⚡
+                      Bölge OCR (Seç & Tara)
                     </h3>
                     <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                      Sayfada istediğiniz bir alanı fare ile dikdörtgen çizip kesin; Windows OCR yerel motoruyla anında metne çevirin.
+                      {hasWinRt
+                        ? 'Sayfada bir alanı seçin; Windows OCR yerel motoruyla anında metne çevirin.'
+                        : 'Sayfada bir alanı seçin; Tesseract OCR motoruyla anında metne çevirin.'}
                     </p>
                   </div>
                 </button>
 
-                {/* Mode 4: Extract Text */}
                 <button
                   type="button"
                   onClick={() => setWorkflowMode('extract')}
@@ -540,7 +617,7 @@ export const OcrRecognizeModal: React.FC = () => {
                       Metin Çıkarıcı
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                      Belgedeki tüm yazıları düz metin olarak çıkarır, panoya kopyalar veya TXT olarak kaydeder.
+                      Belgedeki tüm yazıları düz metin olarak çıkarır, kopyalar veya TXT olarak kaydeder.
                     </p>
                   </div>
                 </button>
@@ -566,11 +643,11 @@ export const OcrRecognizeModal: React.FC = () => {
                     onChange={(e) => setSelectedLang(e.target.value as OcrLanguage)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-2 focus:ring-sky-500 text-xs font-medium cursor-pointer"
                   >
-                    <option value="tur+eng">🇹🇷 + 🇬🇧 Türkçe & İngilizce (Önerilen)</option>
-                    <option value="tur">🇹🇷 Yalnızca Türkçe (tur)</option>
-                    <option value="eng">🇬🇧 Only English (eng)</option>
-                    <option value="deu">🇩🇪 Deutsch (deu)</option>
-                    <option value="fra">🇫🇷 Français (fra)</option>
+                    <option value="tur+eng">Türkçe & İngilizce (Önerilen)</option>
+                    <option value="tur">Yalnızca Türkçe (tur)</option>
+                    <option value="eng">English (eng)</option>
+                    <option value="deu">Deutsch (deu)</option>
+                    <option value="fra">Français (fra)</option>
                   </select>
                 </div>
 
@@ -618,6 +695,39 @@ export const OcrRecognizeModal: React.FC = () => {
                     </button>
                   </div>
                 </div>
+
+                {/* Image Preprocessing */}
+                <div className="space-y-1.5">
+                  <span className="font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5 text-xs">
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-500" /> Görüntü Ön İşleme:
+                  </span>
+                  <select
+                    value={enhanceMode}
+                    onChange={(e) => setEnhanceMode(e.target.value as OcrEnhanceMode)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-2 focus:ring-sky-500 text-xs font-medium cursor-pointer"
+                  >
+                    <option value="smart">Standart Akıllı Temizleme (Önerilen)</option>
+                    <option value="enhanced">Güçlendirilmiş Kontrast (Silik Baskı)</option>
+                    <option value="otsu">Siyah-Beyaz Eşikleme (Otsu Binarize)</option>
+                    <option value="raw">Ham Görüntü (Filtresiz)</option>
+                  </select>
+                </div>
+
+                {/* Page Segmentation Mode (PSM) */}
+                <div className="space-y-1.5">
+                  <span className="font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5 text-xs">
+                    <FileText className="w-3.5 h-3.5 text-amber-500" /> Sayfa Düzeni (PSM):
+                  </span>
+                  <select
+                    value={psm}
+                    onChange={(e) => setPsm(e.target.value as OcrPageSegMode)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-2 focus:ring-sky-500 text-xs font-medium cursor-pointer"
+                  >
+                    <option value="3">Otomatik Sayfa Düzeni (PSM 3)</option>
+                    <option value="6">Tek Metin Bloğu / Fatura (PSM 6)</option>
+                    <option value="11">Seyrek / Dağınık Metin (PSM 11)</option>
+                  </select>
+                </div>
               </div>
 
               {pageScope === 'custom' && (
@@ -633,7 +743,7 @@ export const OcrRecognizeModal: React.FC = () => {
                 </div>
               )}
 
-              {/* Toggles (PDF24 style Deskew & Clean Paper) */}
+              {/* Toggles */}
               <div className="space-y-2 pt-2">
                 {workflowMode === 'searchable' && (
                   <label className="flex items-center gap-2.5 cursor-pointer text-xs text-slate-700 dark:text-slate-300 select-none bg-sky-50/60 dark:bg-sky-950/20 p-2.5 rounded-xl border border-sky-200/60 dark:border-sky-800/40">
@@ -644,7 +754,10 @@ export const OcrRecognizeModal: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300 dark:border-slate-700 cursor-pointer"
                     />
                     <span>
-                      <strong className="text-sky-700 dark:text-sky-300">Otomatik Belgeye Uygula (Önerilen):</strong> OCR bitince aranabilir katmanı doğrudan mevcut belgeye uygula ve seçime hazırla
+                      <strong className="text-sky-700 dark:text-sky-300">
+                        Otomatik Belgeye Uygula (Önerilen):
+                      </strong>{' '}
+                      OCR bitince aranabilir katmanı doğrudan mevcut belgeye uygula ve seçime hazırla
                     </span>
                   </label>
                 )}
@@ -652,28 +765,14 @@ export const OcrRecognizeModal: React.FC = () => {
                 <label className="flex items-center gap-2.5 cursor-pointer text-xs text-slate-700 dark:text-slate-300 select-none">
                   <input
                     type="checkbox"
-                    checked={cleanPaper}
-                    onChange={(e) => setCleanPaper(e.target.checked)}
-                    className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300 dark:border-slate-700 cursor-pointer"
+                    checked={hideScanUnderneath}
+                    onChange={(e) => setHideScanUnderneath(e.target.checked)}
+                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 cursor-pointer"
                   />
                   <span>
-                    <strong>PDF24 Görüntü Temizleme:</strong> Gölgeleri ve sararmış kağıt lekelerini otomatik temizle (300 DPI)
+                    <strong>Düzenlenebilir Aktarımda Beyaz Maske:</strong> Altındaki taranmış kağıt görüntüsünü beyaz maske ile ört
                   </span>
                 </label>
-
-                {workflowMode === 'editable' && (
-                  <label className="flex items-center gap-2.5 cursor-pointer text-xs text-slate-700 dark:text-slate-300 select-none">
-                    <input
-                      type="checkbox"
-                      checked={hideScanUnderneath}
-                      onChange={(e) => setHideScanUnderneath(e.target.checked)}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 cursor-pointer"
-                    />
-                    <span>
-                      <strong>Acrobat Pro Beyaz Maske:</strong> Taranmış kağıt görüntüsünün üzerini beyaz maske ile ört
-                    </span>
-                  </label>
-                )}
               </div>
             </div>
           )}
@@ -697,7 +796,6 @@ export const OcrRecognizeModal: React.FC = () => {
                 </p>
               </div>
 
-              {/* Progress Bar */}
               <div className="w-full max-w-md bg-slate-100 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden">
                 <div
                   className="bg-gradient-to-r from-sky-500 to-indigo-600 h-full transition-all duration-300 rounded-full"
@@ -706,16 +804,13 @@ export const OcrRecognizeModal: React.FC = () => {
               </div>
 
               <span className="text-xs font-semibold text-sky-600 dark:text-sky-400">
-                %{progress.overallProgress} Tamamlandı (Sayfa {progress.currentPage} / {progress.totalPages})
+                %{progress.overallProgress} Tamamlandı (Sayfa {progress.currentPage} /{' '}
+                {progress.totalPages})
               </span>
 
               <button
                 type="button"
-                onClick={() => {
-                  abortRef.current = true;
-                  setIsProcessing(false);
-                  addToast('İşlem iptal edildi.', 'info');
-                }}
+                onClick={handleCancelOcr}
                 className="text-xs text-rose-500 hover:text-rose-600 underline font-medium pt-2"
               >
                 İptal Et
@@ -726,27 +821,41 @@ export const OcrRecognizeModal: React.FC = () => {
           {/* Section 4: Completion Summary & Actions */}
           {ocrResult && !isProcessing && (
             <div className="space-y-5 animate-in fade-in duration-200">
-              <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                <div>
-                  <h4 className="font-bold text-emerald-900 dark:text-emerald-200 text-sm">
-                    OCR İşlemi Başarıyla Tamamlandı!
-                  </h4>
-                  <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-0.5">
-                    {ocrResult.pages.length} sayfa işlendi • Toplam {ocrResult.totalWords} kelime tanındı • Ortalama Güven: %{ocrResult.averageConfidence}
-                  </p>
+              {ocrResult.totalWords === 0 ? (
+                <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-bold text-amber-900 dark:text-amber-200 text-sm">
+                      Metin Algılanamadı
+                    </h4>
+                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                      {ocrResult.pages.length} sayfa tarandı ancak kelime tespit edilemedi. Dil seçimini, ön işleme filtresini (Otsu / Güçlendirilmiş) veya PSM modunu değiştirip tekrar deneyebilirsiniz.
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-bold text-emerald-900 dark:text-emerald-200 text-sm">
+                      OCR İşlemi Başarıyla Tamamlandı!
+                    </h4>
+                    <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-0.5">
+                      {ocrResult.pages.length} sayfa işlendi • Toplam {ocrResult.totalWords} kelime tanındı • Ortalama Güven: %{ocrResult.averageConfidence}
+                    </p>
+                  </div>
+                </div>
+              )}
 
-              {/* Mode 1: Searchable PDF Action Buttons */}
-              {workflowMode === 'searchable' && searchablePdfBytes && (
+              {/* Searchable PDF Action Buttons */}
+              {workflowMode === 'searchable' && searchablePdfBytes && ocrResult.totalWords > 0 && (
                 <div className="space-y-3">
                   <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 space-y-2">
                     <h5 className="font-semibold text-slate-800 dark:text-slate-200 text-xs">
                       Nasıl Kullanmak İstersiniz?
                     </h5>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Görünmez metin katmanı hazırlandı. Belgeyi hemen görüntüleyiciye uygulayabilir veya indirebilirsiniz.
+                      Görünmez metin katmanı hazırlandı. Belgeyi hemen görüntüleyiciye uygulayabilir veya kaydedebilirsiniz.
                     </p>
                   </div>
 
@@ -771,11 +880,11 @@ export const OcrRecognizeModal: React.FC = () => {
                       className="px-4 py-3 rounded-xl font-semibold border border-indigo-200 dark:border-indigo-800/60 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 flex items-center justify-center gap-2 transition-all cursor-pointer"
                     >
                       <Type className="w-4 h-4 text-indigo-500" />
-                      <span>Düzenlenebilir Metne Çevir (Acrobat Pro)</span>
+                      <span>Düzenlenebilir Metne Çevir</span>
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between pt-2">
+                  <div className="flex items-center justify-between pt-2 flex-wrap gap-2">
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -792,7 +901,7 @@ export const OcrRecognizeModal: React.FC = () => {
                         className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5 transition-all cursor-pointer"
                       >
                         <Download className="w-3.5 h-3.5" />
-                        <span>Aranabilir PDF İndir</span>
+                        <span>Aranabilir PDF Kaydet</span>
                       </button>
                     </div>
 
@@ -801,35 +910,59 @@ export const OcrRecognizeModal: React.FC = () => {
                       onClick={handleCopyText}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5 transition-all cursor-pointer"
                     >
-                      {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                      {isCopied ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
                       <span>{isCopied ? 'Kopyalandı' : 'Metni Kopyala'}</span>
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* Mode 3: Extracted Text View */}
-              {workflowMode === 'extract' && (
+              {/* Fallback / Extract / Editable summary view */}
+              {(workflowMode === 'extract' ||
+                workflowMode === 'editable' ||
+                !searchablePdfBytes ||
+                ocrResult.totalWords === 0) && (
                 <div className="space-y-3">
                   <textarea
                     readOnly
                     value={ocrResult.fullText}
                     rows={8}
+                    placeholder="Tanınan metin bulunamadı."
                     className="w-full p-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-xs focus:outline-hidden"
                   />
-                  <div className="flex items-center justify-end gap-2">
+                  <div className="flex items-center justify-end gap-2 flex-wrap">
+                    {ocrResult.fullText.trim().length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleConvertToEditableDirectly}
+                        className="px-4 py-2 rounded-xl text-xs font-semibold border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 flex items-center gap-2 transition-all"
+                      >
+                        <Type className="w-3.5 h-3.5" />
+                        <span>Düzenlenebilir Metne Aktar</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={handleCopyText}
-                      className="px-4 py-2 rounded-xl text-xs font-bold bg-sky-500 hover:bg-sky-600 text-white flex items-center gap-2 shadow-sm transition-all"
+                      disabled={!ocrResult.fullText.trim()}
+                      className="px-4 py-2 rounded-xl text-xs font-bold bg-sky-500 hover:bg-sky-600 disabled:opacity-40 text-white flex items-center gap-2 shadow-sm transition-all"
                     >
-                      {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      {isCopied ? (
+                        <Check className="w-3.5 h-3.5" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
                       <span>{isCopied ? 'Kopyalandı!' : 'Metni Kopyala'}</span>
                     </button>
                     <button
                       type="button"
                       onClick={handleDownloadTxt}
-                      className="px-4 py-2 rounded-xl text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 transition-all"
+                      disabled={!ocrResult.fullText.trim()}
+                      className="px-4 py-2 rounded-xl text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 flex items-center gap-2 transition-all"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>TXT Olarak İndir</span>
@@ -870,11 +1003,10 @@ export const OcrRecognizeModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setOcrModalOpen(false)}
-              disabled={isProcessing}
+              onClick={handleCloseModal}
               className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
             >
-              {ocrResult ? 'Kapat' : 'Vazgeç'}
+              {isProcessing ? 'İptal Et ve Kapat' : ocrResult ? 'Kapat' : 'Vazgeç'}
             </button>
 
             {!ocrResult && (
@@ -899,7 +1031,15 @@ export const OcrRecognizeModal: React.FC = () => {
                 ) : (
                   <>
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>OCR Başlat ({workflowMode === 'searchable' ? 'Aranabilir PDF' : workflowMode === 'editable' ? 'Düzenlenebilir' : 'Metin Çıkar'})</span>
+                    <span>
+                      OCR Başlat (
+                      {workflowMode === 'searchable'
+                        ? 'Aranabilir PDF'
+                        : workflowMode === 'editable'
+                        ? 'Düzenlenebilir'
+                        : 'Metin Çıkar'}
+                      )
+                    </span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </>
                 )}

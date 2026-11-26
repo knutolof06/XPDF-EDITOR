@@ -4,7 +4,11 @@ import { useUIStore } from '@/store/ui-store';
 import { useViewerStore } from '@/store/viewer-store';
 import { useTabStore } from '@/store/tab-store';
 import { binaryStore } from '@/core/storage/binary-store';
-import { PdfSecurityEngine, DocumentSecurityInfo, DocumentPermissions } from '@/core/security/pdf-security';
+import {
+  PdfSecurityEngine,
+  DocumentSecurityInfo,
+  DocumentPermissions,
+} from '@/core/security/pdf-security';
 import { PdfLoader } from '@/core/pdf/pdf-loader';
 import {
   X,
@@ -17,17 +21,68 @@ import {
   Printer,
   Copy,
   Edit3,
-  Check,
+  MessageSquare,
+  FileCheck2,
+  Layers,
   Loader2,
+  Eye,
+  EyeOff,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+
+function resolveIsDark(theme: 'dark' | 'light' | 'system'): boolean {
+  if (theme === 'dark') return true;
+  if (theme === 'light') return false;
+  if (typeof document !== 'undefined' && document.documentElement.classList.contains('dark')) {
+    return true;
+  }
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+  return false;
+}
+
+async function savePdfOutput(
+  bytes: ArrayBuffer,
+  defaultFileName: string,
+  dialogTitle: string
+): Promise<'saved' | 'canceled'> {
+  const electron = window.electronAPI;
+  if (electron?.showSaveDialog && electron?.saveFile) {
+    const dialogRes = await electron.showSaveDialog({
+      title: dialogTitle,
+      defaultPath: defaultFileName,
+      filters: [{ name: 'PDF Dosyası', extensions: ['pdf'] }],
+    });
+    if (dialogRes.canceled || !dialogRes.filePath) {
+      return 'canceled';
+    }
+    const saveRes = await electron.saveFile(dialogRes.filePath, bytes);
+    if (!saveRes.success) {
+      throw new Error(saveRes.error || 'Dosya diske kaydedilemedi.');
+    }
+    return 'saved';
+  }
+
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = defaultFileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return 'saved';
+}
 
 export const SecurityPermissionsModal: React.FC = () => {
   const { isSecurityModalOpen, setSecurityModalOpen, addToast } = useUIStore();
   const { currentDocument, pdfDocProxy, setDocument } = useDocumentStore();
   const { addTab } = useTabStore();
   const theme = useViewerStore((s) => s.theme);
-  const isDark = theme === 'dark';
+  const [isDark, setIsDark] = useState<boolean>(() => resolveIsDark(theme));
 
   const [activeTab, setActiveTab] = useState<'encrypt' | 'decrypt' | 'info'>('encrypt');
   const [securityInfo, setSecurityInfo] = useState<DocumentSecurityInfo | null>(null);
@@ -35,6 +90,13 @@ export const SecurityPermissionsModal: React.FC = () => {
   // Encryption inputs
   const [userPassword, setUserPassword] = useState('');
   const [ownerPassword, setOwnerPassword] = useState('');
+  const [showUserPwd, setShowUserPwd] = useState(false);
+  const [showOwnerPwd, setShowOwnerPwd] = useState(false);
+
+  // Decryption input
+  const [decryptPassword, setDecryptPassword] = useState('');
+  const [showDecryptPwd, setShowDecryptPwd] = useState(false);
+
   const [permissions, setPermissions] = useState<DocumentPermissions>({
     canPrint: true,
     canCopy: true,
@@ -44,27 +106,73 @@ export const SecurityPermissionsModal: React.FC = () => {
     canAssemble: false,
   });
 
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Sync dark mode including system theme changes
   useEffect(() => {
-    if (!isSecurityModalOpen || !pdfDocProxy) return;
+    setIsDark(resolveIsDark(theme));
+    if (theme !== 'system' || typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => setIsDark(mq.matches);
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, [theme]);
 
-    PdfSecurityEngine.getDocumentSecurity(pdfDocProxy).then((info) => {
+  // Clear sensitive passwords on close, document change, or unmount
+  const resetPasswords = () => {
+    setUserPassword('');
+    setOwnerPassword('');
+    setDecryptPassword('');
+    setShowUserPwd(false);
+    setShowOwnerPwd(false);
+    setShowDecryptPwd(false);
+    setErrorMessage(null);
+  };
+
+  useEffect(() => {
+    if (!isSecurityModalOpen) {
+      resetPasswords();
+      setSecurityInfo(null);
+    }
+    return () => {
+      setUserPassword('');
+      setOwnerPassword('');
+      setDecryptPassword('');
+    };
+  }, [isSecurityModalOpen, currentDocument?.id]);
+
+  // Load current document security metadata
+  useEffect(() => {
+    if (!isSecurityModalOpen || !pdfDocProxy || !currentDocument) return;
+    let active = true;
+    const rawBuffer = binaryStore.get(currentDocument.id);
+
+    PdfSecurityEngine.getDocumentSecurity(pdfDocProxy, rawBuffer).then((info) => {
+      if (!active) return;
       setSecurityInfo(info);
-      if (info.isEncrypted) {
-        setActiveTab('decrypt');
-      } else {
-        setActiveTab('encrypt');
-      }
+      setActiveTab(info.isEncrypted ? 'decrypt' : 'encrypt');
     });
-  }, [isSecurityModalOpen, pdfDocProxy]);
+
+    return () => {
+      active = false;
+    };
+  }, [isSecurityModalOpen, pdfDocProxy, currentDocument]);
 
   if (!isSecurityModalOpen || !currentDocument) return null;
 
-  // 1. Encrypt and Download
+  const handleClose = () => {
+    resetPasswords();
+    setSecurityModalOpen(false);
+  };
+
+  // 1. Encrypt and Save/Download
   const handleEncryptAndDownload = async () => {
-    if (!userPassword) {
-      addToast('Lütfen en az bir açılış parolası belirleyin.', 'warning');
+    setErrorMessage(null);
+    if (!userPassword && !ownerPassword) {
+      const msg = 'Lütfen en az bir açılış parolası veya yönetici parolası belirleyin.';
+      setErrorMessage(msg);
+      addToast(msg, 'warning');
       return;
     }
 
@@ -83,26 +191,46 @@ export const SecurityPermissionsModal: React.FC = () => {
       });
 
       const baseName = currentDocument.name.replace(/\.[^/.]+$/, '');
-      const blob = new Blob([encryptedBytes], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${baseName}_sifreli.pdf`;
-      link.click();
-      URL.revokeObjectURL(url);
+      const saveOutcome = await savePdfOutput(
+        encryptedBytes,
+        `${baseName}_sifreli.pdf`,
+        'Şifreli PDF Kaydet'
+      );
 
-      addToast('Belge başarıyla şifrelendi ve indirildi.', 'success');
-      setSecurityModalOpen(false);
-    } catch (err: any) {
-      console.error(err);
-      addToast('Şifreleme sırasında bir hata oluştu.', 'error');
+      if (saveOutcome === 'canceled') {
+        addToast('Kaydetme işlemi iptal edildi.', 'info');
+        return;
+      }
+
+      addToast('Belge başarıyla şifrelendi ve kaydedildi.', 'success');
+      handleClose();
+    } catch (err: unknown) {
+      console.error('Encrypt error:', err);
+      const msg = err instanceof Error ? err.message : 'Şifreleme sırasında bir hata oluştu.';
+      setErrorMessage(msg);
+      addToast(msg, 'error');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // 2. Remove Password / Decrypt
+  // 2. Remove Password / Decrypt (requires verifying current password)
   const handleRemovePassword = async (openInNewTab: boolean = false) => {
+    setErrorMessage(null);
+    if (!securityInfo?.isEncrypted) {
+      const msg = 'Bu belge zaten şifresizdir.';
+      setErrorMessage(msg);
+      addToast(msg, 'info');
+      return;
+    }
+
+    if (!decryptPassword) {
+      const msg = 'Şifreyi kaldırmak için lütfen mevcut belge veya yönetici parolasını girin.';
+      setErrorMessage(msg);
+      addToast(msg, 'warning');
+      return;
+    }
+
     const rawBuffer = binaryStore.get(currentDocument.id);
     if (!rawBuffer) {
       addToast('Döküman verisi bulunamadı.', 'error');
@@ -111,7 +239,7 @@ export const SecurityPermissionsModal: React.FC = () => {
 
     setIsProcessing(true);
     try {
-      const cleanBuffer = await PdfSecurityEngine.removePassword(rawBuffer);
+      const cleanBuffer = await PdfSecurityEngine.removePassword(rawBuffer, decryptPassword);
 
       if (openInNewTab) {
         const cleanName = `Korumasiz_${currentDocument.name}`;
@@ -119,26 +247,35 @@ export const SecurityPermissionsModal: React.FC = () => {
         addTab(model, pdfDoc);
         setDocument(model, pdfDoc);
         addToast('Şifresi kaldırılmış döküman yeni sekmede açıldı!', 'success');
+        handleClose();
       } else {
         const baseName = currentDocument.name.replace(/\.[^/.]+$/, '');
-        const blob = new Blob([cleanBuffer], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${baseName}_sifresiz.pdf`;
-        link.click();
-        URL.revokeObjectURL(url);
-        addToast('Şifresiz PDF dosyası başarıyla indirildi!', 'success');
+        const saveOutcome = await savePdfOutput(
+          cleanBuffer,
+          `${baseName}_sifresiz.pdf`,
+          'Şifresiz PDF Kaydet'
+        );
+        if (saveOutcome === 'canceled') {
+          addToast('Kaydetme işlemi iptal edildi.', 'info');
+          return;
+        }
+        addToast('Şifresiz PDF dosyası başarıyla kaydedildi!', 'success');
+        handleClose();
       }
-
-      setSecurityModalOpen(false);
-    } catch (err: any) {
-      console.error(err);
-      addToast('Şifre kaldırılırken hata oluştu.', 'error');
+    } catch (err: unknown) {
+      console.error('Remove password error:', err);
+      const msg = err instanceof Error ? err.message : 'Şifre kaldırılırken hata oluştu.';
+      setErrorMessage(msg);
+      addToast(msg, 'error');
     } finally {
       setIsProcessing(false);
     }
   };
+
+  const inputClass = cn(
+    'w-full pl-9 pr-9 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500 text-xs font-medium',
+    isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-4 animate-in fade-in duration-150">
@@ -168,7 +305,9 @@ export const SecurityPermissionsModal: React.FC = () => {
           </div>
 
           <button
-            onClick={() => setSecurityModalOpen(false)}
+            type="button"
+            onClick={handleClose}
+            aria-label="Kapat"
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -178,7 +317,11 @@ export const SecurityPermissionsModal: React.FC = () => {
         {/* Tab Navigation */}
         <div className="px-6 pt-3 flex gap-2 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold">
           <button
-            onClick={() => setActiveTab('encrypt')}
+            type="button"
+            onClick={() => {
+              setActiveTab('encrypt');
+              setErrorMessage(null);
+            }}
             className={cn(
               'pb-2.5 px-2 border-b-2 transition-all flex items-center gap-1.5',
               activeTab === 'encrypt'
@@ -191,7 +334,11 @@ export const SecurityPermissionsModal: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('decrypt')}
+            type="button"
+            onClick={() => {
+              setActiveTab('decrypt');
+              setErrorMessage(null);
+            }}
             className={cn(
               'pb-2.5 px-2 border-b-2 transition-all flex items-center gap-1.5',
               activeTab === 'decrypt'
@@ -204,7 +351,11 @@ export const SecurityPermissionsModal: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('info')}
+            type="button"
+            onClick={() => {
+              setActiveTab('info');
+              setErrorMessage(null);
+            }}
             className={cn(
               'pb-2.5 px-2 border-b-2 transition-all flex items-center gap-1.5',
               activeTab === 'info'
@@ -218,51 +369,85 @@ export const SecurityPermissionsModal: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <div className="p-6 overflow-y-auto space-y-4">
+        <div className="p-6 overflow-y-auto max-h-[68vh] space-y-4">
+          {errorMessage && (
+            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
           {/* 1. ENCRYPT TAB */}
           {activeTab === 'encrypt' && (
             <div className="space-y-4 text-xs">
+              {securityInfo?.isEncrypted && (
+                <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[11px]">
+                  Bu belge zaten şifrelidir. Yeniden şifrelemeden önce <strong>Şifreyi Kaldır</strong> sekmesinden mevcut korumayı kaldırın.
+                </div>
+              )}
+
               <div>
                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Açılış Parolası (Kullanıcı Parolası)*
+                  Açılış Parolası (Kullanıcı Parolası)
                 </label>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                   <input
-                    type="password"
+                    type={showUserPwd ? 'text' : 'password'}
                     value={userPassword}
-                    onChange={(e) => setUserPassword(e.target.value)}
-                    placeholder="Belgeyi açmak için gereken parola..."
-                    className={cn(
-                      'w-full pl-9 pr-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500 text-xs font-medium',
-                      isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-900'
-                    )}
+                    onChange={(e) => {
+                      setUserPassword(e.target.value);
+                      if (errorMessage) setErrorMessage(null);
+                    }}
+                    placeholder="Boş bırakılabilir (yalnızca yönetici kilidi için)..."
+                    className={inputClass}
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowUserPwd((p) => !p)}
+                    aria-label={showUserPwd ? 'Açılış parolasını gizle' : 'Açılış parolasını göster'}
+                    className="absolute right-2.5 top-2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  >
+                    {showUserPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
               <div>
                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Yönetici Parolası (İsteğe Bağlı)
+                  Yönetici Parolası (İzin Kilidi)
                 </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                   <input
-                    type="password"
+                    type={showOwnerPwd ? 'text' : 'password'}
                     value={ownerPassword}
-                    onChange={(e) => setOwnerPassword(e.target.value)}
-                    placeholder="İzinleri değiştirmek için yönetici parolası..."
-                    className={cn(
-                      'w-full pl-9 pr-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500 text-xs font-medium',
-                      isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-900'
-                    )}
+                    onChange={(e) => {
+                      setOwnerPassword(e.target.value);
+                      if (errorMessage) setErrorMessage(null);
+                    }}
+                    placeholder="İzinleri kilitlemek için yönetici parolası..."
+                    className={inputClass}
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowOwnerPwd((p) => !p)}
+                    aria-label={showOwnerPwd ? 'Yönetici parolasını gizle' : 'Yönetici parolasını göster'}
+                    className="absolute right-2.5 top-2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  >
+                    {showOwnerPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                  Açılış parolası boş bırakılıp yalnızca yönetici parolası girilirse belge parolasız açılır ancak aşağıdaki izin kısıtlamaları uygulanır.
+                </p>
               </div>
 
-              {/* Permissions Checkboxes */}
+              {/* Permissions Checkboxes — ALL 6 PDF Standard Flags */}
               <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
-                <span className="font-bold text-slate-800 dark:text-slate-200 block">Kullanıcı İzinleri:</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200 block">
+                  Kullanıcı İzinleri:
+                </span>
 
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
@@ -287,28 +472,59 @@ export const SecurityPermissionsModal: React.FC = () => {
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={permissions.canFillForms}
-                    onChange={(e) => setPermissions({ ...permissions, canFillForms: e.target.checked })}
+                    checked={permissions.canModify}
+                    onChange={(e) => setPermissions({ ...permissions, canModify: e.target.checked })}
                     className="w-4 h-4 rounded text-sky-500"
                   />
-                  <span>Form alanlarını doldurmaya izin ver</span>
+                  <span>Belge içeriğini değiştirmeye izin ver</span>
                 </label>
 
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={permissions.canModify}
-                    onChange={(e) => setPermissions({ ...permissions, canModify: e.target.checked })}
+                    checked={permissions.canAnnotate}
+                    onChange={(e) =>
+                      setPermissions({ ...permissions, canAnnotate: e.target.checked })
+                    }
                     className="w-4 h-4 rounded text-sky-500"
                   />
-                  <span>Sayfa ekleme/çıkarma ve içeriği değiştirmeye izin ver</span>
+                  <span>Açıklama ve yorum eklemeye izin ver</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={permissions.canFillForms}
+                    onChange={(e) =>
+                      setPermissions({ ...permissions, canFillForms: e.target.checked })
+                    }
+                    className="w-4 h-4 rounded text-sky-500"
+                  />
+                  <span>Form alanlarını doldurmaya ve imzalamaya izin ver</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={permissions.canAssemble}
+                    onChange={(e) =>
+                      setPermissions({ ...permissions, canAssemble: e.target.checked })
+                    }
+                    className="w-4 h-4 rounded text-sky-500"
+                  />
+                  <span>Sayfa ekleme, silme ve döndürmeye (birleştirmeye) izin ver</span>
                 </label>
               </div>
 
               <div className="pt-3">
                 <button
+                  type="button"
                   onClick={handleEncryptAndDownload}
-                  disabled={isProcessing || !userPassword}
+                  disabled={
+                    isProcessing ||
+                    Boolean(securityInfo?.isEncrypted) ||
+                    (!userPassword && !ownerPassword)
+                  }
                   className="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all"
                 >
                   {isProcessing ? (
@@ -316,7 +532,7 @@ export const SecurityPermissionsModal: React.FC = () => {
                   ) : (
                     <Lock className="w-4 h-4" />
                   )}
-                  <span>Belgeyi Şifrele ve İndir</span>
+                  <span>Belgeyi Şifrele ve Kaydet</span>
                 </button>
               </div>
             </div>
@@ -331,26 +547,69 @@ export const SecurityPermissionsModal: React.FC = () => {
                   <span>Kalıcı Parola Kaldırma</span>
                 </div>
                 <p className="text-[11px] leading-relaxed">
-                  Şu an açık olan belgedeki şifreleme motoru ve parola gereksinimi tamamen kaldırılacaktır. Oluşturulacak yeni PDF dökümanı hiçbir parola sormadan doğrudan her cihazda açılacaktır.
+                  Belgedeki şifreleme koruması kriptografik olarak doğrulanıp çözülecek ve şifresiz yeni bir PDF oluşturulacaktır.
                 </p>
               </div>
 
+              {securityInfo && !securityInfo.isEncrypted ? (
+                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-300 text-[11px]">
+                  Bu belge şu anda şifreli değildir; parola kaldırma işlemi gerekmez.
+                </div>
+              ) : (
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Mevcut Belge veya Yönetici Parolası*
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type={showDecryptPwd ? 'text' : 'password'}
+                      value={decryptPassword}
+                      onChange={(e) => {
+                        setDecryptPassword(e.target.value);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      placeholder="Doğrulama için mevcut parolayı girin..."
+                      className={inputClass}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowDecryptPwd((p) => !p)}
+                      aria-label={showDecryptPwd ? 'Parolayı gizle' : 'Parolayı göster'}
+                      className="absolute right-2.5 top-2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                    >
+                      {showDecryptPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex gap-2 pt-2">
                 <button
+                  type="button"
                   onClick={() => handleRemovePassword(false)}
-                  disabled={isProcessing}
+                  disabled={isProcessing || !securityInfo?.isEncrypted || !decryptPassword}
                   className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all"
                 >
-                  {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                  <span>Şifresiz İndir</span>
+                  {isProcessing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                  <span>Şifresiz Kaydet</span>
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => handleRemovePassword(true)}
-                  disabled={isProcessing}
+                  disabled={isProcessing || !securityInfo?.isEncrypted || !decryptPassword}
                   className="flex-1 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all"
                 >
-                  {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <FilePlus className="w-4 h-4" />}
+                  {isProcessing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <FilePlus className="w-4 h-4" />
+                  )}
                   <span>Yeni Sekmede Aç</span>
                 </button>
               </div>
@@ -361,7 +620,14 @@ export const SecurityPermissionsModal: React.FC = () => {
           {activeTab === 'info' && (
             <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between p-3 rounded-xl border bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-800">
-                <span className="font-semibold">Şifreleme Durumu:</span>
+                <div>
+                  <span className="font-semibold block">Şifreleme Durumu:</span>
+                  {securityInfo?.securityHandler && (
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Motor: {securityInfo.securityHandler}
+                    </span>
+                  )}
+                </div>
                 <span
                   className={cn(
                     'px-2 py-0.5 rounded text-[11px] font-bold',
@@ -375,13 +641,41 @@ export const SecurityPermissionsModal: React.FC = () => {
               </div>
 
               <div className="space-y-2 pt-1">
-                <span className="font-bold block text-slate-700 dark:text-slate-300">İzin Matrisi:</span>
+                <span className="font-bold block text-slate-700 dark:text-slate-300">
+                  İzin Matrisi:
+                </span>
 
                 {[
-                  { label: 'Belge Yazdırma', allowed: securityInfo?.permissions.canPrint ?? true, icon: Printer },
-                  { label: 'Metin ve Görsel Kopyalama', allowed: securityInfo?.permissions.canCopy ?? true, icon: Copy },
-                  { label: 'İçerik Değiştirme', allowed: securityInfo?.permissions.canModify ?? true, icon: Edit3 },
-                  { label: 'Açıklama & Form Doldurma', allowed: securityInfo?.permissions.canAnnotate ?? true, icon: Check },
+                  {
+                    label: 'Belge Yazdırma',
+                    allowed: securityInfo?.permissions.canPrint ?? true,
+                    icon: Printer,
+                  },
+                  {
+                    label: 'Metin ve Görsel Kopyalama',
+                    allowed: securityInfo?.permissions.canCopy ?? true,
+                    icon: Copy,
+                  },
+                  {
+                    label: 'İçerik Değiştirme',
+                    allowed: securityInfo?.permissions.canModify ?? true,
+                    icon: Edit3,
+                  },
+                  {
+                    label: 'Açıklama ve Yorum Ekleme',
+                    allowed: securityInfo?.permissions.canAnnotate ?? true,
+                    icon: MessageSquare,
+                  },
+                  {
+                    label: 'Form Alanı Doldurma ve İmzalama',
+                    allowed: securityInfo?.permissions.canFillForms ?? true,
+                    icon: FileCheck2,
+                  },
+                  {
+                    label: 'Sayfa Düzenleme / Birleştirme',
+                    allowed: securityInfo?.permissions.canAssemble ?? true,
+                    icon: Layers,
+                  },
                 ].map((item, idx) => {
                   const Icon = item.icon;
                   return (
