@@ -1,4 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
+import { uint8ToArrayBuffer } from '@/core/pdf/pdf-helpers';
 
 export interface ImageToPdfItem {
   id: string;
@@ -12,6 +13,18 @@ export interface ImageToPdfConfig {
   pageSize: 'a4' | 'letter' | 'original';
   orientation: 'auto' | 'portrait' | 'landscape';
   margin: number; // in points (e.g. 0, 20, 36)
+}
+
+async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
+  if (typeof file.arrayBuffer === 'function') {
+    return await file.arrayBuffer();
+  }
+  return await new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.onerror = () => reject(reader.error || new Error('Görsel dosyası okunamadı.'));
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 export class ImagesToPdfConverter {
@@ -28,18 +41,24 @@ export class ImagesToPdfConverter {
     const isJpg = file.type === 'image/jpeg' || file.type === 'image/jpg';
 
     if (isPng || isJpg) {
-      const buffer = await file.arrayBuffer();
+      const buffer = await readFileAsArrayBuffer(file);
       const bytes = new Uint8Array(buffer);
 
-      // Read dimensions using an Image object
       const img = new Image();
       const objectUrl = URL.createObjectURL(file);
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = reject;
-        img.src = objectUrl;
-      });
-      URL.revokeObjectURL(objectUrl);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = (err) => reject(err instanceof Error ? err : new Error('Görsel yüklenemedi.'));
+          img.src = objectUrl;
+        });
+      } finally {
+        URL.revokeObjectURL?.(objectUrl);
+      }
+
+      if (!img.naturalWidth || !img.naturalHeight) {
+        throw new Error('Görsel boyutları geçersiz (0x0).');
+      }
 
       return {
         bytes,
@@ -49,38 +68,50 @@ export class ImagesToPdfConverter {
       };
     }
 
-    // For other formats like webp, convert to PNG via Canvas
+    // For other formats like webp/gif/bmp, convert to PNG via Canvas
     return new Promise((resolve, reject) => {
       const img = new Image();
       const objectUrl = URL.createObjectURL(file);
       img.onload = () => {
         URL.revokeObjectURL(objectUrl);
+        if (!img.naturalWidth || !img.naturalHeight) {
+          reject(new Error('Görsel boyutları geçersiz (0x0).'));
+          return;
+        }
         const canvas = document.createElement('canvas');
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return reject(new Error('Canvas context error'));
+        try {
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error('Canvas context error'));
+            return;
+          }
 
-        ctx.drawImage(img, 0, 0);
-        const pngDataUrl = canvas.toDataURL('image/png');
-        const base64 = pngDataUrl.split(',')[1];
-        const binaryStr = atob(base64);
-        const len = binaryStr.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryStr.charCodeAt(i);
+          ctx.drawImage(img, 0, 0);
+          const pngDataUrl = canvas.toDataURL('image/png');
+          const base64 = pngDataUrl.split(',')[1];
+          const binaryStr = atob(base64);
+          const len = binaryStr.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+
+          resolve({
+            bytes,
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+            isPng: true,
+          });
+        } finally {
+          canvas.width = 0;
+          canvas.height = 0;
         }
-
-        resolve({
-          bytes,
-          width: img.naturalWidth,
-          height: img.naturalHeight,
-          isPng: true,
-        });
       };
       img.onerror = (e) => {
         URL.revokeObjectURL(objectUrl);
-        reject(e);
+        reject(e instanceof Error ? e : new Error('Görsel yüklenemedi.'));
       };
       img.src = objectUrl;
     });
@@ -96,7 +127,6 @@ export class ImagesToPdfConverter {
   ): Promise<ArrayBuffer> {
     const pdfDoc = await PDFDocument.create();
 
-    // Standard page dimensions (in PDF points, 72 pt = 1 inch)
     const standardSizes: Record<string, [number, number]> = {
       a4: [595.28, 841.89],
       letter: [612.0, 792.0],
@@ -109,6 +139,9 @@ export class ImagesToPdfConverter {
 
       const item = images[i];
       const { bytes, width, height, isPng } = await this.loadImageData(item.file);
+      if (width <= 0 || height <= 0) {
+        throw new Error('Görsel boyutları geçersiz (0x0).');
+      }
 
       const embeddedImage = isPng
         ? await pdfDoc.embedPng(bytes)
@@ -135,11 +168,10 @@ export class ImagesToPdfConverter {
 
       const page = pdfDoc.addPage([pageWidth, pageHeight]);
 
-      const margin = config.margin || 0;
+      const margin = config.margin ?? 0;
       const availableWidth = Math.max(10, pageWidth - margin * 2);
       const availableHeight = Math.max(10, pageHeight - margin * 2);
 
-      // Fit image into available box while preserving aspect ratio
       const imageAspect = width / height;
       const boxAspect = availableWidth / availableHeight;
 
@@ -166,6 +198,6 @@ export class ImagesToPdfConverter {
     }
 
     const pdfBytes = await pdfDoc.save();
-    return pdfBytes.buffer as ArrayBuffer;
+    return uint8ToArrayBuffer(pdfBytes);
   }
 }

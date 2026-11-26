@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useDocumentStore } from './document-store';
 
 export type RulerUnit = 'mm' | 'cm' | 'pt' | 'in';
 
@@ -9,20 +10,32 @@ export const PT_PER_CM = 72 / 2.54; // ~28.3464567 pt
 
 export function ptToUnit(pt: number, unit: RulerUnit): number {
   switch (unit) {
-    case 'mm': return pt / PT_PER_MM;
-    case 'cm': return pt / PT_PER_CM;
-    case 'in': return pt / PT_PER_INCH;
-    case 'pt': return pt;
+    case 'mm':
+      return pt / PT_PER_MM;
+    case 'cm':
+      return pt / PT_PER_CM;
+    case 'in':
+      return pt / PT_PER_INCH;
+    case 'pt':
+      return pt;
   }
 }
 
 export function unitToPt(val: number, unit: RulerUnit): number {
   switch (unit) {
-    case 'mm': return val * PT_PER_MM;
-    case 'cm': return val * PT_PER_CM;
-    case 'in': return val * PT_PER_INCH;
-    case 'pt': return val;
+    case 'mm':
+      return val * PT_PER_MM;
+    case 'cm':
+      return val * PT_PER_CM;
+    case 'in':
+      return val * PT_PER_INCH;
+    case 'pt':
+      return val;
   }
+}
+
+function getActiveDocId(): string {
+  return useDocumentStore.getState().currentDocument?.id || 'global';
 }
 
 interface RulerState {
@@ -33,9 +46,13 @@ interface RulerState {
   snapToGuides: boolean;
   snapToGrid: boolean;
 
-  /** Guides stored per pageIndex in PDF points */
+  /** Active document guides projected per pageIndex in PDF points */
   horizontalGuidesByPage: Record<number, number[]>;
   verticalGuidesByPage: Record<number, number[]>;
+
+  /** Per-document guide maps (docId -> pageIndex -> positions in pt) */
+  horizontalGuidesByDoc: Record<string, Record<number, number[]>>;
+  verticalGuidesByDoc: Record<string, Record<number, number[]>>;
 
   /** Mouse cursor indicator position relative to active page */
   mousePosition: { xPt: number; yPt: number } | null;
@@ -55,6 +72,9 @@ interface RulerState {
   removeVerticalGuide: (pageIndex: number, guideIdx: number) => void;
   clearGuides: (pageIndex?: number) => void;
 
+  syncActiveDocument: (docId: string | null) => void;
+  clearDocGuides: (docId: string) => void;
+
   setMousePosition: (pos: { xPt: number; yPt: number } | null) => void;
 }
 
@@ -67,6 +87,8 @@ export const useRulerStore = create<RulerState>((set) => ({
   snapToGrid: false,
   horizontalGuidesByPage: {},
   verticalGuidesByPage: {},
+  horizontalGuidesByDoc: {},
+  verticalGuidesByDoc: {},
   mousePosition: null,
 
   toggleRulers: () => set((state) => ({ showRulers: !state.showRulers })),
@@ -80,58 +102,125 @@ export const useRulerStore = create<RulerState>((set) => ({
 
   addHorizontalGuide: (pageIndex, yPt) =>
     set((state) => {
-      const pageGuides = state.horizontalGuidesByPage[pageIndex] || [];
+      const docId = getActiveDocId();
+      const docGuides = state.horizontalGuidesByDoc[docId] || {};
+      const pageGuides = docGuides[pageIndex] || [];
+      const nextDocGuides = {
+        ...docGuides,
+        [pageIndex]: [...pageGuides, Math.round(yPt * 10) / 10],
+      };
       return {
-        horizontalGuidesByPage: {
-          ...state.horizontalGuidesByPage,
-          [pageIndex]: [...pageGuides, Math.round(yPt * 10) / 10],
+        horizontalGuidesByDoc: {
+          ...state.horizontalGuidesByDoc,
+          [docId]: nextDocGuides,
         },
+        horizontalGuidesByPage: nextDocGuides,
       };
     }),
 
   addVerticalGuide: (pageIndex, xPt) =>
     set((state) => {
-      const pageGuides = state.verticalGuidesByPage[pageIndex] || [];
+      const docId = getActiveDocId();
+      const docGuides = state.verticalGuidesByDoc[docId] || {};
+      const pageGuides = docGuides[pageIndex] || [];
+      const nextDocGuides = {
+        ...docGuides,
+        [pageIndex]: [...pageGuides, Math.round(xPt * 10) / 10],
+      };
       return {
-        verticalGuidesByPage: {
-          ...state.verticalGuidesByPage,
-          [pageIndex]: [...pageGuides, Math.round(xPt * 10) / 10],
+        verticalGuidesByDoc: {
+          ...state.verticalGuidesByDoc,
+          [docId]: nextDocGuides,
         },
+        verticalGuidesByPage: nextDocGuides,
       };
     }),
 
   removeHorizontalGuide: (pageIndex, guideIdx) =>
     set((state) => {
-      const pageGuides = state.horizontalGuidesByPage[pageIndex] || [];
+      const docId = getActiveDocId();
+      const docGuides = state.horizontalGuidesByDoc[docId] || {};
+      const pageGuides = docGuides[pageIndex] || [];
+      const nextDocGuides = {
+        ...docGuides,
+        [pageIndex]: pageGuides.filter((_, i) => i !== guideIdx),
+      };
       return {
-        horizontalGuidesByPage: {
-          ...state.horizontalGuidesByPage,
-          [pageIndex]: pageGuides.filter((_, i) => i !== guideIdx),
+        horizontalGuidesByDoc: {
+          ...state.horizontalGuidesByDoc,
+          [docId]: nextDocGuides,
         },
+        horizontalGuidesByPage: nextDocGuides,
       };
     }),
 
   removeVerticalGuide: (pageIndex, guideIdx) =>
     set((state) => {
-      const pageGuides = state.verticalGuidesByPage[pageIndex] || [];
+      const docId = getActiveDocId();
+      const docGuides = state.verticalGuidesByDoc[docId] || {};
+      const pageGuides = docGuides[pageIndex] || [];
+      const nextDocGuides = {
+        ...docGuides,
+        [pageIndex]: pageGuides.filter((_, i) => i !== guideIdx),
+      };
       return {
-        verticalGuidesByPage: {
-          ...state.verticalGuidesByPage,
-          [pageIndex]: pageGuides.filter((_, i) => i !== guideIdx),
+        verticalGuidesByDoc: {
+          ...state.verticalGuidesByDoc,
+          [docId]: nextDocGuides,
         },
+        verticalGuidesByPage: nextDocGuides,
       };
     }),
 
   clearGuides: (pageIndex) =>
     set((state) => {
+      const docId = getActiveDocId();
       if (pageIndex !== undefined) {
-        const nextH = { ...state.horizontalGuidesByPage };
-        const nextV = { ...state.verticalGuidesByPage };
+        const nextH = { ...(state.horizontalGuidesByDoc[docId] || {}) };
+        const nextV = { ...(state.verticalGuidesByDoc[docId] || {}) };
         delete nextH[pageIndex];
         delete nextV[pageIndex];
-        return { horizontalGuidesByPage: nextH, verticalGuidesByPage: nextV };
+        return {
+          horizontalGuidesByDoc: { ...state.horizontalGuidesByDoc, [docId]: nextH },
+          verticalGuidesByDoc: { ...state.verticalGuidesByDoc, [docId]: nextV },
+          horizontalGuidesByPage: nextH,
+          verticalGuidesByPage: nextV,
+        };
       }
-      return { horizontalGuidesByPage: {}, verticalGuidesByPage: {} };
+      const nextHByDoc = { ...state.horizontalGuidesByDoc };
+      const nextVByDoc = { ...state.verticalGuidesByDoc };
+      delete nextHByDoc[docId];
+      delete nextVByDoc[docId];
+      return {
+        horizontalGuidesByDoc: nextHByDoc,
+        verticalGuidesByDoc: nextVByDoc,
+        horizontalGuidesByPage: {},
+        verticalGuidesByPage: {},
+      };
+    }),
+
+  syncActiveDocument: (docId) =>
+    set((state) => {
+      const key = docId || 'global';
+      return {
+        horizontalGuidesByPage: state.horizontalGuidesByDoc[key] || {},
+        verticalGuidesByPage: state.verticalGuidesByDoc[key] || {},
+        mousePosition: null,
+      };
+    }),
+
+  clearDocGuides: (docId) =>
+    set((state) => {
+      const nextH = { ...state.horizontalGuidesByDoc };
+      const nextV = { ...state.verticalGuidesByDoc };
+      delete nextH[docId];
+      delete nextV[docId];
+      const isCurrent = getActiveDocId() === docId || !useDocumentStore.getState().currentDocument;
+      return {
+        horizontalGuidesByDoc: nextH,
+        verticalGuidesByDoc: nextV,
+        ...(isCurrent ? { horizontalGuidesByPage: {}, verticalGuidesByPage: {} } : {}),
+      };
     }),
 
   setMousePosition: (pos) => set({ mousePosition: pos }),

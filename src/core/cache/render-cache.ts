@@ -1,3 +1,6 @@
+import type { PageLink } from '@/types/document';
+import type { FormWidgetModel } from '@/store/form-store';
+
 /**
  * High-Performance In-Memory Render Cache System
  * - O(1) Map-based LRU with touch-on-get() (MRU re-ordering)
@@ -46,7 +49,9 @@ export class TrueLRUCache<T> {
       if (existing !== value && this.onEvict) {
         try {
           this.onEvict(existing, key);
-        } catch {}
+        } catch {
+          // ignore eviction cleanup error
+        }
       }
       this.cache.delete(key);
     } else {
@@ -58,7 +63,9 @@ export class TrueLRUCache<T> {
           if (item && this.onEvict) {
             try {
               this.onEvict(item, oldestKey);
-            } catch {}
+            } catch {
+              // ignore eviction cleanup error
+            }
           }
           this.cache.delete(oldestKey);
         } else {
@@ -82,7 +89,9 @@ export class TrueLRUCache<T> {
         if (item && this.onEvict) {
           try {
             this.onEvict(item, oldestKey);
-          } catch {}
+          } catch {
+            // ignore eviction cleanup error
+          }
         }
         this.cache.delete(oldestKey);
       } else {
@@ -105,7 +114,9 @@ export class TrueLRUCache<T> {
       if (this.onEvict) {
         try {
           this.onEvict(item, key);
-        } catch {}
+        } catch {
+          // ignore eviction cleanup error
+        }
       }
       return this.cache.delete(key);
     }
@@ -117,7 +128,9 @@ export class TrueLRUCache<T> {
       for (const [k, v] of this.cache.entries()) {
         try {
           this.onEvict(v, k);
-        } catch {}
+        } catch {
+          // ignore eviction cleanup error
+        }
       }
     }
     this.cache.clear();
@@ -150,9 +163,9 @@ export interface PageBitmapEntry {
 }
 
 export interface PageMetadataEntry {
-  textContent?: any;
-  links?: any[];
-  widgets?: any[];
+  textContent?: unknown;
+  links?: PageLink[];
+  widgets?: FormWidgetModel[];
 }
 
 /**
@@ -178,9 +191,11 @@ export function makePageMetaKey(
   docId: string,
   pageId: string,
   sourcePageIndex: number,
-  rotation: number
+  rotation: number,
+  scale: number = 1.0
 ): string {
-  return `${docId}_${pageId}_p${sourcePageIndex}_r${rotation}`;
+  const normScale = normalizeScale(scale).toFixed(1);
+  return `${docId}_${pageId}_p${sourcePageIndex}_r${rotation}_s${normScale}`;
 }
 
 /**
@@ -194,7 +209,9 @@ export const pageBitmapCache = new TrueLRUCache<PageBitmapEntry>(
   (entry) => {
     try {
       entry.bitmap.close?.();
-    } catch {}
+    } catch {
+      // ignore closed bitmap
+    }
   }
 );
 
@@ -208,7 +225,9 @@ export const thumbnailCache = new TrueLRUCache<ImageBitmap>(
   (bmp) => {
     try {
       bmp.close?.();
-    } catch {}
+    } catch {
+      // ignore closed bitmap
+    }
   }
 );
 
@@ -221,7 +240,14 @@ export const pageMetadataCache = new TrueLRUCache<PageMetadataEntry>(300);
 /**
  * Legacy compatibility caches
  */
-export const pageRenderCache = new TrueLRUCache<HTMLCanvasElement>(15);
+export const pageRenderCache = new TrueLRUCache<HTMLCanvasElement>(15, (canvas) => {
+  try {
+    canvas.width = 0;
+    canvas.height = 0;
+  } catch {
+    // ignore canvas cleanup errors
+  }
+});
 export const pageBlobCache = new Map<string, string>();
 
 /**
@@ -236,15 +262,15 @@ export function updateDynamicBitmapCapacity(visibleCount: number): void {
 }
 
 /**
- * Safely clears all caches associated with a specific document when closed.
+ * Safely clears all caches associated with a specific document when closed or modified.
  */
 export function clearDocumentCaches(docId: string): void {
   if (!docId) return;
 
   // Clear matching page bitmaps
   const bitmapKeysToDelete: string[] = [];
-  for (const key of pageBitmapCache.keys()) {
-    if (key.startsWith(`${docId}_`)) {
+  for (const [key, entry] of pageBitmapCache.entries()) {
+    if (entry.docId === docId || key.startsWith(`${docId}_`)) {
       bitmapKeysToDelete.push(key);
     }
   }
@@ -272,5 +298,30 @@ export function clearDocumentCaches(docId: string): void {
   }
   for (const k of thumbKeysToDelete) {
     thumbnailCache.delete(k); // Triggers bmp.close()
+  }
+
+  // Clear legacy pageRenderCache
+  const renderKeysToDelete: string[] = [];
+  for (const key of pageRenderCache.keys()) {
+    if (key.startsWith(`${docId}_`) || key.includes(docId)) {
+      renderKeysToDelete.push(key);
+    }
+  }
+  for (const k of renderKeysToDelete) {
+    pageRenderCache.delete(k);
+  }
+
+  // Clear legacy pageBlobCache and revoke object URLs
+  for (const [key, url] of Array.from(pageBlobCache.entries())) {
+    if (key.startsWith(`${docId}_`) || key.includes(docId)) {
+      if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore revoke error
+        }
+      }
+      pageBlobCache.delete(key);
+    }
   }
 }

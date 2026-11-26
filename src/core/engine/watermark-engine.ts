@@ -1,6 +1,12 @@
-import { PDFDocument, rgb, degrees } from 'pdf-lib';
-import fontkit from '@pdf-lib/fontkit';
+import { rgb, degrees } from 'pdf-lib';
 import { binaryStore } from '@/core/storage/binary-store';
+import {
+  embedPreferredFont,
+  hexToRgbValues,
+  loadPdfLibSafe,
+  sanitizeTextForFont,
+  uint8ToArrayBuffer,
+} from '@/core/pdf/pdf-helpers';
 
 export interface WatermarkConfig {
   text: string;
@@ -13,19 +19,6 @@ export interface WatermarkConfig {
   customPages?: string; // e.g. "1, 3-5"
 }
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  let clean = hex.replace('#', '');
-  if (clean.length === 3) {
-    clean = clean.split('').map(c => c + c).join('');
-  }
-  const num = parseInt(clean, 16);
-  return {
-    r: ((num >> 16) & 255) / 255,
-    g: ((num >> 8) & 255) / 255,
-    b: (num & 255) / 255,
-  };
-}
-
 export class WatermarkEngine {
   public static async applyWatermark(
     docId: string,
@@ -34,29 +27,14 @@ export class WatermarkEngine {
     const rawBuffer = binaryStore.get(docId);
     if (!rawBuffer) throw new Error('PDF döküman bellekte bulunamadı');
 
-    const pdfDoc = await PDFDocument.load(rawBuffer, { ignoreEncryption: true });
-    pdfDoc.registerFontkit(fontkit);
+    const pdfDoc = await loadPdfLibSafe(rawBuffer, 'Filigran ekleme');
+    const { font, isCustomFont } = await embedPreferredFont(pdfDoc, 'bold', true);
 
-    // Try loading custom Unicode font for full Turkish support
-    let font: any;
-    const candidatePaths = ['./fonts/font-bold.ttf', '/fonts/font-bold.ttf', 'fonts/font-bold.ttf'];
-    for (const p of candidatePaths) {
-      try {
-        const resp = await fetch(p);
-        if (resp.ok) {
-          const fontBytes = await resp.arrayBuffer();
-          font = await pdfDoc.embedFont(fontBytes);
-          break;
-        }
-      } catch {}
-    }
-
-    // Fallback to standard Helvetica Bold if custom font fails to fetch
-    if (!font) {
-      font = await pdfDoc.embedFont('Helvetica-Bold');
-    }
-
-    const { r, g, b } = hexToRgb(config.color || '#64748b');
+    const { r, g, b } = hexToRgbValues(config.color || '#64748b', {
+      r: 0.39,
+      g: 0.45,
+      b: 0.55,
+    });
     const pdfColor = rgb(r, g, b);
     const pages = pdfDoc.getPages();
     const totalPages = pages.length;
@@ -73,22 +51,25 @@ export class WatermarkEngine {
         const trimmed = part.trim();
         if (trimmed.includes('-')) {
           const [start, end] = trimmed.split('-').map(Number);
-          if (!isNaN(start) && !isNaN(end)) {
+          if (!Number.isNaN(start) && !Number.isNaN(end)) {
             for (let k = Math.min(start, end); k <= Math.max(start, end); k++) {
               if (k >= 1 && k <= totalPages) targetPageSet.add(k);
             }
           }
         } else {
           const num = Number(trimmed);
-          if (!isNaN(num) && num >= 1 && num <= totalPages) targetPageSet.add(num);
+          if (!Number.isNaN(num) && num >= 1 && num <= totalPages) targetPageSet.add(num);
         }
       }
     }
 
-    const text = config.text || 'GİZLİDİR';
+    const rawText = config.text || 'GİZLİDİR';
+    const text = sanitizeTextForFont(rawText, font, isCustomFont);
     const fontSize = config.fontSize || 48;
     const textWidth = font.widthOfTextAtSize(text, fontSize);
     const textHeight = font.heightAtSize(fontSize);
+    const rotationAngle = config.rotation ?? 45;
+    const rad = (rotationAngle * Math.PI) / 180;
 
     pages.forEach((page, index) => {
       const pageNum = index + 1;
@@ -97,9 +78,9 @@ export class WatermarkEngine {
       const { width: pWidth, height: pHeight } = page.getSize();
 
       if (config.layout === 'tiled') {
-        // Repeated tiled watermark across page
         const stepX = Math.max(180, textWidth + 80);
         const stepY = Math.max(140, textHeight + 100);
+        const tileOpacity = config.opacity ?? 0.15;
 
         for (let x = 40; x < pWidth + 100; x += stepX) {
           for (let y = 40; y < pHeight + 100; y += stepY) {
@@ -109,15 +90,14 @@ export class WatermarkEngine {
               size: fontSize * 0.65,
               font,
               color: pdfColor,
-              opacity: config.opacity || 0.15,
-              rotate: degrees(config.rotation ?? 45),
+              opacity: tileOpacity,
+              rotate: degrees(rotationAngle),
             });
           }
         }
       } else {
-        // Centered watermark
-        const centerX = pWidth / 2 - (textWidth / 2) * Math.cos((config.rotation * Math.PI) / 180);
-        const centerY = pHeight / 2 - (textHeight / 2) * Math.sin((config.rotation * Math.PI) / 180);
+        const centerX = pWidth / 2 - (textWidth / 2) * Math.cos(rad);
+        const centerY = pHeight / 2 - (textHeight / 2) * Math.sin(rad);
 
         page.drawText(text, {
           x: Math.max(20, centerX),
@@ -125,13 +105,13 @@ export class WatermarkEngine {
           size: fontSize,
           font,
           color: pdfColor,
-          opacity: config.opacity || 0.2,
-          rotate: degrees(config.rotation ?? 45),
+          opacity: config.opacity ?? 0.2,
+          rotate: degrees(rotationAngle),
         });
       }
     });
 
-    const modifiedBytes = await pdfDoc.save();
-    return modifiedBytes.buffer as ArrayBuffer;
+    const modifiedBytes = await pdfDoc.save({ updateFieldAppearances: false });
+    return uint8ToArrayBuffer(modifiedBytes);
   }
 }

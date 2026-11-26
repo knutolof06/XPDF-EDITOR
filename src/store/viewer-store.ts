@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { ViewMode, PageTransitionType } from '@/types/document';
 import { ActiveTool, SearchState, SidebarTab, AppDesignTheme, AccentColor, UIDensity } from '@/types/viewer';
+import type { OcrPageResult } from '@/core/ocr/ocr-service';
+import { useAnnotationStore } from './annotation-store';
 
 export type FitMode = 'none' | 'width' | 'page' | 'content';
 export type ReadingTheme = 'default' | 'dark' | 'sepia' | 'high-contrast';
@@ -16,7 +18,7 @@ export interface OcrHighlightPulseState {
   words: OcrWordHighlight[];
   wordCount: number;
   timestamp: number;
-  lastOcrPageResult?: any;
+  lastOcrPageResult?: OcrPageResult;
 }
 
 interface ViewerState {
@@ -69,7 +71,7 @@ interface ViewerState {
   closeSearch: () => void;
   setSearchQuery: (query: string) => void;
   setMatchCase: (matchCase: boolean) => void;
-  setSearchResults: (results: any[]) => void;
+  setSearchResults: (results: SearchState['results']) => void;
   nextSearchResult: () => void;
   prevSearchResult: () => void;
   setSearching: (searching: boolean) => void;
@@ -84,6 +86,7 @@ interface SavedSettings {
   accentColor?: AccentColor;
   uiDensity?: UIDensity;
   viewMode?: ViewMode;
+  pageTransition?: PageTransitionType;
   zoom?: number;
   fitMode?: FitMode;
   readingTheme?: ReadingTheme;
@@ -104,7 +107,7 @@ function loadSavedSettings(): SavedSettings {
   return {};
 }
 
-function saveSettings(partial: Partial<SavedSettings>) {
+function saveSettings(partial: Partial<SavedSettings>): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     const existing = loadSavedSettings();
@@ -112,6 +115,27 @@ function saveSettings(partial: Partial<SavedSettings>) {
     localStorage.setItem('xpdf_settings', JSON.stringify(updated));
   } catch {
     // ignore
+  }
+}
+
+export function resolveDarkTheme(theme: 'dark' | 'light' | 'system'): boolean {
+  if (theme === 'dark') return true;
+  if (theme === 'light') return false;
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+  return false;
+}
+
+export function applyThemeToDom(theme: 'dark' | 'light' | 'system'): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  if (resolveDarkTheme(theme)) {
+    root.classList.add('dark');
+    root.classList.remove('light');
+  } else {
+    root.classList.remove('dark');
+    root.classList.add('light');
   }
 }
 
@@ -123,7 +147,7 @@ export const useViewerStore = create<ViewerState>()(
     fitMode: saved.fitMode || 'width', // Default 'width' for responsive auto-fit
     readingTheme: saved.readingTheme || 'default',
     viewMode: saved.viewMode || 'continuous',
-    pageTransition: 'instant', // Kapali default
+    pageTransition: saved.pageTransition || 'instant',
     theme: saved.theme || 'dark',
     appDesignTheme: saved.appDesignTheme || 'fluent',
     accentColor: saved.accentColor || 'sky',
@@ -147,7 +171,7 @@ export const useViewerStore = create<ViewerState>()(
 
     setOcrHighlightPulse: (pulse) =>
       set((state) => {
-        state.ocrHighlightPulse = pulse as any;
+        state.ocrHighlightPulse = pulse as OcrHighlightPulseState | null;
       }),
 
     setZoom: (zoomOrFn, keepFitMode = false) =>
@@ -207,26 +231,14 @@ export const useViewerStore = create<ViewerState>()(
     setPageTransition: (transition) =>
       set((state) => {
         state.pageTransition = transition;
+        saveSettings({ pageTransition: transition });
       }),
 
     setTheme: (theme) =>
       set((state) => {
         state.theme = theme;
         saveSettings({ theme });
-        if (typeof document !== 'undefined') {
-          const root = document.documentElement;
-          if (
-            theme === 'dark' ||
-            (theme === 'system' &&
-              window.matchMedia('(prefers-color-scheme: dark)').matches)
-          ) {
-            root.classList.add('dark');
-            root.classList.remove('light');
-          } else {
-            root.classList.remove('dark');
-            root.classList.add('light');
-          }
-        }
+        applyThemeToDom(theme);
       }),
 
     setAppDesignTheme: (appDesignTheme) =>
@@ -256,10 +268,20 @@ export const useViewerStore = create<ViewerState>()(
         }
       }),
 
-    setActiveTool: (tool) =>
+    setActiveTool: (tool) => {
       set((state) => {
         state.activeTool = tool;
-      }),
+      });
+      const annState = useAnnotationStore.getState();
+      if (annState.activeTool !== tool || (tool !== 'select' && annState.selectedAnnotationId !== null)) {
+        useAnnotationStore.setState((s) => {
+          s.activeTool = tool;
+          if (tool !== 'select') {
+            s.selectedAnnotationId = null;
+          }
+        });
+      }
+    },
 
     setPageManagerOpen: (open) =>
       set((state) => {
@@ -297,7 +319,6 @@ export const useViewerStore = create<ViewerState>()(
       set((state) => {
         const cols = Math.min(4, Math.max(1, columns));
         state.thumbnailColumns = cols;
-        // Auto-adapt sidebar width if currently too narrow for cols
         const minWidthForCols = cols === 1 ? 240 : cols === 2 ? 320 : cols === 3 ? 460 : 600;
         if (state.sidebarWidth < minWidthForCols) {
           state.sidebarWidth = minWidthForCols;
@@ -357,3 +378,23 @@ export const useViewerStore = create<ViewerState>()(
       }),
   }))
 );
+
+// Keep DOM theme synchronized when OS color scheme changes and theme === 'system'
+if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+  try {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleSystemThemeChange = () => {
+      if (useViewerStore.getState().theme === 'system') {
+        applyThemeToDom('system');
+      }
+    };
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleSystemThemeChange);
+    } else if (typeof (mediaQuery as { addListener?: (cb: () => void) => void }).addListener === 'function') {
+      (mediaQuery as { addListener: (cb: () => void) => void }).addListener(handleSystemThemeChange);
+    }
+    applyThemeToDom(useViewerStore.getState().theme);
+  } catch {
+    // ignore in non-browser environments
+  }
+}
